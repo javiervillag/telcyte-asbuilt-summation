@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import csv
 import re
 from pathlib import Path
 
-CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})\b", re.I)
+CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})(?!\.\d)\b", re.I)
 ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
 CodeKey = tuple[str, str]
 
@@ -59,15 +58,30 @@ def _codes_from_path(path: Path) -> list[str]:
             from openpyxl import load_workbook
         except ImportError:
             return []
-        workbook = load_workbook(path, data_only=True, read_only=True)
-        text_parts: list[str] = []
+        workbook = load_workbook(path, data_only=True, read_only=False)
+        highlighted_parts: list[str] = []
+        highlighted_sheet_parts: list[str] = []
+        all_parts: list[str] = []
         try:
             for sheet in workbook.worksheets:
-                for row in sheet.iter_rows(values_only=True):
-                    text_parts.extend(str(cell) for cell in row if cell is not None)
+                sheet_is_highlighted = bool(sheet.sheet_properties.tabColor)
+                for row in sheet.iter_rows():
+                    for cell in row:
+                        if cell.value is None:
+                            continue
+                        text = str(cell.value)
+                        all_parts.append(text)
+                        if _has_highlight_fill(cell.fill):
+                            highlighted_parts.append(text)
+                        if sheet_is_highlighted:
+                            highlighted_sheet_parts.append(text)
         finally:
             workbook.close()
-        return extract_codes_from_text("\n".join(text_parts))
+        if highlighted_parts:
+            return extract_codes_from_text("\n".join(highlighted_parts))
+        if highlighted_sheet_parts:
+            return extract_codes_from_text("\n".join(highlighted_sheet_parts))
+        return extract_codes_from_text("\n".join(all_parts))
     return extract_codes_from_text(path.read_text(errors="ignore"))
 
 
@@ -76,3 +90,16 @@ def _format_code(prefix: str, number: str, raw: str) -> str:
     if "-" in raw:
         return raw
     return f"{prefix}-{number}"
+
+
+def _has_highlight_fill(fill) -> bool:
+    if not fill or not fill.fill_type or fill.fill_type == "none":
+        return False
+    color = fill.fgColor
+    if not color:
+        return True
+    if color.type == "rgb" and color.rgb in {"00000000", "00FFFFFF", "FFFFFFFF"}:
+        return False
+    if color.type == "indexed" and color.indexed in {64, 65}:
+        return False
+    return True

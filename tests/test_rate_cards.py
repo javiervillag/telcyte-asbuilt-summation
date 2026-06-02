@@ -23,11 +23,34 @@ def test_eli_codes_are_ignored_for_asbuilt_totals() -> None:
     assert extract_codes_from_text("ELI-7 ELI-07 UG-7") == ["UG-7"]
 
 
+def test_decimal_fragments_are_not_treated_as_codes() -> None:
+    assert extract_codes_from_text("CX16.7 CX-05") == ["CX-05"]
+
+
 def test_load_code_catalog_keeps_rate_card_display_code() -> None:
     catalog = load_code_catalog("UG-07, PC-01, Comp-13")
     assert catalog[("UG", "7")] == "UG-07"
     assert catalog[("PC", "1")] == "PC-01"
     assert catalog[("COMP", "13")] == "Comp-13"
+
+
+def test_load_code_catalog_prefers_highlighted_xlsx_cells(tmp_path) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Rate Card"
+    sheet["A1"] = "UG-99"
+    sheet["A2"] = "UG-07"
+    sheet["A2"].fill = PatternFill(fill_type="solid", fgColor="FFFF00")
+    path = tmp_path / "rate-card.xlsx"
+    workbook.save(path)
+
+    catalog = load_code_catalog(paths=str(path))
+
+    assert ("UG", "7") in catalog
+    assert ("UG", "99") not in catalog
 
 
 def test_extract_codes_from_text_dedupes_variants() -> None:

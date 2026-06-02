@@ -24,7 +24,7 @@ Open `http://127.0.0.1:8000`, upload one PDF, and download the annotated result.
 - `INCLUDE_MATERIALS`: optional `true`/`false`; defaults to `false` so phase one focuses on billing-code totals.
 - `ALLOW_LLM_INFERRED_TOTALS`: optional `true`/`false`; defaults to `false` so the box is driven by parsed/summed codes.
 - `RATE_CARD_CODES`: optional comma/newline-separated Cox billing codes.
-- `RATE_CARD_PATHS`: optional comma-separated local paths to code-only `.txt`, `.csv`, `.tsv`, or `.xlsx` rate-card files.
+- `RATE_CARD_PATHS`: optional comma-separated local paths to code-only `.txt`, `.csv`, `.tsv`, or `.xlsx` rate-card files. For `.xlsx` files, highlighted cells are preferred first, highlighted tabs are used next, and the full workbook is used only when no highlights are found.
 
 Uploaded and generated files are processed in temporary memory/files only and are not persisted by the app.
 
