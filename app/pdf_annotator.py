@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from io import BytesIO
+import os
+from pathlib import Path
 
 import fitz
 from PIL import Image
@@ -12,6 +14,22 @@ BOX_FILL = (0.78, 1.0, 0.63)
 TEXT_RED = (1.0, 0.0, 0.0)
 MATERIAL_TEXT = (0.0, 0.0, 0.0)
 COAX_MATERIAL_TEXT = (0.016, 0.204, 0.247)
+REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
+BOLD_NARROW_FONT_ENV = "TELCYTE_PDF_BOLD_NARROW_FONT_PATH"
+
+
+REGULAR_FONT_CANDIDATES = [
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+]
+BOLD_NARROW_FONT_CANDIDATES = [
+    "/System/Library/Fonts/Supplemental/Arial Narrow Bold.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/Arial_Narrow_Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSansNarrow-Bold.ttf",
+]
 
 
 @dataclass(frozen=True)
@@ -230,7 +248,12 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                 if y > rect.y1 - padding:
                     break
                 size = font_size * (1.05 if idx == 0 else 1.0)
-                page.insert_text((x, y), part, fontsize=size, fontname="helv", color=TEXT_RED, overlay=True)
+                _insert_text(
+                    page,
+                    (x, y),
+                    part,
+                    TextStyle(size=size, color=TEXT_RED, bold_narrow=True),
+                )
                 y += line_height
             if y > rect.y1 - padding:
                 break
@@ -309,9 +332,33 @@ def _insert_text(page: fitz.Page, point: tuple[float, float], text: str, style: 
         "color": style.color,
         "overlay": True,
         "rotate": style.rotate,
-        "fontname": "helv",
     }
+    font_file = _font_file(style)
+    if font_file:
+        kwargs.update(
+            {
+                "fontname": _font_name(style),
+                "fontfile": str(font_file),
+                "set_simple": 1,
+            }
+        )
+    else:
+        kwargs["fontname"] = "helv"
     page.insert_text(point, text, **kwargs)
+
+
+def _font_file(style: TextStyle) -> Path | None:
+    env_var = BOLD_NARROW_FONT_ENV if style.bold_narrow else REGULAR_FONT_ENV
+    candidates = [os.environ.get(env_var, "")]
+    candidates.extend(BOLD_NARROW_FONT_CANDIDATES if style.bold_narrow else REGULAR_FONT_CANDIDATES)
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return Path(candidate)
+    return None
+
+
+def _font_name(style: TextStyle) -> str:
+    return "TelcyteNarrowBold" if style.bold_narrow else "TelcyteRegular"
 
 
 def _calibrated_material_lines(source_name: str, materials: list[str]) -> list[str]:

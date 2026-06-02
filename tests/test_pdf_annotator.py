@@ -25,3 +25,4 @@ def test_annotate_pdf_adds_totals_text() -> None:
     assert "MKR Job Totals" in text
     assert "UG-56 - 170'" in text
     assert "605-3277 48Ct - 750'" in text
+    assert "\u00ad" not in text
