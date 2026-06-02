@@ -144,6 +144,10 @@ button:disabled {
   color: var(--telcyte-dark);
 }
 
+.status.warn {
+  color: #7c5a00;
+}
+
 @media (max-width: 560px) {
   .shell {
     padding: 18px;

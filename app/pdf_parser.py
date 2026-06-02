@@ -16,6 +16,17 @@ class TextBlock:
     text: str
 
 
+@dataclass(frozen=True)
+class ExtractionDiagnostics:
+    block_count: int
+    text_chars: int
+    quantity_line_count: int
+    code_total_count: int
+    material_candidate_count: int
+    review_required: bool
+    warnings: list[str]
+
+
 def _clean_text(text: str) -> str:
     text = text.replace("\x00", " ")
     text = re.sub(r"[ \t]+", " ", text)
@@ -153,6 +164,42 @@ def extract_material_candidates(blocks: list[TextBlock]) -> list[str]:
                 seen.add(cleaned)
                 rows.append(cleaned)
     return rows
+
+
+def diagnose_extraction(
+    blocks: list[TextBlock],
+    code_totals: list[str],
+    material_candidates: list[str] | None = None,
+    quantity_lines: list[str] | None = None,
+) -> ExtractionDiagnostics:
+    quantity_lines = quantity_lines if quantity_lines is not None else extract_likely_quantity_lines(blocks)
+    material_candidates = (
+        material_candidates if material_candidates is not None else extract_material_candidates(blocks)
+    )
+    text_chars = sum(len(block.text) for block in blocks)
+    warnings: list[str] = []
+
+    if len(blocks) < 5 or text_chars < 120:
+        warnings.append("This PDF does not have enough readable text for automatic summation.")
+    elif len(quantity_lines) < 2:
+        warnings.append("The PDF text layer has very few readable quantity lines.")
+
+    if not code_totals:
+        warnings.append("No supported billing-code totals were found in the parsed text.")
+
+    review_required = not code_totals and (len(blocks) < 5 or text_chars < 120 or len(quantity_lines) < 2)
+    if review_required:
+        warnings.append("Manual review is required; the app did not add unsupported totals.")
+
+    return ExtractionDiagnostics(
+        block_count=len(blocks),
+        text_chars=text_chars,
+        quantity_line_count=len(quantity_lines),
+        code_total_count=len(code_totals),
+        material_candidate_count=len(material_candidates),
+        review_required=review_required,
+        warnings=warnings,
+    )
 
 
 def build_pdf_context(

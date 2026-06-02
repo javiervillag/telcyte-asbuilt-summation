@@ -14,7 +14,7 @@ from PIL import Image
 from app.config import Settings
 from app.example_calibration import summary_for_source
 from app.models import SummaryResult
-from app.pdf_parser import build_pdf_context, derive_code_totals, extract_text_blocks
+from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
 from app.rate_cards import code_key, load_code_catalog
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 class OpenRouterError(RuntimeError):
     pass
+
+
+class ManualReviewRequired(OpenRouterError):
+    def __init__(self, warnings: list[str]) -> None:
+        self.warnings = warnings
+        super().__init__("Manual review required. The PDF text layer did not contain enough supported totals.")
 
 
 @dataclass
@@ -109,6 +115,7 @@ def _merge_parser_and_model(
     settings: Settings,
 ) -> SummaryResult:
     totals = list(parser_totals)
+    omitted_model_totals = 0
     if settings.allow_llm_inferred_totals:
         seen = {_line_code_key(line) for line in totals}
         for line in model_summary.job_totals:
@@ -116,12 +123,25 @@ def _merge_parser_and_model(
             if key and key not in seen:
                 totals.append(line)
                 seen.add(key)
+    else:
+        parser_keys = {_line_code_key(line) for line in totals}
+        omitted_model_totals = sum(
+            1
+            for line in model_summary.job_totals
+            if (_line_code_key(line) not in parser_keys)
+        )
+
+    warnings = list(model_summary.warnings)
+    if omitted_model_totals:
+        warnings.append(
+            "Possible extra totals were not added because the parsed PDF text did not support them."
+        )
 
     return SummaryResult(
         title="MKR Job Totals",
-        job_totals=totals or model_summary.job_totals,
+        job_totals=totals if totals or not settings.allow_llm_inferred_totals else model_summary.job_totals,
         materials=model_summary.materials if settings.include_materials else [],
-        warnings=model_summary.warnings,
+        warnings=warnings,
         confidence=model_summary.confidence,
         model=f"parser+{model_summary.model}" if totals else model_summary.model,
     )
@@ -137,13 +157,17 @@ async def summarize_with_model(
     if calibrated:
         return calibrated
 
-    if not settings.openrouter_api_key:
-        raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
-
     selected_model = model or settings.openrouter_model
     code_catalog = load_code_catalog(settings.rate_card_codes, settings.rate_card_paths)
     blocks = extract_text_blocks(pdf_bytes)
     parser_totals = derive_code_totals(blocks, code_catalog=code_catalog)
+    diagnostics = diagnose_extraction(blocks, parser_totals)
+    if diagnostics.review_required and not settings.include_page_images:
+        raise ManualReviewRequired(diagnostics.warnings)
+
+    if not settings.openrouter_api_key:
+        raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
+
     parsed_context = build_pdf_context(pdf_bytes, code_catalog=code_catalog)
 
     content: list[dict] = [{"type": "text", "text": USER_PROMPT.replace("{context}", parsed_context)}]
@@ -189,6 +213,9 @@ async def summarize_with_model(
     text = data["choices"][0]["message"]["content"]
     model_summary = _normalize_summary(_extract_json(text), selected_model)
     summary = _merge_parser_and_model(parser_totals, model_summary, settings)
+    for warning in diagnostics.warnings:
+        if warning not in summary.warnings:
+            summary.warnings.append(warning)
     if not summary.job_totals and not summary.materials:
         summary.warnings.append("Unable to identify supported totals from the drawing.")
     logger.info(

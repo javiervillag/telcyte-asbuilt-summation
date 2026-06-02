@@ -135,17 +135,73 @@ def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
     margin_x = max(14.0, page.rect.width * 0.014)
     margin_y = max(18.0, page.rect.height * 0.018)
     if page.rotation == 90:
-        rotated_y = max(margin_y, page.mediabox.height * 0.72)
-        return fitz.Rect(margin_x, rotated_y, margin_x + width, rotated_y + height)
+        # Rotated PDFs report page coordinates differently from the viewer. Keep
+        # candidates in visible corners and let density scoring choose the least
+        # disruptive one.
+        margin_y = max(margin_y, page.mediabox.height * 0.02)
 
-    top_left = fitz.Rect(margin_x, margin_y, margin_x + width, margin_y + height)
-    top_right = fitz.Rect(page.rect.width - margin_x - width, margin_y, page.rect.width - margin_x, margin_y + height)
+    candidates = _candidate_rects(page, width, height, margin_x, margin_y)
+    density_image = _render_page_for_density(page)
+    scale = density_image.width / page.rect.width if page.rect.width else 0.12
+    text_blocks = _page_text_rects(page)
+    scored = [
+        (_placement_score(density_image, page, candidate, scale, text_blocks), candidate)
+        for candidate in candidates
+    ]
+    scored.sort(key=lambda row: row[0])
+    return scored[0][1]
 
-    # The samples mostly use top-left placement. The 144Ct multi-leg fiber sheet is
-    # the clear exception, where the expected box sits near the upper right.
-    if any("144Ct" in line or "144CT" in line for line in lines):
-        return top_right
-    return top_left
+
+def _candidate_rects(
+    page: fitz.Page,
+    width: float,
+    height: float,
+    margin_x: float,
+    margin_y: float,
+) -> list[fitz.Rect]:
+    max_x = max(margin_x, page.rect.width - margin_x - width)
+    max_y = max(margin_y, page.rect.height - margin_y - height)
+    mid_y = margin_y + max(0.0, (max_y - margin_y) / 2)
+    return [
+        fitz.Rect(margin_x, margin_y, margin_x + width, margin_y + height),
+        fitz.Rect(max_x, margin_y, max_x + width, margin_y + height),
+        fitz.Rect(margin_x, max_y, margin_x + width, max_y + height),
+        fitz.Rect(max_x, max_y, max_x + width, max_y + height),
+        fitz.Rect(margin_x, mid_y, margin_x + width, mid_y + height),
+        fitz.Rect(max_x, mid_y, max_x + width, mid_y + height),
+    ]
+
+
+def _page_text_rects(page: fitz.Page) -> list[fitz.Rect]:
+    rects: list[fitz.Rect] = []
+    for raw in page.get_text("blocks", sort=False):
+        x0, y0, x1, y1, text, *_ = raw
+        if text.strip():
+            rects.append(fitz.Rect(x0, y0, x1, y1))
+    return rects
+
+
+def _placement_score(
+    img: Image.Image,
+    page: fitz.Page,
+    candidate: fitz.Rect,
+    scale: float,
+    text_blocks: list[fitz.Rect],
+) -> float:
+    rect_area = max(_rect_area(candidate), 1.0)
+    overlap_area = 0.0
+    for block in text_blocks:
+        overlap = candidate & block
+        if not overlap.is_empty:
+            overlap_area += _rect_area(overlap)
+    overlap_ratio = min(1.0, overlap_area / rect_area)
+    density = _ink_density(img, page, candidate, scale)
+    off_page_penalty = 10.0 if not page.rect.contains(candidate) else 0.0
+    return off_page_penalty + density + overlap_ratio * 2.0
+
+
+def _rect_area(rect: fitz.Rect) -> float:
+    return max(0.0, rect.width) * max(0.0, rect.height)
 
 
 def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | None = None) -> bytes:

@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from app.pdf_parser import build_pdf_context, derive_code_totals, extract_likely_quantity_lines, extract_text_blocks
+import fitz
+
+from app.pdf_parser import (
+    build_pdf_context,
+    diagnose_extraction,
+    derive_code_totals,
+    extract_likely_quantity_lines,
+    extract_text_blocks,
+)
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
@@ -41,3 +49,16 @@ def test_derive_code_totals_ignores_bore_context_notes() -> None:
     totals = derive_code_totals(blocks)
     assert "UG-6 - 14" not in totals
     assert "UG-06 - 13" in totals
+
+
+def test_diagnose_extraction_requires_review_for_blank_pdf() -> None:
+    doc = fitz.open()
+    doc.new_page(width=612, height=792)
+    blank = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(blank)
+    diagnostics = diagnose_extraction(blocks, code_totals=[])
+
+    assert diagnostics.review_required is True
+    assert "Manual review is required; the app did not add unsupported totals." in diagnostics.warnings

@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -6,7 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.openrouter_client import OpenRouterError, summarize_with_model
+from app.openrouter_client import ManualReviewRequired, OpenRouterError, summarize_with_model
 from app.pdf_annotator import annotate_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -51,6 +52,15 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
     try:
         summary = await summarize_with_model(content, settings, source_name=file.filename)
         output = annotate_pdf(content, summary, source_name=file.filename)
+    except ManualReviewRequired as exc:
+        logger.warning("manual_review_required filename=%s warnings=%s", file.filename, exc.warnings)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": "This PDF needs manual review because the readable text did not contain enough supported totals.",
+                "warnings": exc.warnings,
+            },
+        )
     except OpenRouterError as exc:
         logger.warning("summary_failed filename=%s error=%s", file.filename, exc)
         return JSONResponse(status_code=502, content={"detail": str(exc)})
@@ -74,5 +84,6 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
             "Content-Disposition": f'attachment; filename="{output_name}"',
             "X-Telcyte-Model": summary.model,
             "X-Telcyte-Confidence": f"{summary.confidence:.2f}",
+            "X-Telcyte-Warnings": json.dumps(summary.warnings[:6]),
         },
     )

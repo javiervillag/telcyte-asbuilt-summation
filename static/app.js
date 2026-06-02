@@ -30,12 +30,16 @@ form.addEventListener("submit", async (event) => {
       let message = "The PDF could not be processed.";
       try {
         const json = await response.json();
-        message = json.detail || message;
+        const details = Array.isArray(json.warnings) && json.warnings.length
+          ? ` ${json.warnings.join(" ")}`
+          : "";
+        message = `${json.detail || message}${details}`;
       } catch {
         // Keep default message.
       }
       throw new Error(message);
     }
+    const warnings = readWarnings(response);
     const blob = await response.blob();
     const disposition = response.headers.get("Content-Disposition") || "";
     const match = disposition.match(/filename=\"?([^"]+)\"?/);
@@ -48,7 +52,7 @@ form.addEventListener("submit", async (event) => {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    setStatus("PDF ready.", "done");
+    setStatus(warnings.length ? `PDF ready. Review note: ${warnings.join(" ")}` : "PDF ready.", warnings.length ? "warn" : "done");
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
@@ -59,4 +63,15 @@ form.addEventListener("submit", async (event) => {
 function setStatus(message, kind) {
   statusBox.textContent = message;
   statusBox.className = kind ? `status ${kind}` : "status";
+}
+
+function readWarnings(response) {
+  const raw = response.headers.get("X-Telcyte-Warnings");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }

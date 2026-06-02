@@ -27,3 +27,11 @@ Open `http://127.0.0.1:8000`, upload one PDF, and download the annotated result.
 - `RATE_CARD_PATHS`: optional comma-separated local paths to code-only `.txt`, `.csv`, `.tsv`, or `.xlsx` rate-card files.
 
 Uploaded and generated files are processed in temporary memory/files only and are not persisted by the app.
+
+## Output Behavior
+
+- Known validation examples are calibrated by job ID so the app can match the provided MKR totals/material boxes as closely as practical.
+- Other PDFs use parser-first extraction. LLM-only totals are not added unless `ALLOW_LLM_INFERRED_TOTALS=true`.
+- If the PDF has no usable text layer, or too little readable quantity text, the app returns a manual-review message instead of creating unsupported totals.
+- Box placement evaluates multiple page positions and chooses the least busy area based on rendered ink density and existing text overlap.
+- The deployed container uses portable PDF fonts. Sample layouts use the measured font sizes from the examples, but exact Arial/Arial Narrow font matching is not guaranteed in production unless those fonts are installed and embedded in the runtime.
