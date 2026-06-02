@@ -88,7 +88,7 @@ async def main() -> None:
     for before, after in pairs:
         print(f"Evaluating {before.name}")
         expected = expected_added_text(before, after)
-        attempts = await try_models(before.read_bytes(), settings, models)
+        attempts = await try_models(before.read_bytes(), settings, models, source_name=before.name)
         rows = []
         best = None
         best_score = -1.0
@@ -113,7 +113,7 @@ async def main() -> None:
             else:
                 rows.append({"model": attempt.model, "ok": False, "error": attempt.error})
         if best:
-            output_pdf = annotate_pdf(before.read_bytes(), best)
+            output_pdf = annotate_pdf(before.read_bytes(), best, source_name=before.name)
             output_path = out_dir / before.name.replace(".pdf", "-generated.pdf")
             output_path.write_bytes(output_pdf)
         report["samples"].append(

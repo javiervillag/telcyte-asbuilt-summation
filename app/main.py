@@ -49,8 +49,8 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
 
     logger.info("upload_received filename=%s bytes=%s", file.filename, len(content))
     try:
-        summary = await summarize_with_model(content, settings)
-        output = annotate_pdf(content, summary)
+        summary = await summarize_with_model(content, settings, source_name=file.filename)
+        output = annotate_pdf(content, summary, source_name=file.filename)
     except OpenRouterError as exc:
         logger.warning("summary_failed filename=%s error=%s", file.filename, exc)
         return JSONResponse(status_code=502, content={"detail": str(exc)})

@@ -24,7 +24,7 @@ def test_rejects_non_pdf_upload() -> None:
 
 
 def test_summarize_endpoint_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_summarize(content, settings):
+    async def fake_summarize(content, settings, source_name=None):
         return SummaryResult(
             model="parser+fake-model",
             confidence=0.91,

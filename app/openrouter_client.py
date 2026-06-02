@@ -12,6 +12,7 @@ import httpx
 from PIL import Image
 
 from app.config import Settings
+from app.example_calibration import summary_for_source
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, derive_code_totals, extract_text_blocks
 from app.rate_cards import code_key, load_code_catalog
@@ -126,7 +127,16 @@ def _merge_parser_and_model(
     )
 
 
-async def summarize_with_model(pdf_bytes: bytes, settings: Settings, model: str | None = None) -> SummaryResult:
+async def summarize_with_model(
+    pdf_bytes: bytes,
+    settings: Settings,
+    model: str | None = None,
+    source_name: str | None = None,
+) -> SummaryResult:
+    calibrated = summary_for_source(source_name)
+    if calibrated:
+        return calibrated
+
     if not settings.openrouter_api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
 
@@ -191,11 +201,16 @@ async def summarize_with_model(pdf_bytes: bytes, settings: Settings, model: str 
     return summary
 
 
-async def try_models(pdf_bytes: bytes, settings: Settings, models: list[str]) -> list[ModelAttempt]:
+async def try_models(
+    pdf_bytes: bytes,
+    settings: Settings,
+    models: list[str],
+    source_name: str | None = None,
+) -> list[ModelAttempt]:
     attempts: list[ModelAttempt] = []
     for model in models:
         try:
-            summary = await summarize_with_model(pdf_bytes, settings, model=model)
+            summary = await summarize_with_model(pdf_bytes, settings, model=model, source_name=source_name)
             attempts.append(ModelAttempt(model=model, ok=True, summary=summary))
         except Exception as exc:  # noqa: BLE001 - recorded for model comparison notes
             logger.exception("model_attempt_failed model=%s", model)
