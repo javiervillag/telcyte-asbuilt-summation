@@ -27,3 +27,17 @@ def test_derive_code_totals_sums_repeated_labels() -> None:
     totals = derive_code_totals(blocks)
     assert "UG-56 - 170'" in totals
     assert "COMP-15 - 348'" in totals
+
+
+def test_derive_code_totals_uses_rate_card_display_and_filter() -> None:
+    blocks = extract_text_blocks(SAMPLE.read_bytes())
+    totals = derive_code_totals(blocks, code_catalog={("UG", 56): "UG-56", ("UG", 7): "UG-07"})
+    assert totals == ["UG-56 - 170'", "UG-07 - 1"]
+
+
+def test_derive_code_totals_ignores_bore_context_notes() -> None:
+    sample = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-912047-Totals Removed.pdf")
+    blocks = extract_text_blocks(sample.read_bytes())
+    totals = derive_code_totals(blocks)
+    assert "UG-6 - 14" not in totals
+    assert "UG-06 - 13" in totals

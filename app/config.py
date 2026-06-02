@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     openrouter_timeout_seconds: float = Field(default=90.0, alias="OPENROUTER_TIMEOUT_SECONDS")
     max_upload_bytes: int = Field(default=35 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
     include_page_images: bool = Field(default=False, alias="INCLUDE_PAGE_IMAGES")
+    include_materials: bool = Field(default=False, alias="INCLUDE_MATERIALS")
+    allow_llm_inferred_totals: bool = Field(default=False, alias="ALLOW_LLM_INFERRED_TOTALS")
+    rate_card_codes: str = Field(default="", alias="RATE_CARD_CODES")
+    rate_card_paths: str = Field(default="", alias="RATE_CARD_PATHS")
 
     @property
     def candidate_models(self) -> list[str]:

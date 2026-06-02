@@ -13,7 +13,8 @@ from PIL import Image
 
 from app.config import Settings
 from app.models import SummaryResult
-from app.pdf_parser import build_pdf_context
+from app.pdf_parser import build_pdf_context, derive_code_totals, extract_text_blocks
+from app.rate_cards import code_key, load_code_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,9 @@ class ModelAttempt:
 
 
 SYSTEM_PROMPT = """You are helping Telcyte review parsed as-built construction drawings.
-Use the parsed PDF text layer, positioned blocks, and deterministic aggregate candidates to produce the MKR Job Totals and Materials box.
+Use the parsed PDF text layer, positioned blocks, and deterministic aggregate candidates to review the MKR Job Totals box.
 Return only JSON. Do not invent unreadable or uncertain details.
-Use concise construction quantity lines like "UG-56 - 168'" or "450-0307 PV - 2".
+Use concise construction quantity lines like "UG-56 - 168'".
 If a value is unclear, omit it or put a short warning in warnings."""
 
 
@@ -47,8 +48,8 @@ Expected JSON shape:
   "confidence": 0.0
 }
 Prefer the deterministic code totals when they are supported by the positioned text blocks.
-Use the material candidates for the Materials section, but keep only true material lines.
-Focus on totals and materials visible or inferable from drawing labels, callouts, notes, and quantity markings.
+Focus on billing-code totals visible or inferable from drawing labels, callouts, notes, and quantity markings.
+Materials are phase-two unless the request explicitly enables them.
 Never add a detail unless the parsed PDF context supports it.
 
 Parsed context:
@@ -94,12 +95,46 @@ def _normalize_summary(data: dict, model: str) -> SummaryResult:
     )
 
 
+def _line_code_key(line: str) -> tuple[str, int] | None:
+    code_part = line.split("-", 2)
+    if len(code_part) >= 2:
+        return code_key("-".join(code_part[:2]))
+    return code_key(line)
+
+
+def _merge_parser_and_model(
+    parser_totals: list[str],
+    model_summary: SummaryResult,
+    settings: Settings,
+) -> SummaryResult:
+    totals = list(parser_totals)
+    if settings.allow_llm_inferred_totals:
+        seen = {_line_code_key(line) for line in totals}
+        for line in model_summary.job_totals:
+            key = _line_code_key(line)
+            if key and key not in seen:
+                totals.append(line)
+                seen.add(key)
+
+    return SummaryResult(
+        title="MKR Job Totals",
+        job_totals=totals or model_summary.job_totals,
+        materials=model_summary.materials if settings.include_materials else [],
+        warnings=model_summary.warnings,
+        confidence=model_summary.confidence,
+        model=f"parser+{model_summary.model}" if totals else model_summary.model,
+    )
+
+
 async def summarize_with_model(pdf_bytes: bytes, settings: Settings, model: str | None = None) -> SummaryResult:
     if not settings.openrouter_api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
 
     selected_model = model or settings.openrouter_model
-    parsed_context = build_pdf_context(pdf_bytes)
+    code_catalog = load_code_catalog(settings.rate_card_codes, settings.rate_card_paths)
+    blocks = extract_text_blocks(pdf_bytes)
+    parser_totals = derive_code_totals(blocks, code_catalog=code_catalog)
+    parsed_context = build_pdf_context(pdf_bytes, code_catalog=code_catalog)
 
     content: list[dict] = [{"type": "text", "text": USER_PROMPT.replace("{context}", parsed_context)}]
     image_count = 0
@@ -142,7 +177,8 @@ async def summarize_with_model(pdf_bytes: bytes, settings: Settings, model: str 
 
     data = response.json()
     text = data["choices"][0]["message"]["content"]
-    summary = _normalize_summary(_extract_json(text), selected_model)
+    model_summary = _normalize_summary(_extract_json(text), selected_model)
+    summary = _merge_parser_and_model(parser_totals, model_summary, settings)
     if not summary.job_totals and not summary.materials:
         summary.warnings.append("Unable to identify supported totals from the drawing.")
     logger.info(

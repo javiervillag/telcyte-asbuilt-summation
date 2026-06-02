@@ -21,5 +21,9 @@ Open `http://127.0.0.1:8000`, upload one PDF, and download the annotated result.
 - `OPENROUTER_HTTP_REFERER`: optional OpenRouter attribution URL.
 - `OPENROUTER_APP_TITLE`: optional OpenRouter attribution title.
 - `INCLUDE_PAGE_IMAGES`: optional `true`/`false`; defaults to parser-first text context without page images.
+- `INCLUDE_MATERIALS`: optional `true`/`false`; defaults to `false` so phase one focuses on billing-code totals.
+- `ALLOW_LLM_INFERRED_TOTALS`: optional `true`/`false`; defaults to `false` so the box is driven by parsed/summed codes.
+- `RATE_CARD_CODES`: optional comma/newline-separated Cox billing codes.
+- `RATE_CARD_PATHS`: optional comma-separated local paths to code-only `.txt`, `.csv`, `.tsv`, or `.xlsx` rate-card files.
 
 Uploaded and generated files are processed in temporary memory/files only and are not persisted by the app.

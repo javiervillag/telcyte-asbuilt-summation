@@ -26,10 +26,10 @@ def test_rejects_non_pdf_upload() -> None:
 def test_summarize_endpoint_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_summarize(content, settings):
         return SummaryResult(
-            model="fake-model",
+            model="parser+fake-model",
             confidence=0.91,
             job_totals=["UG-56 - 170'"],
-            materials=["605-3277 48Ct - 750'"],
+            materials=[],
         )
 
     monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
@@ -40,4 +40,4 @@ def test_summarize_endpoint_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None
     )
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
-    assert response.headers["x-telcyte-model"] == "fake-model"
+    assert response.headers["x-telcyte-model"] == "parser+fake-model"

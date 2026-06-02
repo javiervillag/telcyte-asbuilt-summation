@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import fitz
 
+from app.rate_cards import code_key
+
 
 @dataclass(frozen=True)
 class TextBlock:
@@ -76,24 +78,35 @@ def _format_number(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
-def derive_code_totals(blocks: list[TextBlock]) -> list[str]:
+def derive_code_totals(
+    blocks: list[TextBlock],
+    code_catalog: dict[tuple[str, int], str] | None = None,
+) -> list[str]:
     pattern = re.compile(
         r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
         re.I,
     )
-    totals: dict[tuple[str, str], float] = defaultdict(float)
-    display: dict[tuple[str, str], str] = {}
-    order: list[tuple[str, str]] = []
+    catalog = code_catalog or {}
+    totals: dict[tuple[tuple[str, int], str], float] = defaultdict(float)
+    display: dict[tuple[tuple[str, int], str], str] = {}
+    order: list[tuple[tuple[str, int], str]] = []
     for block in blocks:
-        for match in pattern.finditer(block.text):
-            raw_code, raw_qty, raw_unit = match.groups()
-            code = raw_code.upper()
-            unit = (raw_unit or "").strip()
-            key = (code, unit)
-            if key not in totals:
-                order.append(key)
-                display[key] = code
-            totals[key] += float(raw_qty)
+        for line in block.text.splitlines():
+            for match in pattern.finditer(line):
+                if _is_non_billing_context(line, match.start()):
+                    continue
+                raw_code, raw_qty, raw_unit = match.groups()
+                normalized_key = code_key(raw_code)
+                if not normalized_key:
+                    continue
+                if catalog and normalized_key not in catalog:
+                    continue
+                unit = (raw_unit or "").strip()
+                key = (normalized_key, unit)
+                if key not in totals:
+                    order.append(key)
+                    display[key] = catalog.get(normalized_key, _display_code(raw_code))
+                totals[key] += float(raw_qty)
 
     rows: list[str] = []
     for key in order:
@@ -101,6 +114,26 @@ def derive_code_totals(blocks: list[TextBlock]) -> list[str]:
         unit = key[1]
         rows.append(f"{code} - {_format_number(totals[key])}{unit}")
     return rows
+
+
+def _display_code(raw_code: str) -> str:
+    raw_code = raw_code.strip()
+    if "-" in raw_code:
+        return raw_code
+    match = re.match(r"([A-Za-z]+)(\d+)", raw_code)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    return raw_code
+
+
+def _is_non_billing_context(line: str, match_start: int) -> bool:
+    prefix = line[:match_start].strip().lower()
+    full = line.lower()
+    if "bore@" in full or "trench@" in full:
+        return True
+    if re.search(r"\b(?:dirt|concrete|asphalt|pwr|wtr|swr|irr|cox|stl)\s*-\s*$", prefix):
+        return True
+    return False
 
 
 def extract_material_candidates(blocks: list[TextBlock]) -> list[str]:
@@ -122,7 +155,11 @@ def extract_material_candidates(blocks: list[TextBlock]) -> list[str]:
     return rows
 
 
-def build_pdf_context(pdf_bytes: bytes, max_chars: int = 26000) -> str:
+def build_pdf_context(
+    pdf_bytes: bytes,
+    max_chars: int = 26000,
+    code_catalog: dict[tuple[str, int], str] | None = None,
+) -> str:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page_summaries: list[str] = []
     try:
@@ -135,7 +172,7 @@ def build_pdf_context(pdf_bytes: bytes, max_chars: int = 26000) -> str:
 
     blocks = extract_text_blocks(pdf_bytes)
     quantity_lines = extract_likely_quantity_lines(blocks)
-    code_totals = derive_code_totals(blocks)
+    code_totals = derive_code_totals(blocks, code_catalog=code_catalog)
     material_candidates = extract_material_candidates(blocks)
 
     block_rows = []
