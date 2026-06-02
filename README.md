@@ -33,5 +33,6 @@ Uploaded and generated files are processed in temporary memory/files only and ar
 - Known validation examples are calibrated by job ID so the app can match the provided MKR totals/material boxes as closely as practical.
 - Other PDFs use parser-first extraction. LLM-only totals are not added unless `ALLOW_LLM_INFERRED_TOTALS=true`.
 - If the PDF has no usable text layer, or too little readable quantity text, the app returns a manual-review message instead of creating unsupported totals.
-- Box placement evaluates multiple page positions and chooses the least busy area based on rendered ink density and existing text overlap.
-- The app uses configured or discovered PDF font files when available, while preserving searchable text. It prefers Arial/Arial Narrow locally, can use Liberation Sans/Liberation Sans Narrow if present, and falls back to portable PDF fonts otherwise. Exact Arial matching requires those exact font files in the runtime.
+- If no supported billing-code totals can be parsed, the app returns a manual-review message instead of asking the model to invent missing details.
+- Box placement evaluates visible corner positions first and chooses the least busy area based on rendered ink density, existing text overlap, and existing PDF annotation/colored-markup overlap. If no low-impact area is available, the app returns a manual-review message.
+- The app uses configured or discovered PDF font files when available, while preserving searchable text. It prefers Arial/Arial Narrow locally, can use Liberation Sans/Liberation Sans Narrow if present, and falls back to portable PDF fonts otherwise. Exact Arial matching requires those exact font files in the runtime. The `/health` endpoint reports which font files are actually being used.

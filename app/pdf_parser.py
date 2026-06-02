@@ -27,6 +27,11 @@ class ExtractionDiagnostics:
     warnings: list[str]
 
 
+MIN_READABLE_BLOCKS = 5
+MIN_READABLE_CHARS = 120
+MIN_QUANTITY_LINES = 2
+
+
 def _clean_text(text: str) -> str:
     text = text.replace("\x00", " ")
     text = re.sub(r"[ \t]+", " ", text)
@@ -178,16 +183,18 @@ def diagnose_extraction(
     )
     text_chars = sum(len(block.text) for block in blocks)
     warnings: list[str] = []
+    has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
+    has_weak_quantity_context = len(quantity_lines) < MIN_QUANTITY_LINES
 
-    if len(blocks) < 5 or text_chars < 120:
+    if has_weak_text_layer:
         warnings.append("This PDF does not have enough readable text for automatic summation.")
-    elif len(quantity_lines) < 2:
+    elif has_weak_quantity_context:
         warnings.append("The PDF text layer has very few readable quantity lines.")
 
     if not code_totals:
         warnings.append("No supported billing-code totals were found in the parsed text.")
 
-    review_required = not code_totals and (len(blocks) < 5 or text_chars < 120 or len(quantity_lines) < 2)
+    review_required = has_weak_text_layer or has_weak_quantity_context or not code_totals
     if review_required:
         warnings.append("Manual review is required; the app did not add unsupported totals.")
 

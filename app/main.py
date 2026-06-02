@@ -2,13 +2,14 @@ import json
 import logging
 from pathlib import Path
 
+import fitz
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.openrouter_client import ManualReviewRequired, OpenRouterError, summarize_with_model
-from app.pdf_annotator import annotate_pdf
+from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, describe_pdf_fonts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ async def health() -> dict:
         "ok": True,
         "openrouter_configured": bool(settings.openrouter_api_key),
         "model": settings.openrouter_model,
+        "pdf_fonts": describe_pdf_fonts(),
     }
 
 
@@ -47,6 +49,7 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
         raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
     if len(content) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail="The uploaded PDF is too large.")
+    _validate_pdf_upload(content)
 
     logger.info("upload_received filename=%s bytes=%s", file.filename, len(content))
     try:
@@ -59,6 +62,15 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
             content={
                 "detail": "This PDF needs manual review because the readable text did not contain enough supported totals.",
                 "warnings": exc.warnings,
+            },
+        )
+    except PlacementReviewRequired as exc:
+        logger.warning("placement_review_required filename=%s error=%s", file.filename, exc)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": "This PDF needs manual review because there is no clear open area for the summary box.",
+                "warnings": ["The app could not place the summary box without risking existing annotations."],
             },
         )
     except OpenRouterError as exc:
@@ -87,3 +99,17 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
             "X-Telcyte-Warnings": json.dumps(summary.warnings[:6]),
         },
     )
+
+
+def _validate_pdf_upload(content: bytes) -> None:
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001 - converted to safe user error
+        raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF.") from exc
+    try:
+        if doc.is_encrypted or doc.needs_pass:
+            raise HTTPException(status_code=422, detail="Password-protected PDFs need manual review.")
+        if doc.page_count < 1:
+            raise HTTPException(status_code=400, detail="The uploaded PDF has no pages.")
+    finally:
+        doc.close()

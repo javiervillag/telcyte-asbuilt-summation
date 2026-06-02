@@ -16,6 +16,7 @@ MATERIAL_TEXT = (0.0, 0.0, 0.0)
 COAX_MATERIAL_TEXT = (0.016, 0.204, 0.247)
 REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
 BOLD_NARROW_FONT_ENV = "TELCYTE_PDF_BOLD_NARROW_FONT_PATH"
+MAX_SAFE_PLACEMENT_SCORE = 1.35
 
 
 REGULAR_FONT_CANDIDATES = [
@@ -60,6 +61,15 @@ class CalibratedLayout:
     materials: LineBlock
     extra_highlights: tuple[tuple[float, float, float, float], ...] = ()
     extra_highlight_overlay: bool = False
+    totals_border: tuple[float, float, float] | None = None
+    totals_border_width: float = 1.0
+    material_border: tuple[float, float, float] | None = None
+    material_border_width: float = 1.0
+
+
+class PlacementReviewRequired(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("No low-impact location was found for the summary box.")
 
 
 CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
@@ -87,6 +97,10 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         materials_rect=(23.0, 1331.0, 211.0, 1591.0),
         fill=(0.75, 1.0, 0.75),
         material_fill=(0.8, 1.0, 0.8),
+        totals_border=TEXT_RED,
+        totals_border_width=2.0,
+        material_border=(0.0, 0.0, 1.0),
+        material_border_width=1.0,
         title=LineBlock((28.0, 54.2), 32.1, TextStyle(28.0, TEXT_RED, bold_narrow=True)),
         totals=LineBlock((28.0, 118.4), 32.1, TextStyle(28.0, TEXT_RED, bold_narrow=True)),
         material_heading="Material",
@@ -98,6 +112,8 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         materials_rect=(14.0, 493.5, 137.5, 711.0),
         fill=(0.749, 1.0, 0.749),
         material_fill=(0.75, 1.0, 0.75),
+        material_border=(0.0, 0.0, 1.0),
+        material_border_width=1.0,
         title=LineBlock((34.0, 48.2), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         totals=LineBlock((34.0, 76.2), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         material_heading="Material",
@@ -109,6 +125,8 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         materials_rect=(1107.9, 548.2, 1212.5, 721.9),
         fill=(0.749, 1.0, 0.749),
         material_fill=(0.8, 1.0, 0.8),
+        material_border=(0.0, 0.0, 1.0),
+        material_border_width=1.0,
         title=LineBlock((1096.3, 36.8), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         totals=LineBlock((1096.3, 64.8), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         material_heading="Material",
@@ -127,6 +145,10 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         materials_rect=(14.5, 1443.0, 221.5, 1586.0),
         fill=(0.75, 1.0, 0.75),
         material_fill=None,
+        totals_border=TEXT_RED,
+        totals_border_width=2.0,
+        material_border=(0.0, 0.0, 1.0),
+        material_border_width=1.0,
         title=LineBlock((19.0, 45.9), 27.5, TextStyle(24.0, TEXT_RED, bold_narrow=True)),
         totals=LineBlock((19.0, 100.9), 27.5, TextStyle(24.0, TEXT_RED, bold_narrow=True)),
         material_heading="Materials",
@@ -179,11 +201,24 @@ def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
     density_image = _render_page_for_density(page)
     scale = density_image.width / page.rect.width if page.rect.width else 0.12
     text_blocks = _page_text_rects(page)
+    annotation_blocks = _page_annotation_rects(page)
     scored = [
-        (_placement_score(density_image, page, candidate, scale, text_blocks), candidate)
+        (
+            _placement_score(
+                density_image,
+                page,
+                candidate,
+                scale,
+                text_blocks,
+                annotation_blocks,
+            ),
+            candidate,
+        )
         for candidate in candidates
     ]
     scored.sort(key=lambda row: row[0])
+    if scored[0][0] > MAX_SAFE_PLACEMENT_SCORE:
+        raise PlacementReviewRequired()
     return scored[0][1]
 
 
@@ -216,12 +251,38 @@ def _page_text_rects(page: fitz.Page) -> list[fitz.Rect]:
     return rects
 
 
+def _page_annotation_rects(page: fitz.Page) -> list[fitz.Rect]:
+    rects: list[fitz.Rect] = []
+    for annot in page.annots() or []:
+        rects.append(fitz.Rect(annot.rect))
+
+    page_area = max(_rect_area(page.rect), 1.0)
+    for drawing in page.get_drawings():
+        rect = fitz.Rect(drawing.get("rect") or fitz.Rect())
+        if rect.is_empty:
+            continue
+        if _rect_area(rect) / page_area > 0.35:
+            continue
+        color = drawing.get("fill") or drawing.get("color")
+        if color and _is_colored_markup(color):
+            rects.append(rect)
+    return rects
+
+
+def _is_colored_markup(color: tuple[float, ...]) -> bool:
+    if len(color) < 3:
+        return False
+    r, g, b = color[:3]
+    return max(r, g, b) - min(r, g, b) > 0.18
+
+
 def _placement_score(
     img: Image.Image,
     page: fitz.Page,
     candidate: fitz.Rect,
     scale: float,
     text_blocks: list[fitz.Rect],
+    annotation_blocks: list[fitz.Rect],
 ) -> float:
     rect_area = max(_rect_area(candidate), 1.0)
     overlap_area = 0.0
@@ -230,9 +291,29 @@ def _placement_score(
         if not overlap.is_empty:
             overlap_area += _rect_area(overlap)
     overlap_ratio = min(1.0, overlap_area / rect_area)
+    annotation_overlap_area = 0.0
+    for block in annotation_blocks:
+        overlap = candidate & block
+        if not overlap.is_empty:
+            annotation_overlap_area += _rect_area(overlap)
+    annotation_overlap_ratio = min(1.0, annotation_overlap_area / rect_area)
     density = _ink_density(img, page, candidate, scale)
     off_page_penalty = 10.0 if not page.rect.contains(candidate) else 0.0
-    return off_page_penalty + density + overlap_ratio * 2.0
+    return (
+        off_page_penalty
+        + density
+        + overlap_ratio * 2.0
+        + annotation_overlap_ratio * 4.0
+        + _position_preference_penalty(page, candidate)
+    )
+
+
+def _position_preference_penalty(page: fitz.Page, candidate: fitz.Rect) -> float:
+    if candidate.y0 <= page.rect.height * 0.12:
+        return 0.0
+    if candidate.y0 <= page.rect.height * 0.6:
+        return 0.2
+    return 0.35
 
 
 def _rect_area(rect: fitz.Rect) -> float:
@@ -325,11 +406,18 @@ def _draw_calibrated_summary(
             overlay=layout.extra_highlight_overlay,
         )
 
-    page.draw_rect(fitz.Rect(layout.totals_rect), color=None, fill=layout.fill, overlay=True)
+    page.draw_rect(
+        fitz.Rect(layout.totals_rect),
+        color=layout.totals_border,
+        fill=layout.fill,
+        width=layout.totals_border_width,
+        overlay=True,
+    )
     page.draw_rect(
         fitz.Rect(layout.materials_rect),
-        color=None,
+        color=layout.material_border,
         fill=layout.material_fill or layout.fill,
+        width=layout.material_border_width,
         overlay=True,
     )
 
@@ -385,6 +473,32 @@ def _font_file(style: TextStyle) -> Path | None:
 
 def _font_name(style: TextStyle) -> str:
     return "TelcyteNarrowBold" if style.bold_narrow else "TelcyteRegular"
+
+
+def describe_pdf_fonts() -> dict[str, dict[str, str | bool]]:
+    return {
+        "regular": _font_status(TextStyle(size=10.0, color=MATERIAL_TEXT)),
+        "bold_narrow": _font_status(TextStyle(size=10.0, color=TEXT_RED, bold_narrow=True)),
+    }
+
+
+def _font_status(style: TextStyle) -> dict[str, str | bool]:
+    path = _font_file(style)
+    if not path:
+        return {
+            "available": False,
+            "exact_arial": False,
+            "name": "helv",
+            "source": "built-in PDF fallback",
+        }
+    name = path.name.lower()
+    exact_arial = "arial" in name and "liberation" not in name
+    return {
+        "available": True,
+        "exact_arial": exact_arial,
+        "name": _font_name(style),
+        "source": str(path),
+    }
 
 
 def _calibrated_material_lines(source_name: str, materials: list[str]) -> list[str]:

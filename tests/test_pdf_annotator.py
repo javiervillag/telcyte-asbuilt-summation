@@ -3,7 +3,7 @@ from pathlib import Path
 import fitz
 
 from app.models import SummaryResult
-from app.pdf_annotator import annotate_pdf
+from app.pdf_annotator import choose_box_rect, annotate_pdf
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
@@ -26,3 +26,15 @@ def test_annotate_pdf_adds_totals_text() -> None:
     assert "UG-56 - 170'" in text
     assert "605-3277 48Ct - 750'" in text
     assert "\u00ad" not in text
+
+
+def test_choose_box_rect_avoids_existing_annotation() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_rect_annot(fitz.Rect(14, 18, 170, 70))
+
+    rect = choose_box_rect(page, ["MKR Job Totals", "UG-56 - 170'"])
+
+    doc.close()
+    assert rect.x0 > 300
+    assert rect.y0 < 120

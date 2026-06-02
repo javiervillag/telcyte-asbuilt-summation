@@ -62,3 +62,19 @@ def test_diagnose_extraction_requires_review_for_blank_pdf() -> None:
 
     assert diagnostics.review_required is True
     assert "Manual review is required; the app did not add unsupported totals." in diagnostics.warnings
+
+
+def test_diagnose_extraction_requires_review_when_no_supported_totals() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "General construction note with readable text.")
+    page.insert_text((72, 96), "Another readable note, but no supported billing codes are present.")
+    page.insert_text((72, 120), "Material location callout and station notes only.")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=[])
+
+    assert diagnostics.review_required is True
+    assert "No supported billing-code totals were found in the parsed text." in diagnostics.warnings

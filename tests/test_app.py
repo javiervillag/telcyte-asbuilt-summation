@@ -24,6 +24,13 @@ def test_rejects_non_pdf_upload() -> None:
     assert response.status_code == 400
 
 
+def test_rejects_invalid_pdf_upload() -> None:
+    client = TestClient(app)
+    response = client.post("/api/summarize", files={"file": ("bad.pdf", b"not a pdf", "application/pdf")})
+    assert response.status_code == 400
+    assert "valid PDF" in response.json()["detail"]
+
+
 def test_summarize_endpoint_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_summarize(content, settings, source_name=None):
         return SummaryResult(
