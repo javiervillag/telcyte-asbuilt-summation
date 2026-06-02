@@ -54,7 +54,11 @@ def test_summarize_endpoint_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_summarize(content, settings, source_name=None):
-        raise ManualReviewRequired(["This PDF does not have enough readable text for automatic summation."])
+        raise ManualReviewRequired(
+            ["This PDF does not have enough readable text for automatic summation."],
+            supported_totals=["UG-06 - 13"],
+            unresolved_callouts=["EOL - 48Ct - 66'"],
+        )
 
     monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
     client = TestClient(app)
@@ -63,5 +67,21 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
         files={"file": ("blank.pdf", SAMPLE.read_bytes(), "application/pdf")},
     )
     assert response.status_code == 422
-    assert "manual review" in response.json()["detail"].lower()
-    assert response.json()["warnings"]
+    body = response.json()
+    assert "manual review" in body["detail"].lower()
+    assert body["warnings"]
+    assert body["supported_totals"] == ["UG-06 - 13"]
+    assert body["unresolved_callouts"] == ["EOL - 48Ct - 66'"]
+
+
+def test_sample_manual_review_response_includes_supported_evidence() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": (SAMPLE.name, SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    body = response.json()
+    assert response.status_code == 422
+    assert "UG-56 - 170'" in body["supported_totals"]
+    assert "EOL - 48Ct - 30'" in body["unresolved_callouts"]

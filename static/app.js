@@ -28,14 +28,18 @@ form.addEventListener("submit", async (event) => {
     if (!response.ok) {
       let message = "The PDF could not be processed.";
       let warnings = [];
+      let supportedTotals = [];
+      let unresolvedCallouts = [];
       try {
         const json = await response.json();
         warnings = Array.isArray(json.warnings) ? json.warnings.filter(Boolean) : [];
+        supportedTotals = Array.isArray(json.supported_totals) ? json.supported_totals.filter(Boolean) : [];
+        unresolvedCallouts = Array.isArray(json.unresolved_callouts) ? json.unresolved_callouts.filter(Boolean) : [];
         message = json.detail || message;
       } catch {
         // Keep default message.
       }
-      throw Object.assign(new Error(message), { warnings });
+      throw Object.assign(new Error(message), { warnings, supportedTotals, unresolvedCallouts });
     }
     const warnings = readWarnings(response);
     const blob = await response.blob();
@@ -52,7 +56,11 @@ form.addEventListener("submit", async (event) => {
     URL.revokeObjectURL(url);
     setStatus("PDF ready.", warnings.length ? "warn" : "done", warnings);
   } catch (error) {
-    setStatus(error.message, "error", error.warnings || []);
+    setStatus(error.message, "error", {
+      warnings: error.warnings || [],
+      supportedTotals: error.supportedTotals || [],
+      unresolvedCallouts: error.unresolvedCallouts || [],
+    });
   } finally {
     submit.disabled = false;
   }
@@ -60,21 +68,33 @@ form.addEventListener("submit", async (event) => {
 
 function setStatus(message, kind, details = []) {
   statusBox.textContent = "";
+  const groups = Array.isArray(details) ? { warnings: details } : details;
   if (message) {
     const summary = document.createElement("p");
     summary.textContent = message;
     statusBox.appendChild(summary);
   }
-  if (details.length) {
-    const list = document.createElement("ul");
-    for (const detail of details) {
-      const item = document.createElement("li");
-      item.textContent = detail;
-      list.appendChild(item);
-    }
-    statusBox.appendChild(list);
-  }
+  appendList("Warnings", groups.warnings || []);
+  appendList("Supported totals found", groups.supportedTotals || []);
+  appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
   statusBox.className = kind ? `status ${kind}` : "status";
+}
+
+function appendList(title, items) {
+  if (!items.length) return;
+  const block = document.createElement("div");
+  block.className = "status-group";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  block.appendChild(heading);
+  const list = document.createElement("ul");
+  for (const detail of items) {
+    const item = document.createElement("li");
+    item.textContent = detail;
+    list.appendChild(item);
+  }
+  block.appendChild(list);
+  statusBox.appendChild(block);
 }
 
 function readWarnings(response) {

@@ -62,6 +62,8 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
             content={
                 "detail": "This PDF needs manual review because the parsed evidence did not fully support automatic totals.",
                 "warnings": exc.warnings,
+                "supported_totals": exc.supported_totals,
+                "unresolved_callouts": exc.unresolved_callouts,
             },
         )
     except PlacementReviewRequired as exc:

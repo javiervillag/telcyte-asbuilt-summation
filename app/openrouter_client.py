@@ -24,8 +24,15 @@ class OpenRouterError(RuntimeError):
 
 
 class ManualReviewRequired(OpenRouterError):
-    def __init__(self, warnings: list[str]) -> None:
+    def __init__(
+        self,
+        warnings: list[str],
+        supported_totals: list[str] | None = None,
+        unresolved_callouts: list[str] | None = None,
+    ) -> None:
         self.warnings = warnings
+        self.supported_totals = supported_totals or []
+        self.unresolved_callouts = unresolved_callouts or []
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -158,7 +165,11 @@ async def summarize_with_model(
     parser_totals = derive_code_totals(blocks, code_catalog=code_catalog)
     diagnostics = diagnose_extraction(blocks, parser_totals)
     if diagnostics.review_required:
-        raise ManualReviewRequired(diagnostics.warnings)
+        raise ManualReviewRequired(
+            diagnostics.warnings,
+            supported_totals=parser_totals,
+            unresolved_callouts=diagnostics.unresolved_callouts,
+        )
 
     if not settings.openrouter_api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is not configured.")

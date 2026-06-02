@@ -151,6 +151,16 @@ button:disabled {
   margin-top: 4px;
 }
 
+.status-group {
+  margin-top: 12px;
+}
+
+.status-group strong {
+  display: block;
+  color: inherit;
+  font-size: 14px;
+}
+
 .status.error {
   color: #9f1115;
 }
