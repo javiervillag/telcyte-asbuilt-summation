@@ -60,7 +60,7 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
         return JSONResponse(
             status_code=422,
             content={
-                "detail": "This PDF needs manual review because the readable text did not contain enough supported totals.",
+                "detail": "This PDF needs manual review because the parsed evidence did not fully support automatic totals.",
                 "warnings": exc.warnings,
             },
         )

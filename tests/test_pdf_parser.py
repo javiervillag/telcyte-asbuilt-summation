@@ -81,7 +81,7 @@ def test_derive_code_totals_ignores_eli_codes() -> None:
     content = doc.tobytes()
     doc.close()
 
-    assert derive_code_totals(extract_text_blocks(content)) == ["UG-7 - 4"]
+    assert derive_code_totals(extract_text_blocks(content)) == ["UG-07 - 4"]
 
 
 def test_derive_code_totals_ignores_bore_context_notes() -> None:

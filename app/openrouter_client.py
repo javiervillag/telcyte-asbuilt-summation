@@ -12,7 +12,6 @@ import httpx
 from PIL import Image
 
 from app.config import Settings
-from app.example_calibration import summary_for_source
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
 from app.rate_cards import CodeKey, code_key, load_code_catalog
@@ -27,7 +26,7 @@ class OpenRouterError(RuntimeError):
 class ManualReviewRequired(OpenRouterError):
     def __init__(self, warnings: list[str]) -> None:
         self.warnings = warnings
-        super().__init__("Manual review required. The PDF text layer did not contain enough supported totals.")
+        super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
 @dataclass
@@ -153,16 +152,12 @@ async def summarize_with_model(
     model: str | None = None,
     source_name: str | None = None,
 ) -> SummaryResult:
-    calibrated = summary_for_source(source_name)
-    if calibrated:
-        return calibrated
-
     selected_model = model or settings.openrouter_model
     code_catalog = load_code_catalog(settings.rate_card_codes, settings.rate_card_paths)
     blocks = extract_text_blocks(pdf_bytes)
     parser_totals = derive_code_totals(blocks, code_catalog=code_catalog)
     diagnostics = diagnose_extraction(blocks, parser_totals)
-    if diagnostics.review_required and not settings.include_page_images:
+    if diagnostics.review_required:
         raise ManualReviewRequired(diagnostics.warnings)
 
     if not settings.openrouter_api_key:

@@ -12,9 +12,7 @@ from app.models import SummaryResult
 
 BOX_FILL = (0.78, 1.0, 0.63)
 TEXT_RED = (1.0, 0.0, 0.0)
-TEXT_BLUE = (0.0, 0.0, 1.0)
 MATERIAL_TEXT = (0.0, 0.0, 0.0)
-COAX_MATERIAL_TEXT = (0.016, 0.204, 0.247)
 REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
 BOLD_NARROW_FONT_ENV = "TELCYTE_PDF_BOLD_NARROW_FONT_PATH"
 MAX_SAFE_PLACEMENT_SCORE = 1.35
@@ -46,30 +44,6 @@ class TextStyle:
     rotate: int = 0
 
 
-@dataclass(frozen=True)
-class LineBlock:
-    origin: tuple[float, float]
-    line_gap: float
-    style: TextStyle
-
-
-@dataclass(frozen=True)
-class CalibratedLayout:
-    totals_rect: tuple[float, float, float, float]
-    materials_rect: tuple[float, float, float, float]
-    fill: tuple[float, float, float]
-    material_fill: tuple[float, float, float] | None
-    title: LineBlock
-    totals: LineBlock
-    material_heading: str
-    material_title: LineBlock
-    materials: LineBlock
-    totals_border: tuple[float, float, float] | None = None
-    totals_border_width: float = 1.0
-    material_border: tuple[float, float, float] | None = None
-    material_border_width: float = 1.0
-
-
 class PlacementReviewRequired(RuntimeError):
     def __init__(self) -> None:
         super().__init__("No low-impact location was found for the summary box.")
@@ -82,77 +56,6 @@ class PlacementScore:
     text_overlap_ratio: float
     annotation_overlap_ratio: float
     rect: fitz.Rect
-
-
-CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
-    "RL-248790": CalibratedLayout(
-        totals_rect=(23.9, 1865.6, 888.2, 2596.9),
-        materials_rect=(1082.8, 1738.3, 1528.2, 2104.5),
-        fill=(0.753, 1.0, 0.627),
-        material_fill=None,
-        title=LineBlock((65.5, 2115.8), 45.0, TextStyle(40.0, TEXT_RED, bold_narrow=True, rotate=90)),
-        totals=LineBlock((155.5, 2115.8), 45.0, TextStyle(40.0, TEXT_RED, bold_narrow=True, rotate=90)),
-        material_heading="Materials",
-        material_title=LineBlock((1106.0, 1943.2), 26.0, TextStyle(21.82, COAX_MATERIAL_TEXT, rotate=90)),
-        materials=LineBlock((1157.7, 1943.2), 26.0, TextStyle(21.82, COAX_MATERIAL_TEXT, rotate=90)),
-    ),
-    "BI-596045": CalibratedLayout(
-        totals_rect=(25.0, 25.0, 239.0, 582.5),
-        materials_rect=(23.0, 1331.0, 211.0, 1591.0),
-        fill=(0.75, 1.0, 0.75),
-        material_fill=(0.8, 1.0, 0.8),
-        totals_border=TEXT_RED,
-        totals_border_width=2.0,
-        material_border=(0.0, 0.0, 1.0),
-        material_border_width=1.0,
-        title=LineBlock((28.0, 54.2), 32.1, TextStyle(28.0, TEXT_RED, bold_narrow=True)),
-        totals=LineBlock((28.0, 118.4), 32.1, TextStyle(28.0, TEXT_RED, bold_narrow=True)),
-        material_heading="Material",
-        material_title=LineBlock((24.5, 1350.6), 22.3, TextStyle(20.0, MATERIAL_TEXT)),
-        materials=LineBlock((24.5, 1395.2), 22.3, TextStyle(20.0, MATERIAL_TEXT)),
-    ),
-    "BI-829050": CalibratedLayout(
-        totals_rect=(31.2, 34.5, 111.0, 333.9),
-        materials_rect=(14.0, 493.5, 137.5, 711.0),
-        fill=(0.749, 1.0, 0.749),
-        material_fill=(0.75, 1.0, 0.75),
-        material_border=(0.0, 0.0, 1.0),
-        material_border_width=1.0,
-        title=LineBlock((34.0, 48.2), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
-        totals=LineBlock((34.0, 76.2), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
-        material_heading="Material",
-        material_title=LineBlock((15.5, 505.9), 13.4, TextStyle(12.0, TEXT_BLUE)),
-        materials=LineBlock((15.5, 532.7), 13.4, TextStyle(12.0, TEXT_BLUE)),
-    ),
-    "BI-864045": CalibratedLayout(
-        totals_rect=(1082.6, 23.1, 1184.1, 364.6),
-        materials_rect=(1107.9, 548.2, 1212.5, 721.9),
-        fill=(0.749, 1.0, 0.749),
-        material_fill=(0.8, 1.0, 0.8),
-        material_border=(0.0, 0.0, 1.0),
-        material_border_width=1.0,
-        title=LineBlock((1096.3, 36.8), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
-        totals=LineBlock((1096.3, 64.8), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
-        material_heading="Material",
-        material_title=LineBlock((1109.4, 557.8), 10.0, TextStyle(9.0, TEXT_BLUE)),
-        materials=LineBlock((1109.4, 577.9), 10.0, TextStyle(9.0, TEXT_BLUE)),
-    ),
-    "BI-912047": CalibratedLayout(
-        totals_rect=(16.0, 20.5, 200.0, 429.5),
-        materials_rect=(14.5, 1443.0, 221.5, 1586.0),
-        fill=(0.75, 1.0, 0.75),
-        material_fill=None,
-        totals_border=TEXT_RED,
-        totals_border_width=2.0,
-        material_border=(0.0, 0.0, 1.0),
-        material_border_width=1.0,
-        title=LineBlock((19.0, 45.9), 27.5, TextStyle(24.0, TEXT_RED, bold_narrow=True)),
-        totals=LineBlock((19.0, 100.9), 27.5, TextStyle(24.0, TEXT_RED, bold_narrow=True)),
-        material_heading="Materials",
-        material_title=LineBlock((16.0, 1458.9), 17.9, TextStyle(16.0, MATERIAL_TEXT)),
-        materials=LineBlock((16.0, 1476.8), 17.9, TextStyle(16.0, MATERIAL_TEXT)),
-    ),
-}
 
 
 def _render_page_for_density(page: fitz.Page, scale: float = 0.12) -> Image.Image:
@@ -331,13 +234,6 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
-        layout = _layout_for_source(source_name)
-        if layout:
-            _draw_calibrated_summary(page, summary, layout, source_name or "")
-            buffer = BytesIO()
-            doc.save(buffer, garbage=4, deflate=True)
-            return buffer.getvalue()
-
         rect = choose_box_rect(page, lines)
         width, _, font_size, padding = _box_metrics(page, lines)
         line_height = font_size * 1.16
@@ -386,55 +282,6 @@ def _wrap_line(line: str, max_chars: int) -> list[str]:
     if current:
         rows.append(current)
     return rows
-
-
-def _layout_for_source(source_name: str | None) -> CalibratedLayout | None:
-    if not source_name:
-        return None
-    for key, layout in CALIBRATED_LAYOUTS.items():
-        if key in source_name:
-            return layout
-    return None
-
-
-def _draw_calibrated_summary(
-    page: fitz.Page,
-    summary: SummaryResult,
-    layout: CalibratedLayout,
-    source_name: str,
-) -> None:
-    page.draw_rect(
-        fitz.Rect(layout.totals_rect),
-        color=layout.totals_border,
-        fill=layout.fill,
-        width=layout.totals_border_width,
-        overlay=True,
-    )
-    page.draw_rect(
-        fitz.Rect(layout.materials_rect),
-        color=layout.material_border,
-        fill=layout.material_fill or layout.fill,
-        width=layout.material_border_width,
-        overlay=True,
-    )
-
-    _draw_lines(page, [summary.title.strip() or "MKR Job Totals"], layout.title)
-    _draw_lines(page, summary.job_totals, layout.totals)
-    if summary.materials:
-        _draw_lines(page, [layout.material_heading], layout.material_title)
-        _draw_lines(page, _calibrated_material_lines(source_name, summary.materials), layout.materials)
-
-
-def _draw_lines(page: fitz.Page, lines: list[str], block: LineBlock) -> None:
-    x, y = block.origin
-    for line in lines:
-        if not line.strip():
-            continue
-        _insert_text(page, (x, y), line, block.style)
-        if block.style.rotate in {90, 270}:
-            x += block.line_gap
-        else:
-            y += block.line_gap
 
 
 def _insert_text(page: fitz.Page, point: tuple[float, float], text: str, style: TextStyle) -> None:
@@ -496,9 +343,3 @@ def _font_status(style: TextStyle) -> dict[str, str | bool]:
         "name": _font_name(style),
         "source": str(path),
     }
-
-
-def _calibrated_material_lines(source_name: str, materials: list[str]) -> list[str]:
-    if "BI-596045" in source_name and materials and materials[0] == "605-3277 48Ct - 950'":
-        return ["605-3277 48Ct - ", "950'", *materials[1:]]
-    return materials

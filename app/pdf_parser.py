@@ -24,6 +24,7 @@ class ExtractionDiagnostics:
     annotation_text_count: int
     quantity_line_count: int
     ambiguous_code_line_count: int
+    unresolved_callout_count: int
     code_total_count: int
     material_candidate_count: int
     review_required: bool
@@ -33,6 +34,10 @@ class ExtractionDiagnostics:
 MIN_READABLE_BLOCKS = 5
 MIN_READABLE_CHARS = 120
 MIN_QUANTITY_LINES = 2
+UNRESOLVED_CALLOUT_PATTERN = re.compile(
+    r"\b(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b",
+    re.I,
+)
 
 
 def _clean_text(text: str) -> str:
@@ -158,7 +163,7 @@ def derive_code_totals(
                 key = (normalized_key, unit)
                 if key not in totals:
                     order.append(key)
-                    display[key] = catalog.get(normalized_key, _display_code(raw_code))
+                    display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
                 totals[key] += float(raw_qty)
 
     rows: list[str] = []
@@ -169,10 +174,13 @@ def derive_code_totals(
     return rows
 
 
-def _display_code(raw_code: str) -> str:
+def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
     raw_code = raw_code.strip()
+    prefix, number = normalized_key
+    if prefix != "COMP" and number.isdigit() and int(number) < 10:
+        return f"{prefix}-{int(number):02d}"
     if "-" in raw_code:
-        return raw_code
+        return raw_code.upper() if prefix != "COMP" else raw_code
     match = re.match(r"([A-Za-z]+)(\d+)", raw_code)
     if match:
         return f"{match.group(1)}-{match.group(2)}"
@@ -221,6 +229,7 @@ def diagnose_extraction(
     text_chars = sum(len(block.text) for block in blocks)
     annotation_text_count = sum(1 for block in blocks if block.source == "annotation")
     ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
+    unresolved_callout_count = _unresolved_callout_count(blocks)
     warnings: list[str] = []
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
     has_weak_quantity_context = len(quantity_lines) < MIN_QUANTITY_LINES
@@ -236,12 +245,17 @@ def diagnose_extraction(
         warnings.append("No supported billing-code totals were found in the parsed text.")
     if ambiguous_code_line_count:
         warnings.append("Some billing-code text was readable but not complete enough to total automatically.")
+    if unresolved_callout_count:
+        warnings.append(
+            "Readable construction callouts were found that require rate-card/composite interpretation."
+        )
 
     review_required = (
         has_weak_text_layer
         or has_weak_quantity_context
         or not code_totals
         or bool(ambiguous_code_line_count)
+        or bool(unresolved_callout_count)
     )
     if review_required:
         warnings.append("Manual review is required; the app did not add unsupported totals.")
@@ -252,6 +266,7 @@ def diagnose_extraction(
         annotation_text_count=annotation_text_count,
         quantity_line_count=len(quantity_lines),
         ambiguous_code_line_count=ambiguous_code_line_count,
+        unresolved_callout_count=unresolved_callout_count,
         code_total_count=len(code_totals),
         material_candidate_count=len(material_candidates),
         review_required=review_required,
@@ -268,6 +283,15 @@ def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     for line in quantity_lines:
         if CODE_PATTERN.search(line) and not total_pattern.search(line):
             count += 1
+    return count
+
+
+def _unresolved_callout_count(blocks: list[TextBlock]) -> int:
+    count = 0
+    for block in blocks:
+        for line in block.text.splitlines():
+            if UNRESOLVED_CALLOUT_PATTERN.search(line) and not CODE_PATTERN.search(line):
+                count += 1
     return count
 
 

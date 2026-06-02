@@ -56,7 +56,7 @@ def test_choose_box_rect_requires_review_when_all_candidates_touch_annotations()
         doc.close()
 
 
-def test_calibrated_output_preserves_existing_green_annotations() -> None:
+def test_generic_output_preserves_existing_green_annotations() -> None:
     input_pdf = SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf")
     before_doc = fitz.open(input_pdf)
     try:
@@ -66,7 +66,7 @@ def test_calibrated_output_preserves_existing_green_annotations() -> None:
         before_doc.close()
 
     summary = SummaryResult(
-        model="example-calibration",
+        model="parser-test",
         confidence=1.0,
         job_totals=["UG-83 - 140'"],
         materials=[],
@@ -84,7 +84,7 @@ def test_calibrated_output_preserves_existing_green_annotations() -> None:
         doc.close()
 
     assert after_annotations == before_annotations
-    assert after_green_fills - before_green_fills == 2
+    assert after_green_fills - before_green_fills == 1
 
 
 def _annotation_snapshot(page: fitz.Page) -> list[tuple[str, tuple[float, float, float, float], str]]:
