@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import fitz
 
-from app.rate_cards import code_key
+from app.rate_cards import CODE_PATTERN, CodeKey, code_key
 
 
 @dataclass(frozen=True)
@@ -14,13 +14,16 @@ class TextBlock:
     page: int
     bbox: tuple[float, float, float, float]
     text: str
+    source: str = "page"
 
 
 @dataclass(frozen=True)
 class ExtractionDiagnostics:
     block_count: int
     text_chars: int
+    annotation_text_count: int
     quantity_line_count: int
+    ambiguous_code_line_count: int
     code_total_count: int
     material_candidate_count: int
     review_required: bool
@@ -51,28 +54,62 @@ def _is_noise(text: str) -> bool:
 def extract_text_blocks(pdf_bytes: bytes, max_pages: int = 3) -> list[TextBlock]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     blocks: list[TextBlock] = []
+    seen: set[tuple[int, tuple[float, float, float, float], str]] = set()
     try:
         for page_index, page in enumerate(doc[:max_pages], start=1):
+            annotation_texts: set[str] = set()
+            annotation_lines: set[str] = set()
+            for annot in page.annots() or []:
+                cleaned = _clean_text(str((annot.info or {}).get("content") or "").replace("\r", "\n"))
+                if _is_noise(cleaned):
+                    continue
+                rect = annot.rect
+                bbox = (round(rect.x0, 1), round(rect.y0, 1), round(rect.x1, 1), round(rect.y1, 1))
+                key = (page_index, bbox, cleaned)
+                if key in seen:
+                    continue
+                seen.add(key)
+                annotation_texts.add(cleaned)
+                annotation_lines.update(line for line in cleaned.splitlines() if line)
+                blocks.append(TextBlock(page=page_index, bbox=bbox, text=cleaned, source="annotation"))
             for raw in page.get_text("blocks", sort=True):
                 x0, y0, x1, y1, text, *_ = raw
                 cleaned = _clean_text(text)
                 if _is_noise(cleaned):
                     continue
+                if cleaned in annotation_texts:
+                    continue
+                cleaned = _remove_duplicate_annotation_lines(cleaned, annotation_lines)
+                if _is_noise(cleaned):
+                    continue
+                bbox = (round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1))
+                key = (page_index, bbox, cleaned)
+                if key in seen:
+                    continue
+                seen.add(key)
                 blocks.append(
                     TextBlock(
                         page=page_index,
-                        bbox=(round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1)),
+                        bbox=bbox,
                         text=cleaned,
                     )
                 )
     finally:
         doc.close()
+    blocks.sort(key=lambda block: (block.page, block.bbox[1], block.bbox[0], block.source))
     return blocks
+
+
+def _remove_duplicate_annotation_lines(text: str, annotation_lines: set[str]) -> str:
+    if not annotation_lines:
+        return text
+    lines = [line for line in text.splitlines() if line.strip() not in annotation_lines]
+    return _clean_text("\n".join(lines))
 
 
 def extract_likely_quantity_lines(blocks: list[TextBlock]) -> list[str]:
     patterns = [
-        re.compile(r"\b(?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b"),
+        CODE_PATTERN,
         re.compile(r"\b\d{3}-\d{4}\b"),
         re.compile(r"\b\d+(?:\.\d+)?\s*(?:'|sqft|Ct|ct|x)\b"),
         re.compile(r"\b(?:PVC|Vault|Ped|Rod|Wire|Mule|Tape|Lube|Seal|Conduit|Duct|Panel|D-Case)\b", re.I),
@@ -96,16 +133,16 @@ def _format_number(value: float) -> str:
 
 def derive_code_totals(
     blocks: list[TextBlock],
-    code_catalog: dict[tuple[str, int], str] | None = None,
+    code_catalog: dict[CodeKey, str] | None = None,
 ) -> list[str]:
     pattern = re.compile(
         r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
         re.I,
     )
     catalog = code_catalog or {}
-    totals: dict[tuple[tuple[str, int], str], float] = defaultdict(float)
-    display: dict[tuple[tuple[str, int], str], str] = {}
-    order: list[tuple[tuple[str, int], str]] = []
+    totals: dict[tuple[CodeKey, str], float] = defaultdict(float)
+    display: dict[tuple[CodeKey, str], str] = {}
+    order: list[tuple[CodeKey, str]] = []
     for block in blocks:
         for line in block.text.splitlines():
             for match in pattern.finditer(line):
@@ -182,6 +219,8 @@ def diagnose_extraction(
         material_candidates if material_candidates is not None else extract_material_candidates(blocks)
     )
     text_chars = sum(len(block.text) for block in blocks)
+    annotation_text_count = sum(1 for block in blocks if block.source == "annotation")
+    ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
     warnings: list[str] = []
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
     has_weak_quantity_context = len(quantity_lines) < MIN_QUANTITY_LINES
@@ -190,18 +229,29 @@ def diagnose_extraction(
         warnings.append("This PDF does not have enough readable text for automatic summation.")
     elif has_weak_quantity_context:
         warnings.append("The PDF text layer has very few readable quantity lines.")
+    if annotation_text_count == 0 and len(blocks) < 12:
+        warnings.append("No readable PDF text-box annotations were found.")
 
     if not code_totals:
         warnings.append("No supported billing-code totals were found in the parsed text.")
+    if ambiguous_code_line_count:
+        warnings.append("Some billing-code text was readable but not complete enough to total automatically.")
 
-    review_required = has_weak_text_layer or has_weak_quantity_context or not code_totals
+    review_required = (
+        has_weak_text_layer
+        or has_weak_quantity_context
+        or not code_totals
+        or bool(ambiguous_code_line_count)
+    )
     if review_required:
         warnings.append("Manual review is required; the app did not add unsupported totals.")
 
     return ExtractionDiagnostics(
         block_count=len(blocks),
         text_chars=text_chars,
+        annotation_text_count=annotation_text_count,
         quantity_line_count=len(quantity_lines),
+        ambiguous_code_line_count=ambiguous_code_line_count,
         code_total_count=len(code_totals),
         material_candidate_count=len(material_candidates),
         review_required=review_required,
@@ -209,10 +259,22 @@ def diagnose_extraction(
     )
 
 
+def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
+    total_pattern = re.compile(
+        r"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\b",
+        re.I,
+    )
+    count = 0
+    for line in quantity_lines:
+        if CODE_PATTERN.search(line) and not total_pattern.search(line):
+            count += 1
+    return count
+
+
 def build_pdf_context(
     pdf_bytes: bytes,
     max_chars: int = 26000,
-    code_catalog: dict[tuple[str, int], str] | None = None,
+    code_catalog: dict[CodeKey, str] | None = None,
 ) -> str:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page_summaries: list[str] = []

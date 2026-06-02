@@ -39,8 +39,49 @@ def test_derive_code_totals_sums_repeated_labels() -> None:
 
 def test_derive_code_totals_uses_rate_card_display_and_filter() -> None:
     blocks = extract_text_blocks(SAMPLE.read_bytes())
-    totals = derive_code_totals(blocks, code_catalog={("UG", 56): "UG-56", ("UG", 7): "UG-07"})
+    totals = derive_code_totals(blocks, code_catalog={("UG", "56"): "UG-56", ("UG", "7"): "UG-07"})
     assert totals == ["UG-56 - 170'", "UG-07 - 1"]
+
+
+def test_derive_code_totals_reads_pdf_annotation_text_boxes() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(
+        fitz.Rect(72, 72, 220, 116),
+        "UG-7 - 10'\nCOMP-9 - 2",
+        fontsize=10,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    assert any(block.source == "annotation" for block in blocks)
+    assert derive_code_totals(blocks, code_catalog={("UG", "7"): "UG-07", ("COMP", "9"): "Comp-9"}) == [
+        "UG-07 - 10'",
+        "Comp-9 - 2",
+    ]
+
+
+def test_derive_code_totals_keeps_composite_zero_padded_variants_separate() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Comp-9 - 2\nComp-09 - 3")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["Comp-9 - 2", "Comp-09 - 3"]
+
+
+def test_derive_code_totals_ignores_eli_codes() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "ELI-7 - 99\nUG-7 - 4")
+    content = doc.tobytes()
+    doc.close()
+
+    assert derive_code_totals(extract_text_blocks(content)) == ["UG-7 - 4"]
 
 
 def test_derive_code_totals_ignores_bore_context_notes() -> None:
@@ -78,3 +119,23 @@ def test_diagnose_extraction_requires_review_when_no_supported_totals() -> None:
 
     assert diagnostics.review_required is True
     assert "No supported billing-code totals were found in the parsed text." in diagnostics.warnings
+
+
+def test_diagnose_extraction_requires_review_for_partial_code_text() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-56")
+    page.insert_text((72, 96), "Readable but incomplete billing-code text.")
+    content = doc.tobytes()
+    doc.close()
+
+    parsed_blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(
+        parsed_blocks,
+        code_totals=[],
+        quantity_lines=extract_likely_quantity_lines(parsed_blocks),
+    )
+
+    assert diagnostics.review_required is True
+    assert diagnostics.ambiguous_code_line_count == 1
+    assert "Some billing-code text was readable but not complete enough to total automatically." in diagnostics.warnings

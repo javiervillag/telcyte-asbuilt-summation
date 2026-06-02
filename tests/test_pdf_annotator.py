@@ -3,7 +3,7 @@ from pathlib import Path
 import fitz
 
 from app.models import SummaryResult
-from app.pdf_annotator import choose_box_rect, annotate_pdf
+from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, choose_box_rect
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
@@ -38,6 +38,22 @@ def test_choose_box_rect_avoids_existing_annotation() -> None:
     doc.close()
     assert rect.x0 > 300
     assert rect.y0 < 120
+
+
+def test_choose_box_rect_requires_review_when_all_candidates_touch_annotations() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_rect_annot(fitz.Rect(0, 0, 612, 792))
+
+    try:
+        try:
+            choose_box_rect(page, ["MKR Job Totals", "UG-56 - 170'"])
+        except PlacementReviewRequired:
+            pass
+        else:
+            raise AssertionError("Expected placement to require manual review")
+    finally:
+        doc.close()
 
 
 def test_calibrated_output_moves_known_green_annotations() -> None:

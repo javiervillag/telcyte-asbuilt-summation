@@ -7,8 +7,7 @@ const submit = document.querySelector("#submit");
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   fileName.textContent = file ? file.name : "No file selected";
-  statusBox.textContent = "";
-  statusBox.className = "status";
+  setStatus("", "");
 });
 
 form.addEventListener("submit", async (event) => {
@@ -28,16 +27,15 @@ form.addEventListener("submit", async (event) => {
     const response = await fetch("/api/summarize", { method: "POST", body: data });
     if (!response.ok) {
       let message = "The PDF could not be processed.";
+      let warnings = [];
       try {
         const json = await response.json();
-        const details = Array.isArray(json.warnings) && json.warnings.length
-          ? ` ${json.warnings.join(" ")}`
-          : "";
-        message = `${json.detail || message}${details}`;
+        warnings = Array.isArray(json.warnings) ? json.warnings.filter(Boolean) : [];
+        message = json.detail || message;
       } catch {
         // Keep default message.
       }
-      throw new Error(message);
+      throw Object.assign(new Error(message), { warnings });
     }
     const warnings = readWarnings(response);
     const blob = await response.blob();
@@ -52,16 +50,30 @@ form.addEventListener("submit", async (event) => {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    setStatus(warnings.length ? `PDF ready. Review note: ${warnings.join(" ")}` : "PDF ready.", warnings.length ? "warn" : "done");
+    setStatus("PDF ready.", warnings.length ? "warn" : "done", warnings);
   } catch (error) {
-    setStatus(error.message, "error");
+    setStatus(error.message, "error", error.warnings || []);
   } finally {
     submit.disabled = false;
   }
 });
 
-function setStatus(message, kind) {
-  statusBox.textContent = message;
+function setStatus(message, kind, details = []) {
+  statusBox.textContent = "";
+  if (message) {
+    const summary = document.createElement("p");
+    summary.textContent = message;
+    statusBox.appendChild(summary);
+  }
+  if (details.length) {
+    const list = document.createElement("ul");
+    for (const detail of details) {
+      const item = document.createElement("li");
+      item.textContent = detail;
+      list.appendChild(item);
+    }
+    statusBox.appendChild(list);
+  }
   statusBox.className = kind ? `status ${kind}` : "status";
 }
 

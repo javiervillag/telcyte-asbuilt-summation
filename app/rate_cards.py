@@ -5,18 +5,24 @@ import re
 from pathlib import Path
 
 CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})\b", re.I)
+ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
+CodeKey = tuple[str, str]
 
 
-def code_key(code: str) -> tuple[str, int] | None:
+def code_key(code: str) -> CodeKey | None:
     match = CODE_PATTERN.search(code)
     if not match:
         return None
-    return (match.group(1).upper(), int(match.group(2)))
+    prefix = match.group(1).upper()
+    number = match.group(2)
+    if prefix in ZERO_PAD_EQUIVALENT_PREFIXES:
+        number = str(int(number))
+    return (prefix, number)
 
 
 def extract_codes_from_text(text: str) -> list[str]:
     codes: list[str] = []
-    seen: set[tuple[str, int]] = set()
+    seen: set[CodeKey] = set()
     for match in CODE_PATTERN.finditer(text):
         raw = match.group(0)
         key = code_key(raw)
@@ -26,8 +32,8 @@ def extract_codes_from_text(text: str) -> list[str]:
     return codes
 
 
-def load_code_catalog(raw_codes: str = "", paths: str = "") -> dict[tuple[str, int], str]:
-    catalog: dict[tuple[str, int], str] = {}
+def load_code_catalog(raw_codes: str = "", paths: str = "") -> dict[CodeKey, str]:
+    catalog: dict[CodeKey, str] = {}
     for code in extract_codes_from_text(raw_codes):
         key = code_key(code)
         if key:

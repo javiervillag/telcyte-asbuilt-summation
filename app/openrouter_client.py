@@ -15,7 +15,7 @@ from app.config import Settings
 from app.example_calibration import summary_for_source
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
-from app.rate_cards import code_key, load_code_catalog
+from app.rate_cards import CodeKey, code_key, load_code_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def _normalize_summary(data: dict, model: str) -> SummaryResult:
     )
 
 
-def _line_code_key(line: str) -> tuple[str, int] | None:
+def _line_code_key(line: str) -> CodeKey | None:
     code_part = line.split("-", 2)
     if len(code_part) >= 2:
         return code_key("-".join(code_part[:2]))

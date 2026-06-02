@@ -17,6 +17,8 @@ COAX_MATERIAL_TEXT = (0.016, 0.204, 0.247)
 REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
 BOLD_NARROW_FONT_ENV = "TELCYTE_PDF_BOLD_NARROW_FONT_PATH"
 MAX_SAFE_PLACEMENT_SCORE = 1.35
+MAX_TEXT_OVERLAP_RATIO = 0.18
+MAX_ANNOTATION_OVERLAP_RATIO = 0.01
 
 
 REGULAR_FONT_CANDIDATES = [
@@ -77,6 +79,15 @@ class CalibratedLayout:
 class PlacementReviewRequired(RuntimeError):
     def __init__(self) -> None:
         super().__init__("No low-impact location was found for the summary box.")
+
+
+@dataclass(frozen=True)
+class PlacementScore:
+    total: float
+    density: float
+    text_overlap_ratio: float
+    annotation_overlap_ratio: float
+    rect: fitz.Rect
 
 
 CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
@@ -225,23 +236,25 @@ def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
     text_blocks = _page_text_rects(page)
     annotation_blocks = _page_annotation_rects(page)
     scored = [
-        (
-            _placement_score(
-                density_image,
-                page,
-                candidate,
-                scale,
-                text_blocks,
-                annotation_blocks,
-            ),
+        _placement_score(
+            density_image,
+            page,
             candidate,
+            scale,
+            text_blocks,
+            annotation_blocks,
         )
         for candidate in candidates
     ]
-    scored.sort(key=lambda row: row[0])
-    if scored[0][0] > MAX_SAFE_PLACEMENT_SCORE:
+    scored.sort(key=lambda row: row.total)
+    best = scored[0]
+    if (
+        best.total > MAX_SAFE_PLACEMENT_SCORE
+        or best.text_overlap_ratio > MAX_TEXT_OVERLAP_RATIO
+        or best.annotation_overlap_ratio > MAX_ANNOTATION_OVERLAP_RATIO
+    ):
         raise PlacementReviewRequired()
-    return scored[0][1]
+    return best.rect
 
 
 def _candidate_rects(
@@ -305,7 +318,7 @@ def _placement_score(
     scale: float,
     text_blocks: list[fitz.Rect],
     annotation_blocks: list[fitz.Rect],
-) -> float:
+) -> PlacementScore:
     rect_area = max(_rect_area(candidate), 1.0)
     overlap_area = 0.0
     for block in text_blocks:
@@ -321,12 +334,19 @@ def _placement_score(
     annotation_overlap_ratio = min(1.0, annotation_overlap_area / rect_area)
     density = _ink_density(img, page, candidate, scale)
     off_page_penalty = 10.0 if not page.rect.contains(candidate) else 0.0
-    return (
+    total = (
         off_page_penalty
         + density
         + overlap_ratio * 2.0
         + annotation_overlap_ratio * 4.0
         + _position_preference_penalty(page, candidate)
+    )
+    return PlacementScore(
+        total=total,
+        density=density,
+        text_overlap_ratio=overlap_ratio,
+        annotation_overlap_ratio=annotation_overlap_ratio,
+        rect=candidate,
     )
 
 
