@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telcyte As-Built Summation</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <div class="brand">
+          <div class="mark">TELCYTE</div>
+          <div>
+            <h1>As-Built Summation</h1>
+            <p>Upload one PDF as-built and receive the annotated PDF.</p>
+          </div>
+        </div>
+
+        <form id="upload-form" class="dropzone">
+          <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
+          <label for="pdf-file">
+            <span id="file-label">Choose PDF</span>
+            <strong id="file-name">No file selected</strong>
+          </label>
+          <button id="submit" type="submit">Generate PDF</button>
+        </form>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
