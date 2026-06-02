@@ -67,6 +67,10 @@ class CalibratedLayout:
     totals_border_width: float = 1.0
     material_border: tuple[float, float, float] | None = None
     material_border_width: float = 1.0
+    annotation_moves: tuple[
+        tuple[tuple[float, float, float, float], tuple[float, float, float, float]],
+        ...
+    ] = ()
 
 
 class PlacementReviewRequired(RuntimeError):
@@ -93,6 +97,13 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
             (313.3, 1577.7, 421.3, 1720.0),
         ),
         extra_highlight_overlay=True,
+        annotation_moves=(
+            ((193.2, 1534.5, 254.4, 1682.1), (189.9, 1527.9, 251.0, 1675.4)),
+            ((670.5, 1393.5, 731.7, 1502.7), (677.2, 1393.5, 738.3, 1502.7)),
+            ((614.4, 1578.1, 650.6, 1679.1), (662.8, 1574.8, 699.0, 1675.8)),
+            ((609.5, 1293.5, 695.5, 1394.5), (626.2, 1293.0, 679.2, 1395.0)),
+            ((316.8, 1576.4, 427.8, 1721.8), (311.8, 1576.2, 422.8, 1721.5)),
+        ),
     ),
     "BI-596045": CalibratedLayout(
         totals_rect=(25.0, 25.0, 239.0, 582.5),
@@ -141,6 +152,12 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
             (562.8, 514.8, 662.4, 572.8),
         ),
         extra_highlight_overlay=True,
+        annotation_moves=(
+            ((185.3, 352.3, 305.8, 498.2), (183.8, 352.4, 307.3, 501.3)),
+            ((1004.2, 375.1, 1071.7, 396.8), (1002.8, 374.4, 1073.2, 399.0)),
+            ((384.8, 434.8, 490.8, 470.0), (412.7, 437.7, 462.9, 467.1)),
+            ((562.8, 518.0, 662.4, 576.0), (561.3, 513.3, 663.9, 574.3)),
+        ),
     ),
     "BI-912047": CalibratedLayout(
         totals_rect=(16.0, 20.5, 200.0, 429.5),
@@ -399,6 +416,8 @@ def _draw_calibrated_summary(
     layout: CalibratedLayout,
     source_name: str,
 ) -> None:
+    _move_calibrated_annotations(page, layout)
+
     extra_fill = layout.material_fill or layout.fill
     for rect in layout.extra_highlights:
         page.draw_rect(
@@ -428,6 +447,30 @@ def _draw_calibrated_summary(
     if summary.materials:
         _draw_lines(page, [layout.material_heading], layout.material_title)
         _draw_lines(page, _calibrated_material_lines(source_name, summary.materials), layout.materials)
+
+
+def _move_calibrated_annotations(page: fitz.Page, layout: CalibratedLayout) -> None:
+    if not layout.annotation_moves:
+        return
+    for annot in list(page.annots() or []):
+        annot_rect = _rounded_rect_tuple(annot.rect)
+        for source, target in layout.annotation_moves:
+            if _rect_tuple_close(annot_rect, source):
+                annot.set_rect(fitz.Rect(target))
+                annot.update()
+                break
+
+
+def _rounded_rect_tuple(rect: fitz.Rect) -> tuple[float, float, float, float]:
+    return tuple(round(v, 1) for v in rect)
+
+
+def _rect_tuple_close(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+    tolerance: float = 3.0,
+) -> bool:
+    return all(abs(a - b) <= tolerance for a, b in zip(first, second))
 
 
 def _draw_lines(page: fitz.Page, lines: list[str], block: LineBlock) -> None:

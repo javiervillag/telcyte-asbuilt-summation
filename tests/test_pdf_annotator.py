@@ -38,3 +38,25 @@ def test_choose_box_rect_avoids_existing_annotation() -> None:
     doc.close()
     assert rect.x0 > 300
     assert rect.y0 < 120
+
+
+def test_calibrated_output_moves_known_green_annotations() -> None:
+    summary = SummaryResult(
+        model="example-calibration",
+        confidence=1.0,
+        job_totals=["UG-83 - 140'"],
+        materials=[],
+    )
+    output = annotate_pdf(
+        SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf").read_bytes(),
+        summary,
+        source_name="COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf",
+    )
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        rects = [tuple(round(v, 1) for v in annot.rect) for annot in doc[0].annots() or []]
+    finally:
+        doc.close()
+
+    assert any(rect[1:] == (1574.8, 699.0, 1675.8) for rect in rects)
+    assert (614.4, 1578.1, 650.6, 1679.1) not in rects
