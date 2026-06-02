@@ -28,7 +28,8 @@ def test_sample_id_does_not_return_hardcoded_summary_without_evidence() -> None:
     assert totals
     assert diagnostics.review_required is True
     assert diagnostics.unresolved_callout_count > 0
-    assert "Readable construction callouts were found" in " ".join(diagnostics.warnings)
+    assert "Readable construction callouts require rate-card/composite interpretation" in " ".join(diagnostics.warnings)
+    assert any("EOL" in callout for callout in diagnostics.unresolved_callouts)
 
 
 @pytest.mark.parametrize("sample_name", SAMPLE_NAMES)
@@ -61,7 +62,7 @@ def test_known_sample_requires_manual_review_without_page_image_verification() -
             )
         )
 
-    assert "Readable construction callouts were found" in " ".join(exc.value.warnings)
+    assert "Readable construction callouts require rate-card/composite interpretation" in " ".join(exc.value.warnings)
 
 
 def test_known_sample_requires_manual_review_even_with_page_images() -> None:
@@ -79,4 +80,4 @@ def test_known_sample_requires_manual_review_even_with_page_images() -> None:
             )
         )
 
-    assert "Readable construction callouts were found" in " ".join(exc.value.warnings)
+    assert "Readable construction callouts require rate-card/composite interpretation" in " ".join(exc.value.warnings)

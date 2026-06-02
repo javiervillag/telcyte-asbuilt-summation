@@ -25,6 +25,7 @@ class ExtractionDiagnostics:
     quantity_line_count: int
     ambiguous_code_line_count: int
     unresolved_callout_count: int
+    unresolved_callouts: list[str]
     code_total_count: int
     material_candidate_count: int
     review_required: bool
@@ -140,8 +141,12 @@ def derive_code_totals(
     blocks: list[TextBlock],
     code_catalog: dict[CodeKey, str] | None = None,
 ) -> list[str]:
-    pattern = re.compile(
+    direct_pattern = re.compile(
         r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
+        re.I,
+    )
+    quantity_first_pattern = re.compile(
+        r"\b([0-9]+(?:\.[0-9]+)?)\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\b",
         re.I,
     )
     catalog = code_catalog or {}
@@ -150,7 +155,7 @@ def derive_code_totals(
     order: list[tuple[CodeKey, str]] = []
     for block in blocks:
         for line in block.text.splitlines():
-            for match in pattern.finditer(line):
+            for match in direct_pattern.finditer(line):
                 if _is_non_billing_context(line, match.start()):
                     continue
                 raw_code, raw_qty, raw_unit = match.groups()
@@ -161,6 +166,26 @@ def derive_code_totals(
                     continue
                 unit = (raw_unit or "").strip()
                 key = (normalized_key, unit)
+                if key not in totals:
+                    order.append(key)
+                    display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
+                totals[key] += float(raw_qty)
+
+    direct_keys = set(totals)
+    for block in blocks:
+        for line in block.text.splitlines():
+            if direct_pattern.search(line):
+                continue
+            for match in quantity_first_pattern.finditer(line):
+                raw_qty, raw_code = match.groups()
+                normalized_key = code_key(raw_code)
+                if not normalized_key:
+                    continue
+                if catalog and normalized_key not in catalog:
+                    continue
+                key = (normalized_key, "")
+                if key in direct_keys:
+                    continue
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
@@ -229,7 +254,8 @@ def diagnose_extraction(
     text_chars = sum(len(block.text) for block in blocks)
     annotation_text_count = sum(1 for block in blocks if block.source == "annotation")
     ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
-    unresolved_callout_count = _unresolved_callout_count(blocks)
+    unresolved_callouts = _unresolved_callout_lines(blocks)
+    unresolved_callout_count = len(unresolved_callouts)
     warnings: list[str] = []
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
     has_weak_quantity_context = len(quantity_lines) < MIN_QUANTITY_LINES
@@ -246,8 +272,11 @@ def diagnose_extraction(
     if ambiguous_code_line_count:
         warnings.append("Some billing-code text was readable but not complete enough to total automatically.")
     if unresolved_callout_count:
+        preview = "; ".join(unresolved_callouts[:6])
+        if len(unresolved_callouts) > 6:
+            preview += f"; plus {len(unresolved_callouts) - 6} more"
         warnings.append(
-            "Readable construction callouts were found that require rate-card/composite interpretation."
+            f"Readable construction callouts require rate-card/composite interpretation: {preview}."
         )
 
     review_required = (
@@ -267,6 +296,7 @@ def diagnose_extraction(
         quantity_line_count=len(quantity_lines),
         ambiguous_code_line_count=ambiguous_code_line_count,
         unresolved_callout_count=unresolved_callout_count,
+        unresolved_callouts=unresolved_callouts,
         code_total_count=len(code_totals),
         material_candidate_count=len(material_candidates),
         review_required=review_required,
@@ -279,20 +309,28 @@ def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
         r"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\b",
         re.I,
     )
+    quantity_first_pattern = re.compile(
+        r"\b[0-9]+(?:\.[0-9]+)?\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b",
+        re.I,
+    )
     count = 0
     for line in quantity_lines:
-        if CODE_PATTERN.search(line) and not total_pattern.search(line):
+        if CODE_PATTERN.search(line) and not total_pattern.search(line) and not quantity_first_pattern.search(line):
             count += 1
     return count
 
 
-def _unresolved_callout_count(blocks: list[TextBlock]) -> int:
-    count = 0
+def _unresolved_callout_lines(blocks: list[TextBlock]) -> list[str]:
+    seen: set[str] = set()
+    callouts: list[str] = []
     for block in blocks:
         for line in block.text.splitlines():
-            if UNRESOLVED_CALLOUT_PATTERN.search(line) and not CODE_PATTERN.search(line):
-                count += 1
-    return count
+            cleaned = _clean_text(line)
+            if UNRESOLVED_CALLOUT_PATTERN.search(cleaned) and not CODE_PATTERN.search(cleaned):
+                if cleaned not in seen:
+                    seen.add(cleaned)
+                    callouts.append(cleaned)
+    return callouts
 
 
 def build_pdf_context(
