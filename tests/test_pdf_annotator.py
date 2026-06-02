@@ -56,7 +56,15 @@ def test_choose_box_rect_requires_review_when_all_candidates_touch_annotations()
         doc.close()
 
 
-def test_calibrated_output_moves_known_green_annotations() -> None:
+def test_calibrated_output_preserves_existing_green_annotations() -> None:
+    input_pdf = SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf")
+    before_doc = fitz.open(input_pdf)
+    try:
+        before_annotations = _annotation_snapshot(before_doc[0])
+        before_green_fills = _green_fill_count(before_doc[0])
+    finally:
+        before_doc.close()
+
     summary = SummaryResult(
         model="example-calibration",
         confidence=1.0,
@@ -64,15 +72,41 @@ def test_calibrated_output_moves_known_green_annotations() -> None:
         materials=[],
     )
     output = annotate_pdf(
-        SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf").read_bytes(),
+        input_pdf.read_bytes(),
         summary,
         source_name="COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf",
     )
     doc = fitz.open(stream=output, filetype="pdf")
     try:
-        rects = [tuple(round(v, 1) for v in annot.rect) for annot in doc[0].annots() or []]
+        after_annotations = _annotation_snapshot(doc[0])
+        after_green_fills = _green_fill_count(doc[0])
     finally:
         doc.close()
 
-    assert any(rect[1:] == (1574.8, 699.0, 1675.8) for rect in rects)
-    assert (614.4, 1578.1, 650.6, 1679.1) not in rects
+    assert after_annotations == before_annotations
+    assert after_green_fills - before_green_fills == 2
+
+
+def _annotation_snapshot(page: fitz.Page) -> list[tuple[str, tuple[float, float, float, float], str]]:
+    rows = []
+    for annot in page.annots() or []:
+        rows.append(
+            (
+                annot.type[1],
+                tuple(round(v, 1) for v in annot.rect),
+                str((annot.info or {}).get("content") or "").replace("\r", "\n"),
+            )
+        )
+    return rows
+
+
+def _green_fill_count(page: fitz.Page) -> int:
+    count = 0
+    for drawing in page.get_drawings():
+        fill = drawing.get("fill")
+        if not fill or len(fill) < 3:
+            continue
+        r, g, b = fill[:3]
+        if g > 0.7 and r > 0.6 and b < 0.8:
+            count += 1
+    return count

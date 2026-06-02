@@ -12,6 +12,7 @@ from app.models import SummaryResult
 
 BOX_FILL = (0.78, 1.0, 0.63)
 TEXT_RED = (1.0, 0.0, 0.0)
+TEXT_BLUE = (0.0, 0.0, 1.0)
 MATERIAL_TEXT = (0.0, 0.0, 0.0)
 COAX_MATERIAL_TEXT = (0.016, 0.204, 0.247)
 REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
@@ -63,17 +64,10 @@ class CalibratedLayout:
     material_heading: str
     material_title: LineBlock
     materials: LineBlock
-    extra_highlights: tuple[tuple[float, float, float, float], ...] = ()
-    extra_highlight_overlay: bool = False
     totals_border: tuple[float, float, float] | None = None
     totals_border_width: float = 1.0
     material_border: tuple[float, float, float] | None = None
     material_border_width: float = 1.0
-    annotation_moves: tuple[
-        tuple[tuple[float, float, float, float], tuple[float, float, float, float]],
-        ...
-    ] = ()
-    recreate_moved_annotations: bool = False
 
 
 class PlacementReviewRequired(RuntimeError):
@@ -101,22 +95,6 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         material_heading="Materials",
         material_title=LineBlock((1106.0, 1943.2), 26.0, TextStyle(21.82, COAX_MATERIAL_TEXT, rotate=90)),
         materials=LineBlock((1157.7, 1943.2), 26.0, TextStyle(21.82, COAX_MATERIAL_TEXT, rotate=90)),
-        extra_highlights=(
-            (191.4, 1529.4, 249.5, 1673.9),
-            (678.7, 1395.0, 736.8, 1501.2),
-            (664.3, 1576.3, 697.5, 1674.3),
-            (627.7, 1294.5, 677.7, 1393.5),
-            (313.3, 1577.7, 421.3, 1720.0),
-        ),
-        extra_highlight_overlay=True,
-        annotation_moves=(
-            ((193.2, 1534.5, 254.4, 1682.1), (189.9, 1527.9, 251.0, 1675.4)),
-            ((670.5, 1393.5, 731.7, 1502.7), (677.2, 1393.5, 738.3, 1502.7)),
-            ((614.4, 1578.1, 650.6, 1679.1), (662.8, 1574.8, 699.0, 1675.8)),
-            ((609.5, 1293.5, 695.5, 1394.5), (626.2, 1293.0, 679.2, 1395.0)),
-            ((316.8, 1576.4, 427.8, 1721.8), (311.8, 1576.2, 422.8, 1721.5)),
-        ),
-        recreate_moved_annotations=True,
     ),
     "BI-596045": CalibratedLayout(
         totals_rect=(25.0, 25.0, 239.0, 582.5),
@@ -143,8 +121,8 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         title=LineBlock((34.0, 48.2), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         totals=LineBlock((34.0, 76.2), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         material_heading="Material",
-        material_title=LineBlock((15.5, 505.9), 13.4, TextStyle(12.0, MATERIAL_TEXT)),
-        materials=LineBlock((15.5, 532.7), 13.4, TextStyle(12.0, MATERIAL_TEXT)),
+        material_title=LineBlock((15.5, 505.9), 13.4, TextStyle(12.0, TEXT_BLUE)),
+        materials=LineBlock((15.5, 532.7), 13.4, TextStyle(12.0, TEXT_BLUE)),
     ),
     "BI-864045": CalibratedLayout(
         totals_rect=(1082.6, 23.1, 1184.1, 364.6),
@@ -156,22 +134,8 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         title=LineBlock((1096.3, 36.8), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         totals=LineBlock((1096.3, 64.8), 14.0, TextStyle(12.11, TEXT_RED, bold_narrow=True)),
         material_heading="Material",
-        material_title=LineBlock((1109.4, 557.8), 10.0, TextStyle(9.0, MATERIAL_TEXT)),
-        materials=LineBlock((1109.4, 577.9), 10.0, TextStyle(9.0, MATERIAL_TEXT)),
-        extra_highlights=(
-            (185.3, 353.9, 305.8, 499.8),
-            (1004.2, 375.9, 1071.7, 397.5),
-            (414.2, 439.2, 461.4, 465.6),
-            (562.8, 514.8, 662.4, 572.8),
-        ),
-        extra_highlight_overlay=True,
-        annotation_moves=(
-            ((185.3, 352.3, 305.8, 498.2), (183.8, 352.4, 307.3, 501.3)),
-            ((1004.2, 375.1, 1071.7, 396.8), (1002.8, 374.4, 1073.2, 399.0)),
-            ((384.8, 434.8, 490.8, 470.0), (412.7, 437.7, 462.9, 467.1)),
-            ((562.8, 518.0, 662.4, 576.0), (561.3, 513.3, 663.9, 574.3)),
-        ),
-        recreate_moved_annotations=True,
+        material_title=LineBlock((1109.4, 557.8), 10.0, TextStyle(9.0, TEXT_BLUE)),
+        materials=LineBlock((1109.4, 577.9), 10.0, TextStyle(9.0, TEXT_BLUE)),
     ),
     "BI-912047": CalibratedLayout(
         totals_rect=(16.0, 20.5, 200.0, 429.5),
@@ -439,17 +403,6 @@ def _draw_calibrated_summary(
     layout: CalibratedLayout,
     source_name: str,
 ) -> None:
-    _move_calibrated_annotations(page, layout)
-
-    extra_fill = layout.material_fill or layout.fill
-    for rect in layout.extra_highlights:
-        page.draw_rect(
-            fitz.Rect(rect),
-            color=None,
-            fill=extra_fill,
-            overlay=layout.extra_highlight_overlay,
-        )
-
     page.draw_rect(
         fitz.Rect(layout.totals_rect),
         color=layout.totals_border,
@@ -470,73 +423,6 @@ def _draw_calibrated_summary(
     if summary.materials:
         _draw_lines(page, [layout.material_heading], layout.material_title)
         _draw_lines(page, _calibrated_material_lines(source_name, summary.materials), layout.materials)
-
-
-def _move_calibrated_annotations(page: fitz.Page, layout: CalibratedLayout) -> None:
-    if not layout.annotation_moves:
-        return
-    replacements: list[tuple[fitz.Rect, dict, tuple[float, float, float]]] = []
-    for annot in list(page.annots() or []):
-        annot_rect = _rounded_rect_tuple(annot.rect)
-        for source, target in layout.annotation_moves:
-            if _rect_tuple_close(annot_rect, source):
-                if layout.recreate_moved_annotations and annot.type[1] == "FreeText":
-                    fill = _annotation_fill_color(annot, layout)
-                    replacements.append((fitz.Rect(target), dict(annot.info), fill))
-                    page.delete_annot(annot)
-                else:
-                    annot.set_rect(fitz.Rect(target))
-                    annot.update()
-                break
-    for target, info, fill in replacements:
-        _add_recreated_freetext_annotation(page, target, info, fill)
-
-
-def _annotation_fill_color(
-    annot: fitz.Annot,
-    layout: CalibratedLayout,
-) -> tuple[float, float, float]:
-    stroke = annot.colors.get("stroke") or []
-    if len(stroke) >= 3 and stroke[1] > 0.8 and stroke[0] > 0.5:
-        return (float(stroke[0]), float(stroke[1]), float(stroke[2]))
-    return layout.material_fill or layout.fill
-
-
-def _add_recreated_freetext_annotation(
-    page: fitz.Page,
-    target: fitz.Rect,
-    info: dict,
-    fill: tuple[float, float, float],
-) -> None:
-    content = str(info.get("content") or "").replace("\r", "\n")
-    annot = page.add_freetext_annot(
-        target,
-        content,
-        fontsize=8.0,
-        fontname="TiRo",
-        text_color=(0.0, 0.0, 1.0),
-        fill_color=fill,
-    )
-    annot.set_info(
-        {
-            key: value
-            for key, value in info.items()
-            if key in {"name", "title", "creationDate", "modDate", "subject"}
-        }
-    )
-    annot.update()
-
-
-def _rounded_rect_tuple(rect: fitz.Rect) -> tuple[float, float, float, float]:
-    return tuple(round(v, 1) for v in rect)
-
-
-def _rect_tuple_close(
-    first: tuple[float, float, float, float],
-    second: tuple[float, float, float, float],
-    tolerance: float = 3.0,
-) -> bool:
-    return all(abs(a - b) <= tolerance for a, b in zip(first, second))
 
 
 def _draw_lines(page: fitz.Page, lines: list[str], block: LineBlock) -> None:
