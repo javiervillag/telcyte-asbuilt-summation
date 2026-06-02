@@ -1,4 +1,4 @@
-from app.rate_cards import code_key, extract_codes_from_text, load_code_catalog
+from app.rate_cards import code_key, extract_codes_from_text, load_code_catalog, total_line_key
 
 
 def test_code_key_treats_zero_padded_variants_as_same_code() -> None:
@@ -55,3 +55,14 @@ def test_load_code_catalog_prefers_highlighted_xlsx_cells(tmp_path) -> None:
 
 def test_extract_codes_from_text_dedupes_variants() -> None:
     assert extract_codes_from_text("UG-7 UG-07 PC1 PC-01") == ["UG-7", "PC-1"]
+
+
+def test_total_line_key_normalizes_supported_code_variants_and_spacing() -> None:
+    assert total_line_key("CD-1 -1") == total_line_key("CD-01 - 1")
+    assert total_line_key("MDU-5 - 2") == total_line_key("MDU-05 - 2")
+    assert total_line_key("UG-7 - 10'") == total_line_key("UG-07 - 10'")
+
+
+def test_total_line_key_keeps_composite_zero_padding_distinct() -> None:
+    assert total_line_key("Comp-9 - 2") != total_line_key("Comp-09 - 2")
+    assert total_line_key("Comp-9 - 2") == total_line_key("COMP-9 - 2")

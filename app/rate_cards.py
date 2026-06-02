@@ -6,6 +6,7 @@ from pathlib import Path
 CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})(?!\.\d)\b", re.I)
 ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
 CodeKey = tuple[str, str]
+TotalKey = tuple[CodeKey, str, str]
 
 
 def code_key(code: str) -> CodeKey | None:
@@ -29,6 +30,22 @@ def extract_codes_from_text(text: str) -> list[str]:
             seen.add(key)
             codes.append(_format_code(match.group(1), match.group(2), raw))
     return codes
+
+
+def total_line_key(line: str) -> TotalKey | None:
+    code_match = CODE_PATTERN.search(line)
+    if not code_match:
+        return None
+    key = code_key(code_match.group(0))
+    if not key:
+        return None
+    remainder = line[code_match.end() :]
+    qty_match = re.match(r"\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?", remainder, re.I)
+    if not qty_match:
+        return None
+    qty = _normalize_quantity(qty_match.group(1))
+    unit = (qty_match.group(2) or "").strip().lower()
+    return (key, qty, unit)
 
 
 def load_code_catalog(raw_codes: str = "", paths: str = "") -> dict[CodeKey, str]:
@@ -90,6 +107,11 @@ def _format_code(prefix: str, number: str, raw: str) -> str:
     if "-" in raw:
         return raw
     return f"{prefix}-{number}"
+
+
+def _normalize_quantity(value: str) -> str:
+    number = float(value)
+    return str(int(number)) if number.is_integer() else f"{number:g}"
 
 
 def _has_highlight_fill(fill) -> bool:

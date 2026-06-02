@@ -6,6 +6,7 @@ import pytest
 from app.config import Settings
 from app.openrouter_client import ManualReviewRequired, summarize_with_model
 from app.pdf_parser import diagnose_extraction, derive_code_totals, extract_text_blocks
+from app.rate_cards import total_line_key
 from tests.fixtures.expected_samples import summary_for_source
 
 
@@ -41,7 +42,9 @@ def test_samples_are_regression_inputs_not_filename_answers(sample_name: str) ->
     totals = derive_code_totals(blocks)
     diagnostics = diagnose_extraction(blocks, totals)
 
-    missing_expected_totals = set(expected.job_totals) - set(totals)
+    expected_keys = {total_line_key(line) for line in expected.job_totals}
+    total_keys = {total_line_key(line) for line in totals}
+    missing_expected_totals = expected_keys - total_keys
     assert missing_expected_totals
     assert diagnostics.review_required is True
     assert diagnostics.unresolved_callout_count or diagnostics.ambiguous_code_line_count

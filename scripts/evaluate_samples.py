@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import get_settings
 from app.openrouter_client import try_models
 from app.pdf_annotator import annotate_pdf
+from app.rate_cards import total_line_key
 
 
 def normalized_text(path: Path) -> str:
@@ -48,6 +49,10 @@ def score_summary(summary_text: str, expected_text: str) -> float:
     if not expected:
         return 0.0
     return len(found & expected) / len(expected)
+
+
+def total_keys(lines: list[str]) -> set:
+    return {key for line in lines if (key := total_line_key(line))}
 
 
 def find_pairs(folder: Path) -> list[tuple[Path, Path]]:
@@ -96,11 +101,15 @@ async def main() -> None:
             if attempt.ok and attempt.summary:
                 summary_text = "\n".join(attempt.summary.display_lines())
                 score = score_summary(summary_text, expected)
+                found_keys = total_keys(attempt.summary.job_totals)
+                expected_keys = total_keys(expected.splitlines())
                 rows.append(
                     {
                         "model": attempt.model,
                         "ok": True,
                         "score": round(score, 4),
+                        "normalized_missing_total_count": len(expected_keys - found_keys),
+                        "normalized_extra_total_count": len(found_keys - expected_keys),
                         "confidence": attempt.summary.confidence,
                         "totals": attempt.summary.job_totals,
                         "materials": attempt.summary.materials,
