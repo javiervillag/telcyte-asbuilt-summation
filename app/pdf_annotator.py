@@ -71,6 +71,7 @@ class CalibratedLayout:
         tuple[tuple[float, float, float, float], tuple[float, float, float, float]],
         ...
     ] = ()
+    recreate_moved_annotations: bool = False
 
 
 class PlacementReviewRequired(RuntimeError):
@@ -104,6 +105,7 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
             ((609.5, 1293.5, 695.5, 1394.5), (626.2, 1293.0, 679.2, 1395.0)),
             ((316.8, 1576.4, 427.8, 1721.8), (311.8, 1576.2, 422.8, 1721.5)),
         ),
+        recreate_moved_annotations=True,
     ),
     "BI-596045": CalibratedLayout(
         totals_rect=(25.0, 25.0, 239.0, 582.5),
@@ -158,6 +160,7 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
             ((384.8, 434.8, 490.8, 470.0), (412.7, 437.7, 462.9, 467.1)),
             ((562.8, 518.0, 662.4, 576.0), (561.3, 513.3, 663.9, 574.3)),
         ),
+        recreate_moved_annotations=True,
     ),
     "BI-912047": CalibratedLayout(
         totals_rect=(16.0, 20.5, 200.0, 429.5),
@@ -452,13 +455,56 @@ def _draw_calibrated_summary(
 def _move_calibrated_annotations(page: fitz.Page, layout: CalibratedLayout) -> None:
     if not layout.annotation_moves:
         return
+    replacements: list[tuple[fitz.Rect, dict, tuple[float, float, float]]] = []
     for annot in list(page.annots() or []):
         annot_rect = _rounded_rect_tuple(annot.rect)
         for source, target in layout.annotation_moves:
             if _rect_tuple_close(annot_rect, source):
-                annot.set_rect(fitz.Rect(target))
-                annot.update()
+                if layout.recreate_moved_annotations and annot.type[1] == "FreeText":
+                    fill = _annotation_fill_color(annot, layout)
+                    replacements.append((fitz.Rect(target), dict(annot.info), fill))
+                    page.delete_annot(annot)
+                else:
+                    annot.set_rect(fitz.Rect(target))
+                    annot.update()
                 break
+    for target, info, fill in replacements:
+        _add_recreated_freetext_annotation(page, target, info, fill)
+
+
+def _annotation_fill_color(
+    annot: fitz.Annot,
+    layout: CalibratedLayout,
+) -> tuple[float, float, float]:
+    stroke = annot.colors.get("stroke") or []
+    if len(stroke) >= 3 and stroke[1] > 0.8 and stroke[0] > 0.5:
+        return (float(stroke[0]), float(stroke[1]), float(stroke[2]))
+    return layout.material_fill or layout.fill
+
+
+def _add_recreated_freetext_annotation(
+    page: fitz.Page,
+    target: fitz.Rect,
+    info: dict,
+    fill: tuple[float, float, float],
+) -> None:
+    content = str(info.get("content") or "").replace("\r", "\n")
+    annot = page.add_freetext_annot(
+        target,
+        content,
+        fontsize=8.0,
+        fontname="TiRo",
+        text_color=(0.0, 0.0, 1.0),
+        fill_color=fill,
+    )
+    annot.set_info(
+        {
+            key: value
+            for key, value in info.items()
+            if key in {"name", "title", "creationDate", "modDate", "subject"}
+        }
+    )
+    annot.update()
 
 
 def _rounded_rect_tuple(rect: fitz.Rect) -> tuple[float, float, float, float]:
