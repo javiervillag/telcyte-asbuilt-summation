@@ -58,6 +58,8 @@ class CalibratedLayout:
     material_heading: str
     material_title: LineBlock
     materials: LineBlock
+    extra_highlights: tuple[tuple[float, float, float, float], ...] = ()
+    extra_highlight_overlay: bool = False
 
 
 CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
@@ -71,6 +73,14 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         material_heading="Materials",
         material_title=LineBlock((1106.0, 1943.2), 26.0, TextStyle(21.82, COAX_MATERIAL_TEXT, rotate=90)),
         materials=LineBlock((1157.7, 1943.2), 26.0, TextStyle(21.82, COAX_MATERIAL_TEXT, rotate=90)),
+        extra_highlights=(
+            (191.4, 1529.4, 249.5, 1673.9),
+            (678.7, 1395.0, 736.8, 1501.2),
+            (664.3, 1576.3, 697.5, 1674.3),
+            (627.7, 1294.5, 677.7, 1393.5),
+            (313.3, 1577.7, 421.3, 1720.0),
+        ),
+        extra_highlight_overlay=True,
     ),
     "BI-596045": CalibratedLayout(
         totals_rect=(25.0, 25.0, 239.0, 582.5),
@@ -104,6 +114,13 @@ CALIBRATED_LAYOUTS: dict[str, CalibratedLayout] = {
         material_heading="Material",
         material_title=LineBlock((1109.4, 557.8), 10.0, TextStyle(9.0, MATERIAL_TEXT)),
         materials=LineBlock((1109.4, 577.9), 10.0, TextStyle(9.0, MATERIAL_TEXT)),
+        extra_highlights=(
+            (185.3, 353.9, 305.8, 499.8),
+            (1004.2, 375.9, 1071.7, 397.5),
+            (414.2, 439.2, 461.4, 465.6),
+            (562.8, 514.8, 662.4, 572.8),
+        ),
+        extra_highlight_overlay=True,
     ),
     "BI-912047": CalibratedLayout(
         totals_rect=(16.0, 20.5, 200.0, 429.5),
@@ -299,6 +316,15 @@ def _draw_calibrated_summary(
     layout: CalibratedLayout,
     source_name: str,
 ) -> None:
+    extra_fill = layout.material_fill or layout.fill
+    for rect in layout.extra_highlights:
+        page.draw_rect(
+            fitz.Rect(rect),
+            color=None,
+            fill=extra_fill,
+            overlay=layout.extra_highlight_overlay,
+        )
+
     page.draw_rect(fitz.Rect(layout.totals_rect), color=None, fill=layout.fill, overlay=True)
     page.draw_rect(
         fitz.Rect(layout.materials_rect),
