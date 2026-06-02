@@ -7,26 +7,49 @@
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="panel">
-        <div class="brand">
-          <div class="mark">TELCYTE</div>
-          <div>
-            <h1>As-Built Summation</h1>
-            <p>Upload one PDF as-built and receive the annotated billing totals PDF.</p>
-          </div>
+    <header class="masthead">
+      <div class="masthead-inner">
+        <div>
+          <h1>Telcyte As-Built Summation</h1>
+          <p>MKR Job Totals</p>
         </div>
+        <div class="pills" aria-label="Service status">
+          <span class="pill">Live</span>
+          <span class="pill">PDF Intake</span>
+        </div>
+      </div>
+    </header>
 
-        <form id="upload-form" class="dropzone">
-          <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
-          <label for="pdf-file">
-            <span id="file-label">Choose PDF</span>
-            <strong id="file-name">No file selected</strong>
-          </label>
-          <button id="submit" type="submit">Generate PDF</button>
-        </form>
+    <main class="shell">
+      <section class="layout">
+        <article class="card upload-card">
+          <div class="card-heading">
+            <span class="eyebrow">PDF</span>
+            <h2>Input</h2>
+          </div>
 
-        <div id="status" class="status" role="status" aria-live="polite"></div>
+          <form id="upload-form" class="dropzone">
+            <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
+            <label for="pdf-file">
+              <span id="file-label">Choose PDF</span>
+              <strong id="file-name">No file selected</strong>
+            </label>
+            <button id="submit" type="submit">Generate PDF</button>
+          </form>
+        </article>
+
+        <article class="card result-card">
+          <div class="card-heading">
+            <span class="eyebrow">Result</span>
+            <h2>Processing</h2>
+          </div>
+          <div id="status" class="status empty" role="status" aria-live="polite">
+            <div>
+              <strong>Ready</strong>
+              <span>Waiting for PDF</span>
+            </div>
+          </div>
+        </article>
       </section>
     </main>
     <script src="/static/app.js"></script>

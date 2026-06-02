@@ -4,22 +4,24 @@ const fileName = document.querySelector("#file-name");
 const statusBox = document.querySelector("#status");
 const submit = document.querySelector("#submit");
 
+setReadyState();
+
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   fileName.textContent = file ? file.name : "No file selected";
-  setStatus("", "");
+  setReadyState();
 });
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const file = fileInput.files[0];
   if (!file) {
-    setStatus("Choose a PDF first.", "error");
+    setStatus("Missing PDF", "Choose a PDF first.", "error");
     return;
   }
 
   submit.disabled = true;
-  setStatus("Generating annotated PDF...", "");
+  setStatus("Processing", "Generating annotated PDF.", "working");
   const data = new FormData();
   data.append("file", file);
 
@@ -54,9 +56,9 @@ form.addEventListener("submit", async (event) => {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    setStatus("PDF ready.", warnings.length ? "warn" : "done", warnings);
+    setStatus("PDF ready", "Download started.", warnings.length ? "warn" : "done", warnings);
   } catch (error) {
-    setStatus(error.message, "error", {
+    setStatus("Manual review", error.message, "error", {
       warnings: error.warnings || [],
       supportedTotals: error.supportedTotals || [],
       unresolvedCallouts: error.unresolvedCallouts || [],
@@ -66,14 +68,28 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-function setStatus(message, kind, details = []) {
+function setReadyState() {
+  setStatus("Ready", "Waiting for PDF.", "empty");
+}
+
+function setStatus(title, message, kind, details = []) {
   statusBox.textContent = "";
   const groups = Array.isArray(details) ? { warnings: details } : details;
-  if (message) {
-    const summary = document.createElement("p");
-    summary.textContent = message;
-    statusBox.appendChild(summary);
-  }
+  const summary = document.createElement("div");
+  summary.className = "status-summary";
+  const badge = document.createElement("span");
+  badge.className = "status-badge";
+  badge.textContent = statusLabel(kind);
+  const copy = document.createElement("div");
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const body = document.createElement("span");
+  body.textContent = message;
+  copy.appendChild(heading);
+  copy.appendChild(body);
+  summary.appendChild(badge);
+  summary.appendChild(copy);
+  statusBox.appendChild(summary);
   appendList("Warnings", groups.warnings || []);
   appendList("Supported totals found", groups.supportedTotals || []);
   appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
@@ -95,6 +111,14 @@ function appendList(title, items) {
   }
   block.appendChild(list);
   statusBox.appendChild(block);
+}
+
+function statusLabel(kind) {
+  if (kind === "done") return "Ready";
+  if (kind === "warn") return "Check";
+  if (kind === "error") return "Review";
+  if (kind === "working") return "Live";
+  return "Idle";
 }
 
 function readWarnings(response) {
