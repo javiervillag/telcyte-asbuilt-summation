@@ -30,6 +30,8 @@ BOLD_NARROW_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/msttcorefonts/Arial_Narrow_Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf",
     "/usr/share/fonts/truetype/liberation2/LiberationSansNarrow-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
 ]
 
 
