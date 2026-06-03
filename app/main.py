@@ -139,6 +139,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             "X-Telcyte-Model": summary.model,
             "X-Telcyte-Confidence": f"{summary.confidence:.2f}",
             "X-Telcyte-Warnings": json.dumps(summary.warnings[:6]),
+            "X-Telcyte-Result-Summary": _result_summary_header(summary, output_name),
         },
     )
 
@@ -170,3 +171,13 @@ def _validate_pdf_upload(content: bytes) -> None:
             raise HTTPException(status_code=400, detail="The uploaded PDF has no pages.")
     finally:
         doc.close()
+
+
+def _result_summary_header(summary: SummaryResult, output_name: str) -> str:
+    payload = {
+        "output_name": output_name,
+        "detected_totals": summary.job_totals[:20],
+        "extra_billing_codes": summary.extra_totals[:20],
+        "materials": summary.materials[:10],
+    }
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))

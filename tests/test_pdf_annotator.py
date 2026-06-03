@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import fitz
+from PIL import Image
 
 from app.models import SummaryResult
 from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, choose_box_rect
@@ -128,6 +129,7 @@ def test_rotated_pdf_summary_is_selectable_upright_annotation() -> None:
         assert "UG-56 - 168'" in summary_annot.info["content"]
         assert "/Rotate 90" in doc.xref_object(summary_annot.xref, compressed=False)
         assert "MKR Job Totals" in page.get_text("text")
+        assert _green_pixels_without_annotations(page) > 1000
     finally:
         doc.close()
 
@@ -152,3 +154,9 @@ def _summary_annotations(page: fitz.Page) -> list[str]:
         if annot.type[1] == "FreeText" and content.startswith("MKR Job Totals"):
             rows.append(content)
     return rows
+
+
+def _green_pixels_without_annotations(page: fitz.Page) -> int:
+    pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5), annots=False, alpha=False)
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    return sum(1 for r, g, b in image.getdata() if g > 220 and 150 < r < 230 and 120 < b < 210)

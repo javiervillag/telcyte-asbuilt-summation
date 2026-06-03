@@ -242,6 +242,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     try:
         page = doc[0]
         rect = choose_box_rect(page, lines)
+        _add_summary_page_content(page, rect, lines)
         _add_summary_annotation(page, rect, lines)
 
         buffer = BytesIO()
@@ -252,7 +253,49 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
 
 
 def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
-    _, _, font_size, padding = _box_metrics(page, lines)
+    rendered_lines, font_size, _ = _summary_rendering(page, rect, lines)
+    annot = page.add_freetext_annot(
+        rect,
+        "\n".join(rendered_lines),
+        fontsize=font_size,
+        fontname="helv",
+        text_color=TEXT_RED,
+        fill_color=BOX_FILL,
+        rotate=_annotation_rotation(page),
+    )
+    annot.set_border(width=0)
+    annot.update(fontname="helv", fontsize=font_size, text_color=TEXT_RED, fill_color=BOX_FILL)
+
+
+def _add_summary_page_content(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
+    page.draw_rect(rect, color=None, fill=BOX_FILL, overlay=True)
+    _, _, base_font_size, _ = _box_metrics(page, lines)
+    font_size = base_font_size
+    for _ in range(8):
+        rendered_lines, fitted_font_size, padding = _summary_rendering(page, rect, lines, font_size=font_size)
+        remaining_space = page.insert_textbox(
+            rect + (padding, padding, -padding, -padding),
+            "\n".join(rendered_lines),
+            fontsize=fitted_font_size,
+            fontname="helv",
+            color=TEXT_RED,
+            rotate=_annotation_rotation(page),
+            overlay=True,
+        )
+        if remaining_space >= 0:
+            return
+        font_size *= 0.9
+
+
+def _summary_rendering(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    lines: list[str],
+    font_size: float | None = None,
+) -> tuple[list[str], float, float]:
+    _, _, default_font_size, _ = _box_metrics(page, lines)
+    font_size = font_size or default_font_size
+    padding = font_size * 0.55
     text_width, text_height = _annotation_text_space(page, rect)
     line_height = font_size * 1.16
     max_lines = max(1, int((text_height - padding * 2) / line_height))
@@ -265,18 +308,7 @@ def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) 
         wrapped = _wrap_line(line, max_chars)
         rendered_lines.extend(wrapped[:remaining])
         remaining -= len(wrapped[:remaining])
-
-    annot = page.add_freetext_annot(
-        rect,
-        "\n".join(rendered_lines),
-        fontsize=font_size,
-        fontname="helv",
-        text_color=TEXT_RED,
-        fill_color=BOX_FILL,
-        rotate=_annotation_rotation(page),
-    )
-    annot.set_border(width=0)
-    annot.update(fontname="helv", fontsize=font_size, text_color=TEXT_RED, fill_color=BOX_FILL)
+    return rendered_lines, font_size, padding
 
 
 def _annotation_rotation(page: fitz.Page) -> int:

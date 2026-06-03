@@ -153,10 +153,14 @@ form.addEventListener("submit", async (event) => {
       throw Object.assign(new Error(message), { warnings, supportedTotals, unresolvedCallouts });
     }
     const warnings = readWarnings(response);
+    const resultSummary = readResultSummary(response);
     const blob = await response.blob();
     const disposition = response.headers.get("Content-Disposition") || "";
     const match = disposition.match(/filename=\"?([^"]+)\"?/);
     const outputName = match ? match[1] : file.name.replace(/\.pdf$/i, "-telcyte-summary.pdf");
+    if (resultSummary && !resultSummary.output_name) {
+      resultSummary.output_name = outputName;
+    }
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -165,7 +169,10 @@ form.addEventListener("submit", async (event) => {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    setStatus("PDF ready", "Download started.", warnings.length ? "warn" : "done", warnings);
+    setStatus("PDF ready", "Download started.", warnings.length ? "warn" : "done", {
+      warnings,
+      resultSummary,
+    });
   } catch (error) {
     setStatus("Manual review", error.message, "error", {
       warnings: error.warnings || [],
@@ -204,6 +211,7 @@ function setStatus(title, message, kind, details = []) {
   summary.appendChild(badge);
   summary.appendChild(copy);
   statusBox.appendChild(summary);
+  appendResultSummary(groups.resultSummary || null);
   appendList("Warnings", groups.warnings || []);
   appendList("Supported totals found", groups.supportedTotals || []);
   appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
@@ -224,6 +232,35 @@ function appendList(title, items) {
     list.appendChild(item);
   }
   block.appendChild(list);
+  statusBox.appendChild(block);
+}
+
+function appendResultSummary(summary) {
+  if (!summary) return;
+  const block = document.createElement("div");
+  block.className = "included-summary";
+  const heading = document.createElement("strong");
+  heading.textContent = "Included in this PDF";
+  block.appendChild(heading);
+  const rows = [
+    ["Output", summary.output_name || "Generated summary PDF"],
+    ["Detected totals", compactList(summary.detected_totals)],
+    ["Extra billing codes", compactList(summary.extra_billing_codes)],
+  ];
+  if (Array.isArray(summary.materials) && summary.materials.length) {
+    rows.push(["Materials", compactList(summary.materials)]);
+  }
+  for (const [label, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "included-row";
+    const rowLabel = document.createElement("span");
+    rowLabel.textContent = label;
+    const rowValue = document.createElement("b");
+    rowValue.textContent = value;
+    row.appendChild(rowLabel);
+    row.appendChild(rowValue);
+    block.appendChild(row);
+  }
   statusBox.appendChild(block);
 }
 
@@ -248,6 +285,26 @@ function readWarnings(response) {
   } catch {
     return [];
   }
+}
+
+function readResultSummary(response) {
+  const raw = response.headers.get("X-Telcyte-Result-Summary");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function compactList(items) {
+  if (!Array.isArray(items)) return "None";
+  const clean = items.filter(Boolean);
+  if (!clean.length) return "None";
+  const visible = clean.slice(0, 6).join(", ");
+  const remaining = clean.length - 6;
+  return remaining > 0 ? `${visible}, +${remaining} more` : visible;
 }
 
 async function loadExtraCodes() {
