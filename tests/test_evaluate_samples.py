@@ -132,6 +132,8 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
         "OpenRouter verifier reviewed unresolved callouts but could not clear them from parsed evidence.",
         "Manual review is required; the app did not add unsupported totals.",
     ]
+    assert result["supported_totals"] == ["UG-56 - 170'"]
+    assert result["unresolved_callouts"] == ["EOL - 48Ct - 30'"]
 
 
 def test_find_pairs_matches_totals_removed_to_team_output(tmp_path: Path) -> None:
