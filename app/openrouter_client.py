@@ -359,6 +359,22 @@ def _raise_manual_review_for_unavailable_verifier(
     )
 
 
+def _parser_only_summary(parser_totals: list[str], diagnostics) -> SummaryResult:
+    warnings = [
+        warning
+        for warning in diagnostics.warnings
+        if warning != "Manual review is required; the app did not add unsupported totals."
+    ]
+    return SummaryResult(
+        title="MKR Job Totals",
+        job_totals=parser_totals,
+        materials=[],
+        warnings=warnings,
+        confidence=0.0,
+        model="parser",
+    )
+
+
 async def summarize_with_model(
     pdf_bytes: bytes,
     settings: Settings,
@@ -392,7 +408,7 @@ async def summarize_with_model(
                 verifier_used=False,
                 diagnostics=diagnostics,
             )
-        raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
+        return _parser_only_summary(parser_totals, diagnostics)
 
     parsed_context = build_pdf_context(pdf_bytes, code_catalog=code_catalog)
     verifier_context = _review_prompt_context(parsed_context, parser_totals, diagnostics)
@@ -441,7 +457,7 @@ async def summarize_with_model(
                 exc.__class__.__name__,
                 selected_model,
             )
-        raise
+        return _parser_only_summary(parser_totals, diagnostics)
     if response.status_code >= 400:
         logger.warning("openrouter_error status=%s body=%s", response.status_code, response.text[:500])
         if diagnostics.review_required:
@@ -451,7 +467,7 @@ async def summarize_with_model(
                 f"OpenRouter returned {response.status_code}",
                 selected_model,
             )
-        raise OpenRouterError(f"OpenRouter returned {response.status_code}.")
+        return _parser_only_summary(parser_totals, diagnostics)
 
     try:
         data = response.json()
@@ -465,7 +481,7 @@ async def summarize_with_model(
                 str(exc) or exc.__class__.__name__,
                 selected_model,
             )
-        raise
+        return _parser_only_summary(parser_totals, diagnostics)
     summary = _merge_parser_and_model(parser_totals, model_review.summary, settings)
 
     if diagnostics.unresolved_callouts:

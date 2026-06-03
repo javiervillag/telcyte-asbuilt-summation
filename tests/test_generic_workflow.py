@@ -42,6 +42,31 @@ def _reviewable_unresolved_pdf() -> bytes:
     return content
 
 
+def _clean_supported_pdf() -> bytes:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    rows = [
+        "UG-06 - 13",
+        "PC-01 - 2",
+        "Project note: readable as-built text layer with supported billing totals.",
+        "Planner note: field quantities are shown directly as supported code totals.",
+        "Field note: no unresolved construction callouts are present for review.",
+        "Verification note: deterministic parser evidence is sufficient for output.",
+        "Readable note: project area has normal text extraction quality.",
+        "Readable note: billing labels are visible and complete.",
+        "Readable note: summary placement can use parser totals.",
+        "Readable note: no material interpretation is requested.",
+        "Readable note: no construction composite conversion is attempted.",
+        "Readable note: deterministic evidence is preferred.",
+        "Readable note: parser-only output is acceptable for this clean fixture.",
+    ]
+    for index, row in enumerate(rows):
+        page.insert_text((72, 72 + index * 26), row)
+    content = doc.tobytes()
+    doc.close()
+    return content
+
+
 class _FakeOpenRouterResponse:
     def __init__(self, payload: dict, status_code: int = 200, text: str = "ok"):
         self._payload = payload
@@ -127,8 +152,42 @@ def test_model_quantity_disagreement_is_reported_without_replacing_parser_total(
     assert any("different quantity" in warning.lower() for warning in merged.warnings)
 
 
+def test_clean_supported_pdf_can_use_parser_without_openrouter() -> None:
+    settings = Settings(
+        OPENROUTER_API_KEY="",
+        INCLUDE_PAGE_IMAGES=False,
+    )
+
+    summary = asyncio.run(summarize_with_model(_clean_supported_pdf(), settings))
+
+    assert summary.model == "parser"
+    assert summary.job_totals == ["UG-06 - 13", "PC-01 - 2"]
+    assert summary.materials == []
+    assert summary.warnings == []
+
+
+def test_clean_supported_pdf_uses_parser_when_openrouter_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.status_code = 500
+    _FakeAsyncClient.payload = {}
+    monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", _FakeAsyncClient)
+    settings = Settings(
+        OPENROUTER_API_KEY="test-key",
+        INCLUDE_PAGE_IMAGES=False,
+    )
+
+    summary = asyncio.run(summarize_with_model(_clean_supported_pdf(), settings))
+
+    assert _FakeAsyncClient.calls
+    assert summary.model == "parser"
+    assert summary.job_totals == ["UG-06 - 13", "PC-01 - 2"]
+    assert summary.materials == []
+    assert summary.warnings == []
+
+
 def test_known_sample_requires_manual_review_without_page_image_verification(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeAsyncClient.calls = []
+    _FakeAsyncClient.status_code = 200
     _FakeAsyncClient.payload = {
         "title": "MKR Job Totals",
         "job_totals": [],
