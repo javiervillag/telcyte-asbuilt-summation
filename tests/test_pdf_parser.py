@@ -113,7 +113,20 @@ def test_unresolved_callout_is_kept_when_shared_with_supported_code_line() -> No
 
     assert totals == ["UG-06 - 13"]
     assert diagnostics.review_required is True
-    assert diagnostics.unresolved_callouts == ["UG-06 - 13 EOL - 48Ct - 66'"]
+    assert diagnostics.unresolved_callouts == ["EOL - 48Ct - 66'"]
+
+
+def test_unresolved_callout_segment_preserves_numbered_marker() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-06 - 13 #3 EOL - 48Ct - 66'")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callouts == ["#3 EOL - 48Ct - 66'"]
 
 
 def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
