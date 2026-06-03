@@ -15,7 +15,7 @@ from PIL import Image
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
-from app.rate_cards import CodeKey, TotalKey, load_code_catalog, total_line_key
+from app.rate_cards import CODE_PATTERN, CodeKey, TotalKey, load_code_catalog, total_line_key
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ def _merge_parser_and_model(
     omitted_model_totals = 0
     parser_total_keys = {key for line in parser_totals if (key := total_line_key(line))}
     parser_total_codes = {key[0] for key in parser_total_keys}
-    model_total_keys = [(line, key) for line in model_summary.job_totals if (key := total_line_key(line))]
+    model_total_keys = [(line, key) for line in model_summary.job_totals if (key := _model_total_line_key(line))]
     malformed_model_totals = len(model_summary.job_totals) - len(model_total_keys)
     conflicting_model_codes = _conflicting_model_total_codes(model_total_keys)
     model_disagreed_total_count = sum(
@@ -260,6 +260,16 @@ def _conflicting_model_total_codes(model_total_keys: list[tuple[str, TotalKey]])
     for _, key in model_total_keys:
         totals_by_code.setdefault(key[0], set()).add(key)
     return {code for code, totals in totals_by_code.items() if len(totals) > 1}
+
+
+def _model_total_line_key(line: str) -> TotalKey | None:
+    if not re.fullmatch(
+        rf"\s*{CODE_PATTERN.pattern}\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\s*",
+        line,
+        re.I,
+    ):
+        return None
+    return total_line_key(line)
 
 
 def _requires_manual_review_before_model(diagnostics) -> bool:
