@@ -179,8 +179,6 @@ def derive_code_totals(
     direct_keys = set(totals)
     for block in blocks:
         for line in block.text.splitlines():
-            if direct_pattern.search(line):
-                continue
             for match in quantity_first_pattern.finditer(line):
                 raw_qty, raw_code = match.groups()
                 normalized_key = code_key(raw_code)

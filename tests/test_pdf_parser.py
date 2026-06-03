@@ -98,6 +98,18 @@ def test_derive_code_totals_reads_quantity_first_code_notes() -> None:
     assert diagnostics.ambiguous_code_line_count == 0
 
 
+def test_derive_code_totals_reads_quantity_first_code_when_line_has_direct_total() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-06 - 13 plus 2 x PC-01 for splice work.")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-06 - 13", "PC-01 - 2"]
+
+
 def test_unresolved_callout_is_kept_when_shared_with_supported_code_line() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
