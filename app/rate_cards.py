@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})(?!\.\d)\b", re.I)
+NUMBER_PATTERN = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 UNIT_PATTERN = r"(?:'|sq\.?\s*ft\.?|sqft)"
 ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
 CodeKey = tuple[str, str]
@@ -41,7 +42,7 @@ def total_line_key(line: str) -> TotalKey | None:
     if not key:
         return None
     remainder = line[code_match.end() :]
-    qty_match = re.match(rf"\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*{UNIT_PATTERN})?", remainder, re.I)
+    qty_match = re.match(rf"\s*-\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?", remainder, re.I)
     if not qty_match:
         return None
     qty = _normalize_quantity(qty_match.group(1))
@@ -111,7 +112,7 @@ def _format_code(prefix: str, number: str, raw: str) -> str:
 
 
 def _normalize_quantity(value: str) -> str:
-    number = float(value)
+    number = float(value.replace(",", ""))
     return str(int(number)) if number.is_integer() else f"{number:g}"
 
 

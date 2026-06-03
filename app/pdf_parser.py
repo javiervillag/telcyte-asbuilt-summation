@@ -7,7 +7,7 @@ from typing import Any
 
 import fitz
 
-from app.rate_cards import CODE_PATTERN, UNIT_PATTERN, CodeKey, code_key
+from app.rate_cards import CODE_PATTERN, NUMBER_PATTERN, UNIT_PATTERN, CodeKey, code_key
 
 
 @dataclass(frozen=True)
@@ -150,15 +150,15 @@ def derive_code_totals(
     code_catalog: dict[CodeKey, str] | None = None,
 ) -> list[str]:
     direct_pattern = re.compile(
-        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*{UNIT_PATTERN})?",
+        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        r"\b([0-9]+(?:\.[0-9]+)?)\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\b",
+        rf"\b({NUMBER_PATTERN})\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\b",
         re.I,
     )
     code_first_multiplier_pattern = re.compile(
-        r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*x\s*([0-9]+(?:\.[0-9]+)?)\b",
+        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*x\s*({NUMBER_PATTERN})\b",
         re.I,
     )
     catalog = code_catalog or {}
@@ -181,7 +181,7 @@ def derive_code_totals(
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
-                totals[key] += float(raw_qty)
+                totals[key] += _quantity_value(raw_qty)
 
     direct_code_keys = {key[0] for key in totals}
     for block in blocks:
@@ -199,7 +199,7 @@ def derive_code_totals(
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
-                totals[key] += float(raw_qty)
+                totals[key] += _quantity_value(raw_qty)
             for match in code_first_multiplier_pattern.finditer(line):
                 raw_code, raw_qty = match.groups()
                 normalized_key = code_key(raw_code)
@@ -213,7 +213,7 @@ def derive_code_totals(
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
-                totals[key] += float(raw_qty)
+                totals[key] += _quantity_value(raw_qty)
 
     rows: list[str] = []
     for key in order:
@@ -234,6 +234,10 @@ def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
     if match:
         return f"{match.group(1)}-{match.group(2)}"
     return raw_code
+
+
+def _quantity_value(value: str) -> float:
+    return float(value.replace(",", ""))
 
 
 def _normalize_unit(value: str) -> str:
@@ -341,15 +345,15 @@ def diagnose_extraction(
 
 def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     total_pattern = re.compile(
-        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*{UNIT_PATTERN})?\b",
+        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*{NUMBER_PATTERN}(?:\s*{UNIT_PATTERN})?\b",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        r"\b[0-9]+(?:\.[0-9]+)?\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b",
+        rf"\b{NUMBER_PATTERN}\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b",
         re.I,
     )
     code_first_multiplier_pattern = re.compile(
-        r"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*x\s*[0-9]+(?:\.[0-9]+)?\b",
+        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*x\s*{NUMBER_PATTERN}\b",
         re.I,
     )
     count = 0

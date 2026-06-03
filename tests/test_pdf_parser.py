@@ -136,6 +136,18 @@ def test_derive_code_totals_normalizes_square_foot_unit_variants() -> None:
     assert totals == ["UG-80 - 164sqft"]
 
 
+def test_derive_code_totals_normalizes_thousands_separators() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-03 - 1,000\nUG-03 - 904\n1,200 x PC-01")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-03 - 1904", "PC-01 - 1200"]
+
+
 def test_unresolved_callout_is_kept_when_shared_with_supported_code_line() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
