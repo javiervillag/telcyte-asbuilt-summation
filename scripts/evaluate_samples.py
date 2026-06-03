@@ -84,6 +84,23 @@ def classify_missing_total_evidence(
     ]
 
 
+def summarize_missing_total_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in evidence:
+        evidence_class = str(item.get("evidence_class") or "unknown")
+        if evidence_class not in grouped:
+            order.append(evidence_class)
+            grouped[evidence_class] = {
+                "evidence_class": evidence_class,
+                "count": 0,
+                "totals": [],
+            }
+        grouped[evidence_class]["count"] += 1
+        grouped[evidence_class]["totals"].append(str(item.get("total") or ""))
+    return [grouped[evidence_class] for evidence_class in order]
+
+
 def _missing_total_evidence(input_text: str, total: str, unresolved_callouts: list[str]) -> dict[str, Any]:
     key = total_line_key(total)
     if not key:
@@ -271,6 +288,11 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
     diagnostics = body.get("diagnostics") or {}
     supported_totals = "\n".join(str(line) for line in body.get("supported_totals") or [])
     supported_comparison = compare_total_text(supported_totals, team_added)
+    missing_total_input_evidence = classify_missing_total_evidence(
+        before_text,
+        supported_comparison["missing_totals"],
+        [str(callout) for callout in body.get("unresolved_callouts") or []],
+    )
     result.update(
         {
             "result": "manual_review" if response.status_code == 422 else "error",
@@ -292,10 +314,9 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "verifier_used": bool(body.get("verifier_used")),
             "diagnostics": diagnostics,
             "supported_vs_team_totals": supported_comparison,
-            "missing_total_input_evidence": classify_missing_total_evidence(
-                before_text,
-                supported_comparison["missing_totals"],
-                [str(callout) for callout in body.get("unresolved_callouts") or []],
+            "missing_total_input_evidence": missing_total_input_evidence,
+            "missing_total_evidence_summary": summarize_missing_total_evidence(
+                missing_total_input_evidence
             ),
         }
     )

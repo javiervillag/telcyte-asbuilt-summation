@@ -154,6 +154,29 @@ def test_missing_total_evidence_marks_unresolved_callout_context() -> None:
     ]
 
 
+def test_missing_total_evidence_summary_groups_by_evidence_class() -> None:
+    evidence = [
+        {"total": "UG-07 - 1", "evidence_class": "direct_total_text"},
+        {"total": "FB-04 - 6", "evidence_class": "unresolved_construction_callout_context"},
+        {"total": "FB-15 - 2", "evidence_class": "unresolved_construction_callout_context"},
+    ]
+
+    summary = evaluate_samples.summarize_missing_total_evidence(evidence)
+
+    assert summary == [
+        {
+            "evidence_class": "direct_total_text",
+            "count": 1,
+            "totals": ["UG-07 - 1"],
+        },
+        {
+            "evidence_class": "unresolved_construction_callout_context",
+            "count": 2,
+            "totals": ["FB-04 - 6", "FB-15 - 2"],
+        },
+    ]
+
+
 def test_health_status_records_endpoint_health() -> None:
     status = evaluate_samples.health_status(_FakeHealthClient())
 
@@ -199,6 +222,7 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
             "callouts": ["EOL - 48Ct - 30'"],
         }
     ]
+    assert result["missing_total_evidence_summary"] == []
 
 
 def test_find_pairs_matches_totals_removed_to_team_output(tmp_path: Path) -> None:
