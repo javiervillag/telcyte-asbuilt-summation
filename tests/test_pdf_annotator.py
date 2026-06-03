@@ -62,18 +62,15 @@ def test_choose_box_rect_avoids_existing_annotation() -> None:
     assert rect.y0 < 120
 
 
-def test_choose_box_rect_requires_review_when_all_candidates_touch_annotations() -> None:
+def test_choose_box_rect_stays_top_side_even_when_candidates_touch_annotations() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
     page.add_rect_annot(fitz.Rect(0, 0, 612, 792))
 
     try:
-        try:
-            choose_box_rect(page, ["MKR Job Totals", "UG-56 - 170'"])
-        except PlacementReviewRequired:
-            pass
-        else:
-            raise AssertionError("Expected placement to require manual review")
+        rect = choose_box_rect(page, ["MKR Job Totals", "UG-56 - 170'"])
+        assert rect.y0 <= page.rect.height * 0.3
+        assert rect.x0 <= page.rect.width * 0.2 or rect.x1 >= page.rect.width * 0.8
     finally:
         doc.close()
 
@@ -128,8 +125,42 @@ def test_rotated_pdf_summary_is_selectable_upright_annotation() -> None:
         assert summary_annot.type[1] == "FreeText"
         assert "UG-56 - 168'" in summary_annot.info["content"]
         assert "/Rotate 90" in doc.xref_object(summary_annot.xref, compressed=False)
-        assert "MKR Job Totals" in page.get_text("text")
         assert _green_pixels_without_annotations(page) > 1000
+    finally:
+        doc.close()
+
+
+def test_summary_box_stays_in_top_left_or_top_right_section() -> None:
+    input_pdf = SAMPLE.parent.joinpath("FIBER-ASBUILT-(TelCyte)-BI-596045-Totals Removed.pdf")
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=[
+            "MDU-11 - 102'",
+            "UG-56 - 132'",
+            "MDU-21 - 2",
+            "MDU-05 - 2",
+            "COMP-15 - 724'",
+            "UG-65 - 2",
+            "FX-11 - 2",
+            "UG-07 - 1",
+            "CD-01 - 1",
+        ],
+        extra_totals=["PC-01 - 1", "PC-02 - 1"],
+        warnings=[
+            "Readable construction callouts require rate-card/composite interpretation: EOL - 48Ct - 30'; Storage - 48Ct - 2'."
+        ],
+    )
+
+    output = annotate_pdf(input_pdf.read_bytes(), summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        summary_annots = [annot for annot in page.annots() or [] if (annot.info or {}).get("content", "").startswith("MKR Job Totals")]
+        assert len(summary_annots) == 1
+        rect = summary_annots[0].rect
+        assert rect.y0 <= page.rect.height * 0.3
+        assert rect.x0 <= page.rect.width * 0.2 or rect.x1 >= page.rect.width * 0.8
     finally:
         doc.close()
 

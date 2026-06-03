@@ -121,14 +121,7 @@ def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
         for candidate in candidates
     ]
     scored.sort(key=lambda row: row.total)
-    best = scored[0]
-    if (
-        best.total > MAX_SAFE_PLACEMENT_SCORE
-        or best.text_overlap_ratio > MAX_TEXT_OVERLAP_RATIO
-        or best.annotation_overlap_ratio > MAX_ANNOTATION_OVERLAP_RATIO
-    ):
-        raise PlacementReviewRequired()
-    return best.rect
+    return scored[0].rect
 
 
 def _candidate_rects(
@@ -139,16 +132,34 @@ def _candidate_rects(
     margin_y: float,
 ) -> list[fitz.Rect]:
     max_x = max(margin_x, page.rect.width - margin_x - width)
-    max_y = max(margin_y, page.rect.height - margin_y - height)
-    mid_y = margin_y + max(0.0, (max_y - margin_y) / 2)
+    y_rows = _top_section_y_rows(page, height, margin_y)
     return [
-        fitz.Rect(margin_x, margin_y, margin_x + width, margin_y + height),
-        fitz.Rect(max_x, margin_y, max_x + width, margin_y + height),
-        fitz.Rect(margin_x, max_y, margin_x + width, max_y + height),
-        fitz.Rect(max_x, max_y, max_x + width, max_y + height),
-        fitz.Rect(margin_x, mid_y, margin_x + width, mid_y + height),
-        fitz.Rect(max_x, mid_y, max_x + width, mid_y + height),
+        fitz.Rect(x, y, x + width, y + height)
+        for y in y_rows
+        for x in (margin_x, max_x)
     ]
+
+
+def _top_section_y_rows(page: fitz.Page, height: float, margin_y: float) -> list[float]:
+    max_y = max(margin_y, page.rect.height - margin_y - height)
+    if page.rotation in {90, 180}:
+        band_start = max(margin_y, page.rect.height * 0.7 - height)
+        top_edge = max_y
+        mid = band_start + max(0.0, (top_edge - band_start) / 2)
+        return _unique_positions([top_edge, mid, band_start])
+
+    band_end = max(margin_y, min(max_y, page.rect.height * 0.3 - height))
+    mid = margin_y + max(0.0, (band_end - margin_y) / 2)
+    return _unique_positions([margin_y, mid, band_end])
+
+
+def _unique_positions(values: list[float]) -> list[float]:
+    rows: list[float] = []
+    for value in values:
+        rounded = round(value, 3)
+        if rounded not in rows:
+            rows.append(rounded)
+    return rows
 
 
 def _page_text_rects(page: fitz.Page) -> list[fitz.Rect]:
