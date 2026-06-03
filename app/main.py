@@ -3,11 +3,18 @@ import logging
 from pathlib import Path
 
 import fitz
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
+from app.extra_billing_codes import (
+    ExtraBillingCodeSelection,
+    extra_totals_from_selections,
+    grouped_extra_billing_codes,
+    parse_extra_billing_code_selections,
+)
+from app.models import SummaryResult
 from app.openrouter_client import ManualReviewRequired, OpenRouterError, summarize_with_model
 from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, describe_pdf_fonts
 
@@ -40,10 +47,19 @@ async def favicon() -> Response:
     return Response(status_code=204)
 
 
+@app.get("/api/extra-billing-codes")
+async def extra_billing_codes() -> dict:
+    return {"categories": grouped_extra_billing_codes()}
+
+
 @app.post("/api/summarize")
-async def summarize_pdf(file: UploadFile = File(...)) -> Response:
+async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str = Form(default="[]")) -> Response:
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Upload a PDF file.")
+    try:
+        selected_extras = parse_extra_billing_code_selections(extra_billing_codes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
@@ -54,18 +70,42 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
     logger.info("upload_received filename=%s bytes=%s", file.filename, len(content))
     try:
         summary = await summarize_with_model(content, settings, source_name=file.filename)
+        summary = _with_user_selected_extras(summary, selected_extras)
         output = annotate_pdf(content, summary, source_name=file.filename)
     except ManualReviewRequired as exc:
         logger.warning("manual_review_required filename=%s warnings=%s", file.filename, exc.warnings)
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": "This PDF needs manual review because the parsed evidence did not fully support automatic totals.",
-                "warnings": exc.warnings,
-                "supported_totals": exc.supported_totals,
-                "unresolved_callouts": exc.unresolved_callouts,
-            },
-        )
+        if selected_extras:
+            summary = _with_user_selected_extras(
+                SummaryResult(
+                    title="MKR Job Totals",
+                    job_totals=exc.supported_totals,
+                    warnings=exc.warnings,
+                    confidence=0.0,
+                    model=f"parser+{settings.openrouter_model}",
+                ),
+                selected_extras,
+            )
+            try:
+                output = annotate_pdf(content, summary, source_name=file.filename)
+            except PlacementReviewRequired as placement_exc:
+                logger.warning("placement_review_required filename=%s error=%s", file.filename, placement_exc)
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "detail": "This PDF needs manual review because there is no clear open area for the summary box.",
+                        "warnings": ["The app could not place the summary box without risking existing annotations."],
+                    },
+                )
+        else:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": "This PDF needs manual review because the parsed evidence did not fully support automatic totals.",
+                    "warnings": exc.warnings,
+                    "supported_totals": exc.supported_totals,
+                    "unresolved_callouts": exc.unresolved_callouts,
+                },
+            )
     except PlacementReviewRequired as exc:
         logger.warning("placement_review_required filename=%s error=%s", file.filename, exc)
         return JSONResponse(
@@ -100,6 +140,21 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
             "X-Telcyte-Confidence": f"{summary.confidence:.2f}",
             "X-Telcyte-Warnings": json.dumps(summary.warnings[:6]),
         },
+    )
+
+
+def _with_user_selected_extras(
+    summary: SummaryResult,
+    selections: list[ExtraBillingCodeSelection],
+) -> SummaryResult:
+    if not selections:
+        return summary
+    extra_totals, extra_notes = extra_totals_from_selections(selections)
+    return summary.model_copy(
+        update={
+            "extra_totals": [*summary.extra_totals, *extra_totals],
+            "extra_notes": [*summary.extra_notes, *extra_notes],
+        }
     )
 
 

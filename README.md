@@ -13,6 +13,14 @@ OPENROUTER_API_KEY=... uvicorn app.main:app --reload
 
 Open `http://127.0.0.1:8000`, upload one PDF, and download the annotated result.
 
+## Optional Extra Billing Codes
+
+The app extracts and sums visible billing-code labels from the PDF by default. It does not automatically guess implied billing codes.
+
+Use **Optional Extra Billing Codes** when Telcyte has confirmed extra billing items that are not shown as direct PDF labels. Search for a code, select it, enter the quantity, and optionally add a short note. The generated PDF separates those lines under **User-selected extra totals** so they stay distinct from the direct extracted totals.
+
+The optional-code catalog uses the unmatched-code review and MCA rate-card descriptions, grouped as Preconstruction, Coax/HFC, Fiber, Performance/testing, Time/labor, and Composite.
+
 ## Environment
 
 - `OPENROUTER_API_KEY`: required for AI extraction.
