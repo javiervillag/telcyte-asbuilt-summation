@@ -8,11 +8,13 @@ const codeList = document.querySelector("#code-list");
 const codeSearch = document.querySelector("#code-search");
 const selectedCount = document.querySelector("#selected-count");
 const categoryTabs = document.querySelector("#category-tabs");
+const toggleAll = document.querySelector("#toggle-all");
 const processingOverlay = document.querySelector("#processing-overlay");
 
 let extraCodeCategories = [];
 let activeCategory = "All";
 let codeState = {};
+let showAllCodes = false;
 
 hideResult();
 
@@ -23,6 +25,22 @@ fileInput.addEventListener("change", () => {
 });
 
 codeSearch.addEventListener("input", () => {
+  if (codeSearch.value.trim()) {
+    showAllCodes = false;
+    activeCategory = "All";
+    updateCatalogControls();
+  }
+  renderExtraCodes();
+});
+
+toggleAll.addEventListener("click", () => {
+  showAllCodes = !showAllCodes;
+  if (showAllCodes) {
+    codeSearch.value = "";
+  } else {
+    activeCategory = "All";
+  }
+  updateCatalogControls();
   renderExtraCodes();
 });
 
@@ -173,6 +191,7 @@ async function loadExtraCodes() {
     const data = await response.json();
     extraCodeCategories = data.categories || [];
     renderCategoryTabs();
+    updateCatalogControls();
     renderExtraCodes();
   } catch (error) {
     codeList.innerHTML = `<div class="code-empty">${escapeHtml(error.message)}</div>`;
@@ -191,6 +210,7 @@ function renderCategoryTabs() {
     tab.addEventListener("click", () => {
       activeCategory = tab.dataset.category || "All";
       renderCategoryTabs();
+      updateCatalogControls();
       renderExtraCodes();
     });
   });
@@ -200,18 +220,28 @@ function renderExtraCodes() {
   const filter = codeSearch.value.trim().toLowerCase();
   captureCodeState();
   const groups = extraCodeCategories
-    .filter((category) => activeCategory === "All" || category.name === activeCategory)
+    .filter((category) => showAllCodes || filter || _categoryHasSelectedCode(category))
+    .filter((category) => !showAllCodes || activeCategory === "All" || category.name === activeCategory)
     .map((category) => {
       const codes = (category.codes || []).filter((item) => {
         const haystack = `${item.code} ${item.name} ${item.description} ${item.when_to_consider}`.toLowerCase();
-        return codeState[item.code]?.checked || !filter || haystack.includes(filter);
+        if (codeState[item.code]?.checked) return true;
+        if (filter) return haystack.includes(filter);
+        return showAllCodes;
       });
       return { name: category.name, codes };
     })
     .filter((category) => category.codes.length > 0);
 
   if (!groups.length) {
-    codeList.innerHTML = `<div class="code-empty">No matching codes.</div>`;
+    const message = filter
+      ? "No matching codes."
+      : "Search for an extra billing code, or show the full catalog when you need to browse.";
+    codeList.innerHTML = `
+      <div class="code-empty">
+        <span>${escapeHtml(message)}</span>
+      </div>
+    `;
     restoreCurrentCodeState();
     updateSelectedCount();
     return;
@@ -323,6 +353,16 @@ function updateSelectedCount() {
   const count = Object.values(codeState).filter((state) => state.checked).length;
   selectedCount.textContent = `${count} selected`;
   selectedCount.classList.toggle("has-selection", count > 0);
+}
+
+function updateCatalogControls() {
+  toggleAll.textContent = showAllCodes ? "Hide full catalog" : "Show all codes";
+  categoryTabs.classList.toggle("is-hidden", !showAllCodes);
+  renderCategoryTabs();
+}
+
+function _categoryHasSelectedCode(category) {
+  return (category.codes || []).some((item) => codeState[item.code]?.checked);
 }
 
 function escapeHtml(value) {

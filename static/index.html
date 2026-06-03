@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux3" />
   </head>
   <body>
     <header class="masthead">
@@ -22,27 +22,21 @@
 
     <main class="shell">
       <section class="layout">
-        <aside class="side-panel">
-          <article class="card upload-card">
-            <div class="card-heading">
-              <span class="eyebrow">PDF</span>
-              <h2>Input</h2>
-            </div>
+        <article class="card upload-card">
+          <div class="card-heading">
+            <span class="eyebrow">PDF</span>
+            <h2>Input</h2>
+          </div>
 
-            <form id="upload-form" class="dropzone">
-              <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
-              <label for="pdf-file">
-                <span id="file-label">Choose PDF</span>
-                <strong id="file-name">No file selected</strong>
-              </label>
-              <button id="submit" type="submit">Generate PDF</button>
-            </form>
-          </article>
-
-          <article id="result-card" class="card result-card is-hidden">
-            <div id="status" class="status empty" role="status" aria-live="polite"></div>
-          </article>
-        </aside>
+          <form id="upload-form" class="dropzone">
+            <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
+            <label for="pdf-file">
+              <span id="file-label">Choose PDF</span>
+              <strong id="file-name">No file selected</strong>
+            </label>
+            <button id="submit" type="submit">Generate PDF</button>
+          </form>
+        </article>
 
         <article class="card extras-card">
           <div class="extras-header">
@@ -56,12 +50,18 @@
 
           <div class="extras-toolbar">
             <input id="code-search" type="search" placeholder="Search by code or meaning" autocomplete="off" />
-            <div id="category-tabs" class="category-tabs" aria-label="Code categories"></div>
+            <button id="toggle-all" class="ghost-button" type="button">Show all codes</button>
           </div>
+
+          <div id="category-tabs" class="category-tabs is-hidden" aria-label="Code categories"></div>
 
           <div id="code-list" class="code-list" aria-live="polite">
             <div class="code-empty">Loading code list...</div>
           </div>
+        </article>
+
+        <article id="result-card" class="card result-card is-hidden">
+          <div id="status" class="status empty" role="status" aria-live="polite"></div>
         </article>
       </section>
     </main>
@@ -74,6 +74,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260603-ux2"></script>
+    <script src="/static/app.js?v=20260603-ux3"></script>
   </body>
 </html>
