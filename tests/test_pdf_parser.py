@@ -105,7 +105,11 @@ def test_derive_code_totals_reads_code_first_multiplier_notes() -> None:
     content = doc.tobytes()
     doc.close()
 
-    assert derive_code_totals(extract_text_blocks(content)) == ["PC-01 - 2"]
+    blocks = extract_text_blocks(content)
+
+    assert derive_code_totals(blocks) == ["PC-01 - 2"]
+    diagnostics = diagnose_extraction(blocks, code_totals=["PC-01 - 2"])
+    assert diagnostics.ambiguous_code_line_count == 0
 
 
 def test_derive_code_totals_reads_quantity_first_code_when_line_has_direct_total() -> None:

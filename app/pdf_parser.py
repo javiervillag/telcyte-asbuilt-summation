@@ -334,9 +334,18 @@ def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
         r"\b[0-9]+(?:\.[0-9]+)?\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b",
         re.I,
     )
+    code_first_multiplier_pattern = re.compile(
+        r"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*x\s*[0-9]+(?:\.[0-9]+)?\b",
+        re.I,
+    )
     count = 0
     for line in quantity_lines:
-        if CODE_PATTERN.search(line) and not total_pattern.search(line) and not quantity_first_pattern.search(line):
+        if (
+            CODE_PATTERN.search(line)
+            and not total_pattern.search(line)
+            and not quantity_first_pattern.search(line)
+            and not code_first_multiplier_pattern.search(line)
+        ):
             count += 1
     return count
 
