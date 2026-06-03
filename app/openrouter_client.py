@@ -252,6 +252,10 @@ def _manual_review_warnings(
     model_summary: SummaryResult | None = None,
 ) -> list[str]:
     warnings = list(model_summary.warnings if model_summary else [])
+    if model_summary is not None:
+        verifier_warning = "OpenRouter verifier reviewed unresolved callouts but could not clear them from parsed evidence."
+        if verifier_warning not in warnings:
+            warnings.append(verifier_warning)
     warnings.extend(warning for warning in diagnostics.warnings if warning not in warnings)
     return warnings
 

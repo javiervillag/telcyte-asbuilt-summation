@@ -166,6 +166,10 @@ def test_unresolved_callouts_are_sent_to_openrouter_before_manual_review(monkeyp
     assert exc.value.supported_totals == ["UG-06 - 13"]
     assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
     assert "Model verifier kept EOL callout in manual review." in exc.value.warnings
+    assert (
+        "OpenRouter verifier reviewed unresolved callouts but could not clear them from parsed evidence."
+        in exc.value.warnings
+    )
 
 
 def test_openrouter_cannot_clear_unresolved_callout_without_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
