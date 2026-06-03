@@ -82,7 +82,6 @@ def test_generic_output_preserves_existing_green_annotations() -> None:
     before_doc = fitz.open(input_pdf)
     try:
         before_annotations = _annotation_snapshot(before_doc[0])
-        before_green_fills = _green_fill_count(before_doc[0])
     finally:
         before_doc.close()
 
@@ -100,12 +99,37 @@ def test_generic_output_preserves_existing_green_annotations() -> None:
     doc = fitz.open(stream=output, filetype="pdf")
     try:
         after_annotations = _annotation_snapshot(doc[0])
-        after_green_fills = _green_fill_count(doc[0])
+        summary_annotations = _summary_annotations(doc[0])
     finally:
         doc.close()
 
-    assert after_annotations == before_annotations
-    assert after_green_fills - before_green_fills == 1
+    assert after_annotations[: len(before_annotations)] == before_annotations
+    assert len(after_annotations) == len(before_annotations) + 1
+    assert summary_annotations == ["MKR Job Totals\nUG-83 - 140'"]
+
+
+def test_rotated_pdf_summary_is_selectable_upright_annotation() -> None:
+    input_pdf = SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf")
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["UG-83 - 140'", "UG-56 - 168'"],
+        materials=[],
+    )
+
+    output = annotate_pdf(input_pdf.read_bytes(), summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        summary_annots = [annot for annot in page.annots() or [] if (annot.info or {}).get("content", "").startswith("MKR Job Totals")]
+        assert len(summary_annots) == 1
+        summary_annot = summary_annots[0]
+        assert summary_annot.type[1] == "FreeText"
+        assert "UG-56 - 168'" in summary_annot.info["content"]
+        assert "/Rotate 90" in doc.xref_object(summary_annot.xref, compressed=False)
+        assert "MKR Job Totals" in page.get_text("text")
+    finally:
+        doc.close()
 
 
 def _annotation_snapshot(page: fitz.Page) -> list[tuple[str, tuple[float, float, float, float], str]]:
@@ -121,13 +145,10 @@ def _annotation_snapshot(page: fitz.Page) -> list[tuple[str, tuple[float, float,
     return rows
 
 
-def _green_fill_count(page: fitz.Page) -> int:
-    count = 0
-    for drawing in page.get_drawings():
-        fill = drawing.get("fill")
-        if not fill or len(fill) < 3:
-            continue
-        r, g, b = fill[:3]
-        if g > 0.7 and r > 0.6 and b < 0.8:
-            count += 1
-    return count
+def _summary_annotations(page: fitz.Page) -> list[str]:
+    rows = []
+    for annot in page.annots() or []:
+        content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
+        if annot.type[1] == "FreeText" and content.startswith("MKR Job Totals"):
+            rows.append(content)
+    return rows

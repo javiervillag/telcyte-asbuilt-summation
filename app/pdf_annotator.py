@@ -87,8 +87,15 @@ def _box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float
     return width, height, font_size, padding
 
 
+def _placement_box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float, float]:
+    width, height, font_size, padding = _box_metrics(page, lines)
+    if page.rotation in {90, 270}:
+        return height, width, font_size, padding
+    return width, height, font_size, padding
+
+
 def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
-    width, height, _, _ = _box_metrics(page, lines)
+    width, height, _, _ = _placement_box_metrics(page, lines)
     margin_x = max(14.0, page.rect.width * 0.014)
     margin_y = max(18.0, page.rect.height * 0.018)
     if page.rotation == 90:
@@ -235,34 +242,51 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     try:
         page = doc[0]
         rect = choose_box_rect(page, lines)
-        width, _, font_size, padding = _box_metrics(page, lines)
-        line_height = font_size * 1.16
-        page.draw_rect(rect, color=None, fill=BOX_FILL, overlay=True)
-
-        y = rect.y0 + padding + font_size
-        x = rect.x0 + padding
-        max_chars = max(12, int((width - padding * 2) / (font_size * 0.54)))
-        for idx, line in enumerate(lines):
-            wrapped = _wrap_line(line, max_chars)
-            for part in wrapped:
-                if y > rect.y1 - padding:
-                    break
-                size = font_size * (1.05 if idx == 0 else 1.0)
-                _insert_text(
-                    page,
-                    (x, y),
-                    part,
-                    TextStyle(size=size, color=TEXT_RED, bold_narrow=True),
-                )
-                y += line_height
-            if y > rect.y1 - padding:
-                break
+        _add_summary_annotation(page, rect, lines)
 
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
         return buffer.getvalue()
     finally:
         doc.close()
+
+
+def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
+    _, _, font_size, padding = _box_metrics(page, lines)
+    text_width, text_height = _annotation_text_space(page, rect)
+    line_height = font_size * 1.16
+    max_lines = max(1, int((text_height - padding * 2) / line_height))
+    rendered_lines: list[str] = []
+    remaining = max_lines
+    max_chars = max(12, int((text_width - padding * 2) / (font_size * 0.54)))
+    for line in lines:
+        if remaining <= 0:
+            break
+        wrapped = _wrap_line(line, max_chars)
+        rendered_lines.extend(wrapped[:remaining])
+        remaining -= len(wrapped[:remaining])
+
+    annot = page.add_freetext_annot(
+        rect,
+        "\n".join(rendered_lines),
+        fontsize=font_size,
+        fontname="helv",
+        text_color=TEXT_RED,
+        fill_color=BOX_FILL,
+        rotate=_annotation_rotation(page),
+    )
+    annot.set_border(width=0)
+    annot.update(fontname="helv", fontsize=font_size, text_color=TEXT_RED, fill_color=BOX_FILL)
+
+
+def _annotation_rotation(page: fitz.Page) -> int:
+    return page.rotation if page.rotation in {90, 180, 270} else 0
+
+
+def _annotation_text_space(page: fitz.Page, rect: fitz.Rect) -> tuple[float, float]:
+    if page.rotation in {90, 270}:
+        return rect.height, rect.width
+    return rect.width, rect.height
 
 
 def _wrap_line(line: str, max_chars: int) -> list[str]:
