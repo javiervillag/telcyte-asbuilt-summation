@@ -15,7 +15,7 @@ from PIL import Image
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
-from app.rate_cards import CodeKey, code_key, load_code_catalog, total_line_key
+from app.rate_cards import load_code_catalog, total_line_key
 
 logger = logging.getLogger(__name__)
 
@@ -192,13 +192,6 @@ def _normalize_review(data: dict, model: str) -> ModelReview:
     )
 
 
-def _line_code_key(line: str) -> CodeKey | None:
-    code_part = line.split("-", 2)
-    if len(code_part) >= 2:
-        return code_key("-".join(code_part[:2]))
-    return code_key(line)
-
-
 def _merge_parser_and_model(
     parser_totals: list[str],
     model_summary: SummaryResult,
@@ -208,31 +201,34 @@ def _merge_parser_and_model(
     omitted_model_totals = 0
     parser_total_keys = {key for line in parser_totals if (key := total_line_key(line))}
     parser_total_codes = {key[0] for key in parser_total_keys}
+    model_total_keys = [(line, key) for line in model_summary.job_totals if (key := total_line_key(line))]
+    malformed_model_totals = len(model_summary.job_totals) - len(model_total_keys)
     model_disagreed_total_count = sum(
         1
-        for line in model_summary.job_totals
+        for _, model_key in model_total_keys
         if (
-            (model_key := total_line_key(line))
-            and model_key[0] in parser_total_codes
+            model_key[0] in parser_total_codes
             and model_key not in parser_total_keys
         )
     )
     if settings.allow_llm_inferred_totals:
-        seen = {_line_code_key(line) for line in totals}
-        for line in model_summary.job_totals:
-            key = _line_code_key(line)
+        seen = {key[0] for key in parser_total_keys}
+        for line, model_key in model_total_keys:
+            key = model_key[0]
             if key and key not in seen:
                 totals.append(line)
                 seen.add(key)
     else:
-        parser_keys = {_line_code_key(line) for line in totals}
+        parser_keys = {key[0] for key in parser_total_keys}
         omitted_model_totals = sum(
             1
-            for line in model_summary.job_totals
-            if (_line_code_key(line) not in parser_keys)
+            for _, model_key in model_total_keys
+            if model_key[0] not in parser_keys
         )
 
     warnings = list(model_summary.warnings)
+    if malformed_model_totals:
+        warnings.append("Verifier returned lines that were not valid billing totals; they were ignored.")
     if omitted_model_totals:
         warnings.append(
             "Possible extra totals were not added because the parsed PDF text did not support them."
@@ -244,7 +240,7 @@ def _merge_parser_and_model(
 
     return SummaryResult(
         title="MKR Job Totals",
-        job_totals=totals if totals or not settings.allow_llm_inferred_totals else model_summary.job_totals,
+        job_totals=totals,
         materials=model_summary.materials if settings.include_materials else [],
         warnings=warnings,
         confidence=model_summary.confidence,

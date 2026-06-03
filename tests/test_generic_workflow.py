@@ -191,6 +191,22 @@ def test_model_quantity_disagreement_is_reported_without_replacing_parser_total(
     assert any("different quantity" in warning.lower() for warning in merged.warnings)
 
 
+def test_llm_inferred_totals_must_be_parseable_billing_totals() -> None:
+    settings = Settings(OPENROUTER_API_KEY="test-key", ALLOW_LLM_INFERRED_TOTALS=True)
+    model_summary = SummaryResult(
+        model=settings.openrouter_model,
+        job_totals=["PC-01 pending review", "not a billing total", "FB-04 - 6"],
+        materials=[],
+        warnings=[],
+        confidence=0.72,
+    )
+
+    merged = _merge_parser_and_model(["UG-06 - 13"], model_summary, settings)
+
+    assert merged.job_totals == ["UG-06 - 13", "FB-04 - 6"]
+    assert "Verifier returned lines that were not valid billing totals; they were ignored." in merged.warnings
+
+
 def test_openrouter_error_body_redacts_key_urls_and_token_shapes() -> None:
     body = (
         "visit https://openrouter.ai/workspaces/default/keys/abc123secret "
