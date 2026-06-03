@@ -261,6 +261,8 @@ def _resolved_callout_has_grounded_evidence(
     callout_key = _norm_evidence_text(callout)
     if not evidence_key.replace(callout_key, "").strip():
         return False
+    if callout_key not in evidence_key:
+        return False
     parser_total_keys = [_norm_evidence_text(total) for total in parser_totals]
     if any(evidence_key == total_key for total_key in parser_total_keys):
         return False
