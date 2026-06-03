@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux4" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux5" />
   </head>
   <body>
     <header class="masthead">
@@ -70,8 +70,27 @@
               <button id="manual-add" class="ghost-button" type="button">Add</button>
             </div>
             <div id="manual-message" class="manual-message" aria-live="polite"></div>
-            <div id="manual-list" class="manual-list" aria-live="polite"></div>
           </div>
+
+          <section id="selected-extras" class="selected-extras is-empty" aria-live="polite">
+            <div class="selected-header">
+              <div>
+                <strong>Selected extras</strong>
+                <span>These are the optional codes that will be added to the PDF.</span>
+              </div>
+              <button id="clear-selected" class="text-button" type="button">Clear all</button>
+            </div>
+            <div id="selected-empty" class="selected-empty">No extra billing codes selected yet.</div>
+            <div class="selected-table">
+              <div class="selected-table-head">
+                <span>Code</span>
+                <span>Qty</span>
+                <span>Note</span>
+                <span></span>
+              </div>
+              <div id="selected-rows"></div>
+            </div>
+          </section>
 
           <div id="category-tabs" class="category-tabs is-hidden" aria-label="Code categories"></div>
 
@@ -90,6 +109,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260603-ux4"></script>
+    <script src="/static/app.js?v=20260603-ux5"></script>
   </body>
 </html>

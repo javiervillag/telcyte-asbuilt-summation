@@ -14,8 +14,10 @@ const manualCode = document.querySelector("#manual-code");
 const manualQuantity = document.querySelector("#manual-quantity");
 const manualNote = document.querySelector("#manual-note");
 const manualAdd = document.querySelector("#manual-add");
-const manualList = document.querySelector("#manual-list");
 const manualMessage = document.querySelector("#manual-message");
+const selectedExtras = document.querySelector("#selected-extras");
+const selectedRows = document.querySelector("#selected-rows");
+const clearSelected = document.querySelector("#clear-selected");
 
 let extraCodeCategories = [];
 let activeCategory = "All";
@@ -69,17 +71,37 @@ manualAdd.addEventListener("click", () => {
   manualCode.value = "";
   manualQuantity.value = "";
   manualNote.value = "";
-  renderManualExtras();
+  renderSelectedExtras();
   updateSelectedCount();
   setManualMessage(`Added ${code} - ${quantity}.`, "done");
   hideResult();
 });
 
-manualList.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-remove-manual]");
+selectedRows.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-remove-selected]");
   if (!button) return;
-  manualExtras = manualExtras.filter((item) => item.code !== button.dataset.removeManual);
-  renderManualExtras();
+  removeSelectedExtra(button.dataset.source, button.dataset.code);
+  renderExtraCodes();
+  renderSelectedExtras();
+  updateSelectedCount();
+  setManualMessage("", "");
+});
+
+selectedRows.addEventListener("input", (event) => {
+  const input = event.target.closest("[data-selected-field]");
+  if (!input) return;
+  updateSelectedExtra(input.dataset.source, input.dataset.code, input.dataset.selectedField, input.value);
+  syncVisibleCatalogRow(input.dataset.code);
+});
+
+clearSelected.addEventListener("click", () => {
+  for (const [code, state] of Object.entries(codeState)) {
+    state.checked = false;
+    syncVisibleCatalogRow(code);
+  }
+  manualExtras = [];
+  renderExtraCodes();
+  renderSelectedExtras();
   updateSelectedCount();
   setManualMessage("", "");
 });
@@ -285,6 +307,7 @@ function renderExtraCodes() {
     `;
     restoreCurrentCodeState();
     updateSelectedCount();
+    renderSelectedExtras();
     return;
   }
 
@@ -294,6 +317,7 @@ function renderExtraCodes() {
     checkbox.addEventListener("change", () => {
       updateCodeRowState(checkbox.closest(".code-row"));
       captureCodeState();
+      renderSelectedExtras();
       updateSelectedCount();
     });
     updateCodeRowState(checkbox.closest(".code-row"));
@@ -301,10 +325,12 @@ function renderExtraCodes() {
   codeList.querySelectorAll(".code-quantity, .code-note").forEach((input) => {
     input.addEventListener("input", () => {
       captureCodeState();
+      renderSelectedExtras();
       updateSelectedCount();
     });
   });
   updateSelectedCount();
+  renderSelectedExtras();
 }
 
 function renderCategory(category) {
@@ -420,21 +446,99 @@ function _categoryHasSelectedCode(category) {
   return (category.codes || []).some((item) => codeState[item.code]?.checked);
 }
 
-function renderManualExtras() {
-  if (!manualExtras.length) {
-    manualList.innerHTML = "";
+function renderSelectedExtras() {
+  const rows = selectedExtraRows();
+  selectedExtras.classList.toggle("is-empty", rows.length === 0);
+  if (!rows.length) {
+    selectedRows.innerHTML = "";
     return;
   }
-  manualList.innerHTML = manualExtras
+  selectedRows.innerHTML = rows
     .map(
       (item) => `
-        <div class="manual-item">
-          <span><strong>${escapeHtml(item.code)}</strong> - ${escapeHtml(item.quantity)}${item.note ? ` · ${escapeHtml(item.note)}` : ""}</span>
-          <button type="button" aria-label="Remove ${escapeHtml(item.code)}" data-remove-manual="${escapeHtml(item.code)}">Remove</button>
+        <div class="selected-row">
+          <div class="selected-code">
+            <span>${escapeHtml(item.sourceLabel)}</span>
+            <strong>${escapeHtml(item.code)}</strong>
+            <small>${escapeHtml(item.name)}</small>
+          </div>
+          <input class="selected-quantity" type="text" inputmode="decimal" value="${escapeHtml(item.quantity)}" aria-label="${escapeHtml(item.code)} selected quantity" data-source="${escapeHtml(item.source)}" data-code="${escapeHtml(item.code)}" data-selected-field="quantity" />
+          <input class="selected-note" type="text" maxlength="180" value="${escapeHtml(item.note)}" placeholder="Note" aria-label="${escapeHtml(item.code)} selected note" data-source="${escapeHtml(item.source)}" data-code="${escapeHtml(item.code)}" data-selected-field="note" />
+          <button class="selected-remove" type="button" aria-label="Remove ${escapeHtml(item.code)}" data-remove-selected="true" data-source="${escapeHtml(item.source)}" data-code="${escapeHtml(item.code)}">Remove</button>
         </div>
       `,
     )
     .join("");
+}
+
+function selectedExtraRows() {
+  captureCodeState();
+  const rows = [];
+  for (const [code, state] of Object.entries(codeState)) {
+    if (!state.checked) continue;
+    const item = catalogItemForCode(code);
+    rows.push({
+      source: "catalog",
+      sourceLabel: "Catalog",
+      code,
+      name: item?.name || "Catalog extra",
+      quantity: state.quantity || "1",
+      note: state.note || "",
+    });
+  }
+  for (const item of manualExtras) {
+    rows.push({
+      source: "manual",
+      sourceLabel: "Manual",
+      code: item.code,
+      name: "Manual exception",
+      quantity: item.quantity,
+      note: item.note,
+    });
+  }
+  return rows;
+}
+
+function catalogItemForCode(code) {
+  for (const category of extraCodeCategories) {
+    const match = (category.codes || []).find((item) => item.code === code);
+    if (match) return match;
+  }
+  return null;
+}
+
+function updateSelectedExtra(source, code, field, value) {
+  if (source === "manual") {
+    const item = manualExtras.find((row) => row.code === code);
+    if (item) item[field] = value;
+    return;
+  }
+  codeState[code] = {
+    checked: true,
+    quantity: field === "quantity" ? value : codeState[code]?.quantity || "1",
+    note: field === "note" ? value : codeState[code]?.note || "",
+  };
+}
+
+function removeSelectedExtra(source, code) {
+  if (source === "manual") {
+    manualExtras = manualExtras.filter((item) => item.code !== code);
+    return;
+  }
+  if (codeState[code]) {
+    codeState[code].checked = false;
+    syncVisibleCatalogRow(code);
+  }
+}
+
+function syncVisibleCatalogRow(code) {
+  for (const row of document.querySelectorAll(".code-row")) {
+    if (row.dataset.code !== code || !codeState[code]) continue;
+    row.querySelector(".code-toggle").checked = codeState[code].checked;
+    row.querySelector(".code-quantity").value = codeState[code].quantity;
+    row.querySelector(".code-note").value = codeState[code].note;
+    updateCodeRowState(row);
+  }
 }
 
 function normalizeManualCode(value) {
