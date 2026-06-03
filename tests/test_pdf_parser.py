@@ -124,6 +124,18 @@ def test_derive_code_totals_reads_quantity_first_code_when_line_has_direct_total
     assert totals == ["UG-06 - 13", "PC-01 - 2"]
 
 
+def test_derive_code_totals_normalizes_square_foot_unit_variants() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-80 - 132 sq ft\nUG-80 - 20sqft\nUG-80 - 12 sq. ft.")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-80 - 164sqft"]
+
+
 def test_unresolved_callout_is_kept_when_shared_with_supported_code_line() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)

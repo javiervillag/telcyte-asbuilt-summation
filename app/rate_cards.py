@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})(?!\.\d)\b", re.I)
+UNIT_PATTERN = r"(?:'|sq\.?\s*ft\.?|sqft)"
 ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
 CodeKey = tuple[str, str]
 TotalKey = tuple[CodeKey, str, str]
@@ -40,11 +41,11 @@ def total_line_key(line: str) -> TotalKey | None:
     if not key:
         return None
     remainder = line[code_match.end() :]
-    qty_match = re.match(r"\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?", remainder, re.I)
+    qty_match = re.match(rf"\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*{UNIT_PATTERN})?", remainder, re.I)
     if not qty_match:
         return None
     qty = _normalize_quantity(qty_match.group(1))
-    unit = (qty_match.group(2) or "").strip().lower()
+    unit = _normalize_unit(qty_match.group(2) or "")
     return (key, qty, unit)
 
 
@@ -112,6 +113,13 @@ def _format_code(prefix: str, number: str, raw: str) -> str:
 def _normalize_quantity(value: str) -> str:
     number = float(value)
     return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+def _normalize_unit(value: str) -> str:
+    normalized = re.sub(r"[\s.]+", "", value.strip().lower())
+    if normalized == "sqft":
+        return "sqft"
+    return value.strip().lower()
 
 
 def _has_highlight_fill(fill) -> bool:

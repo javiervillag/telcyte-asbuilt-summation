@@ -7,7 +7,7 @@ from typing import Any
 
 import fitz
 
-from app.rate_cards import CODE_PATTERN, CodeKey, code_key
+from app.rate_cards import CODE_PATTERN, UNIT_PATTERN, CodeKey, code_key
 
 
 @dataclass(frozen=True)
@@ -150,7 +150,7 @@ def derive_code_totals(
     code_catalog: dict[CodeKey, str] | None = None,
 ) -> list[str]:
     direct_pattern = re.compile(
-        r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
+        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*{UNIT_PATTERN})?",
         re.I,
     )
     quantity_first_pattern = re.compile(
@@ -176,7 +176,7 @@ def derive_code_totals(
                     continue
                 if catalog and normalized_key not in catalog:
                     continue
-                unit = (raw_unit or "").strip()
+                unit = _normalize_unit(raw_unit or "")
                 key = (normalized_key, unit)
                 if key not in totals:
                     order.append(key)
@@ -234,6 +234,13 @@ def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
     if match:
         return f"{match.group(1)}-{match.group(2)}"
     return raw_code
+
+
+def _normalize_unit(value: str) -> str:
+    normalized = re.sub(r"[\s.]+", "", value.strip().lower())
+    if normalized == "sqft":
+        return "sqft"
+    return value.strip()
 
 
 def _is_non_billing_context(line: str, match_start: int) -> bool:
@@ -334,7 +341,7 @@ def diagnose_extraction(
 
 def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     total_pattern = re.compile(
-        r"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\b",
+        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*{UNIT_PATTERN})?\b",
         re.I,
     )
     quantity_first_pattern = re.compile(
