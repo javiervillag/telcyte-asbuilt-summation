@@ -176,7 +176,7 @@ def derive_code_totals(
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
                 totals[key] += float(raw_qty)
 
-    direct_keys = set(totals)
+    direct_code_keys = {key[0] for key in totals}
     for block in blocks:
         for line in block.text.splitlines():
             for match in quantity_first_pattern.finditer(line):
@@ -187,7 +187,7 @@ def derive_code_totals(
                 if catalog and normalized_key not in catalog:
                     continue
                 key = (normalized_key, "")
-                if key in direct_keys:
+                if normalized_key in direct_code_keys:
                     continue
                 if key not in totals:
                     order.append(key)

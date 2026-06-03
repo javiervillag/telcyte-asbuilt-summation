@@ -172,6 +172,16 @@ def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
     assert derive_code_totals(extract_text_blocks(content)) == ["UG-06 - 13"]
 
 
+def test_quantity_first_code_notes_do_not_duplicate_direct_totals_with_units() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-56 - 170' and field note 170 x UG-56.")
+    content = doc.tobytes()
+    doc.close()
+
+    assert derive_code_totals(extract_text_blocks(content)) == ["UG-56 - 170'"]
+
+
 def test_derive_code_totals_ignores_bore_context_notes() -> None:
     sample = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-912047-Totals Removed.pdf")
     blocks = extract_text_blocks(sample.read_bytes())
