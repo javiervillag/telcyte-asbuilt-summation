@@ -262,9 +262,7 @@ input[type="file"] {
   align-items: center;
 }
 
-#code-search,
-.code-quantity,
-.code-note {
+#code-search {
   width: 100%;
   min-width: 0;
   min-height: 40px;
@@ -276,9 +274,7 @@ input[type="file"] {
   font-size: 13px;
 }
 
-#code-search:focus,
-.code-quantity:focus,
-.code-note:focus {
+#code-search:focus {
   border-color: var(--accent);
   outline: 2px solid rgba(240, 90, 66, 0.16);
 }
@@ -366,14 +362,12 @@ input[type="file"] {
 
 .manual-extra-fields {
   display: grid;
-  grid-template-columns: 112px 86px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
 }
 
-#manual-code,
-#manual-quantity,
-#manual-note {
+#manual-code {
   width: 100%;
   min-width: 0;
   min-height: 40px;
@@ -385,9 +379,7 @@ input[type="file"] {
   font-size: 13px;
 }
 
-#manual-code:focus,
-#manual-quantity:focus,
-#manual-note:focus {
+#manual-code:focus {
   border-color: var(--accent);
   outline: 2px solid rgba(240, 90, 66, 0.16);
 }
@@ -453,6 +445,7 @@ input[type="file"] {
   display: grid;
   gap: 0;
   border-top: 1px solid var(--line);
+  padding-top: 9px;
 }
 
 .selected-table-head,
@@ -468,6 +461,7 @@ input[type="file"] {
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
+  padding-bottom: 8px;
   text-transform: uppercase;
 }
 
@@ -615,27 +609,6 @@ input[type="file"] {
   font-size: 12px;
   font-style: normal;
   line-height: 1.35;
-}
-
-.code-fields {
-  display: grid;
-  grid-template-columns: 74px minmax(0, 1fr) 42px;
-  gap: 8px;
-  align-items: center;
-  padding-left: 28px;
-}
-
-.code-fields span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-  text-align: right;
-}
-
-.code-quantity:disabled,
-.code-note:disabled {
-  background: #eef4f6;
-  color: #8996a7;
 }
 
 .code-empty {
@@ -846,21 +819,12 @@ input[type="file"] {
     flex-direction: column;
   }
 
-  .code-fields {
-    grid-template-columns: 72px minmax(0, 1fr);
-    padding-left: 28px;
-  }
-
   .selected-table-head {
     display: none;
   }
 
   .selected-row {
     grid-template-columns: 1fr;
-  }
-
-  .code-fields span {
-    display: none;
   }
 
   .status-summary {

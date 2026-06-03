@@ -13,8 +13,6 @@ const toggleManual = document.querySelector("#toggle-manual");
 const processingOverlay = document.querySelector("#processing-overlay");
 const manualExtra = document.querySelector("#manual-extra");
 const manualCode = document.querySelector("#manual-code");
-const manualQuantity = document.querySelector("#manual-quantity");
-const manualNote = document.querySelector("#manual-note");
 const manualAdd = document.querySelector("#manual-add");
 const manualMessage = document.querySelector("#manual-message");
 const selectedExtras = document.querySelector("#selected-extras");
@@ -67,9 +65,7 @@ toggleManual.addEventListener("click", () => {
 
 manualAdd.addEventListener("click", () => {
   const code = normalizeManualCode(manualCode.value);
-  const quantity = manualQuantity.value.trim() || "1";
-  const note = manualNote.value.trim();
-  const validation = validateManualExtra(code, quantity);
+  const validation = validateManualCode(code);
   if (!validation.ok) {
     setManualMessage(validation.message, "error");
     return;
@@ -79,13 +75,11 @@ manualAdd.addEventListener("click", () => {
     setManualMessage(`${code} is already in the selected extras.`, "error");
     return;
   }
-  manualExtras.push({ code, quantity, note });
+  manualExtras.push({ code, quantity: "1", note: "" });
   manualCode.value = "";
-  manualQuantity.value = "";
-  manualNote.value = "";
   renderSelectedExtras();
   updateSelectedCount();
-  setManualMessage(`Added ${code} - ${quantity}.`, "done");
+  setManualMessage(`Added ${code}. Set qty or optional note below.`, "done");
   hideResult();
 });
 
@@ -331,15 +325,9 @@ function renderExtraCodes() {
       captureCodeState();
       renderSelectedExtras();
       updateSelectedCount();
+      renderExtraCodes();
     });
     updateCodeRowState(checkbox.closest(".code-row"));
-  });
-  codeList.querySelectorAll(".code-quantity, .code-note").forEach((input) => {
-    input.addEventListener("input", () => {
-      captureCodeState();
-      renderSelectedExtras();
-      updateSelectedCount();
-    });
   });
   updateSelectedCount();
   renderSelectedExtras();
@@ -367,11 +355,6 @@ function renderCodeRow(item) {
           <em>${escapeHtml(item.when_to_consider)}</em>
         </span>
       </label>
-      <div class="code-fields">
-        <input class="code-quantity" type="text" inputmode="decimal" placeholder="Qty" aria-label="${code} quantity" disabled />
-        <input class="code-note" type="text" maxlength="180" placeholder="Note" aria-label="${code} note" disabled />
-        <span>${escapeHtml(item.unit)}</span>
-      </div>
     </article>
   `;
 }
@@ -380,12 +363,6 @@ function updateCodeRowState(row) {
   if (!row) return;
   const checked = row.querySelector(".code-toggle").checked;
   row.classList.toggle("selected", checked);
-  row.querySelectorAll(".code-quantity, .code-note").forEach((input) => {
-    input.disabled = !checked;
-    if (checked && input.classList.contains("code-quantity") && !input.value) {
-      input.value = "1";
-    }
-  });
 }
 
 function collectSelectedExtras() {
@@ -423,10 +400,11 @@ function collectSelectedExtras() {
 function captureCodeState() {
   document.querySelectorAll(".code-row").forEach((row) => {
     const code = row.dataset.code;
+    const prior = codeState[code] || { quantity: "1", note: "" };
     codeState[code] = {
       checked: row.querySelector(".code-toggle").checked,
-      quantity: row.querySelector(".code-quantity").value,
-      note: row.querySelector(".code-note").value,
+      quantity: prior.quantity || "1",
+      note: prior.note || "",
     };
   });
 }
@@ -436,8 +414,6 @@ function restoreCurrentCodeState() {
     const prior = codeState[row.dataset.code];
     if (!prior) return;
     row.querySelector(".code-toggle").checked = prior.checked;
-    row.querySelector(".code-quantity").value = prior.quantity;
-    row.querySelector(".code-note").value = prior.note;
   });
 }
 
@@ -485,7 +461,7 @@ function renderSelectedExtras() {
             <small>${escapeHtml(item.name)}</small>
           </div>
           <input class="selected-quantity" type="text" inputmode="decimal" value="${escapeHtml(item.quantity)}" aria-label="${escapeHtml(item.code)} selected quantity" data-source="${escapeHtml(item.source)}" data-code="${escapeHtml(item.code)}" data-selected-field="quantity" />
-          <input class="selected-note" type="text" maxlength="180" value="${escapeHtml(item.note)}" placeholder="Note" aria-label="${escapeHtml(item.code)} selected note" data-source="${escapeHtml(item.source)}" data-code="${escapeHtml(item.code)}" data-selected-field="note" />
+          <input class="selected-note" type="text" maxlength="180" value="${escapeHtml(item.note)}" placeholder="Optional note" aria-label="${escapeHtml(item.code)} selected note" data-source="${escapeHtml(item.source)}" data-code="${escapeHtml(item.code)}" data-selected-field="note" />
           <button class="selected-remove" type="button" aria-label="Remove ${escapeHtml(item.code)}" data-remove-selected="true" data-source="${escapeHtml(item.source)}" data-code="${escapeHtml(item.code)}">Remove</button>
         </div>
       `,
@@ -557,8 +533,6 @@ function syncVisibleCatalogRow(code) {
   for (const row of document.querySelectorAll(".code-row")) {
     if (row.dataset.code !== code || !codeState[code]) continue;
     row.querySelector(".code-toggle").checked = codeState[code].checked;
-    row.querySelector(".code-quantity").value = codeState[code].quantity;
-    row.querySelector(".code-note").value = codeState[code].note;
     updateCodeRowState(row);
   }
 }
@@ -568,13 +542,19 @@ function normalizeManualCode(value) {
 }
 
 function validateManualExtra(code, quantity) {
-  if (!code) return { ok: false, message: "Add a billing code." };
-  if (!/^[A-Z0-9][A-Z0-9-]{1,19}$/.test(code)) {
-    return { ok: false, message: "Use letters, numbers, and hyphens only." };
-  }
+  const codeValidation = validateManualCode(code);
+  if (!codeValidation.ok) return codeValidation;
   if (!quantity) return { ok: false, message: `Add a quantity for ${code}.` };
   if (!/^\d+(\.\d+)?(\s*('|sqft|hr|hrs|ea|each))?$/i.test(quantity)) {
     return { ok: false, message: `${code} quantity must be a number.` };
+  }
+  return { ok: true, message: "" };
+}
+
+function validateManualCode(code) {
+  if (!code) return { ok: false, message: "Add a billing code." };
+  if (!/^[A-Z0-9][A-Z0-9-]{1,19}$/.test(code)) {
+    return { ok: false, message: "Use letters, numbers, and hyphens only." };
   }
   return { ok: true, message: "" };
 }
