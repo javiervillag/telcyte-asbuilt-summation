@@ -347,7 +347,7 @@ def test_openrouter_error_falls_back_to_manual_review_for_unresolved_callouts(mo
     assert exc.value.supported_totals == ["UG-06 - 13"]
     assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
     assert exc.value.verifier_model == settings.openrouter_model
-    assert exc.value.verifier_used is True
+    assert exc.value.verifier_used is False
     assert "OpenRouter verifier was unavailable (OpenRouter returned 401); manual review is required." in exc.value.warnings
 
 

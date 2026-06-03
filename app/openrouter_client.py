@@ -354,7 +354,7 @@ def _raise_manual_review_for_unavailable_verifier(
         supported_totals=parser_totals,
         unresolved_callouts=diagnostics.unresolved_callouts,
         verifier_model=verifier_model,
-        verifier_used=True,
+        verifier_used=False,
         diagnostics=diagnostics,
     )
 
