@@ -134,16 +134,18 @@ form.addEventListener("submit", async (event) => {
       let warnings = [];
       let supportedTotals = [];
       let unresolvedCallouts = [];
+      let resultSummary = null;
       try {
         const json = await response.json();
         warnings = Array.isArray(json.warnings) ? json.warnings.filter(Boolean) : [];
         supportedTotals = Array.isArray(json.supported_totals) ? json.supported_totals.filter(Boolean) : [];
         unresolvedCallouts = Array.isArray(json.unresolved_callouts) ? json.unresolved_callouts.filter(Boolean) : [];
+        resultSummary = json.result_summary && typeof json.result_summary === "object" ? json.result_summary : null;
         message = json.detail || message;
       } catch {
         // Keep default message.
       }
-      throw Object.assign(new Error(message), { warnings, supportedTotals, unresolvedCallouts });
+      throw Object.assign(new Error(message), { warnings, supportedTotals, unresolvedCallouts, resultSummary });
     }
     const warnings = readWarnings(response);
     const resultSummary = readResultSummary(response);
@@ -172,6 +174,8 @@ form.addEventListener("submit", async (event) => {
       warnings: error.warnings || [],
       supportedTotals: error.supportedTotals || [],
       unresolvedCallouts: error.unresolvedCallouts || [],
+      resultSummary: error.resultSummary || null,
+      canStartOver: true,
     });
   } finally {
     showProcessing(false);
@@ -237,9 +241,11 @@ function setStatus(title, message, kind, details = []) {
   summary.appendChild(copy);
   statusBox.appendChild(summary);
   appendResultSummary(groups.resultSummary || null);
-  appendList("Warnings", groups.warnings || []);
-  appendList("Supported totals found", groups.supportedTotals || []);
-  appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
+  if (!groups.resultSummary) {
+    appendList("Warnings", groups.warnings || []);
+    appendList("Supported totals found", groups.supportedTotals || []);
+    appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
+  }
   if (groups.canStartOver) {
     appendStartAnotherAction();
   }
@@ -268,13 +274,16 @@ function appendResultSummary(summary) {
   const block = document.createElement("div");
   block.className = "included-summary";
   const heading = document.createElement("strong");
-  heading.textContent = "Included in this PDF";
+  heading.textContent = summary.output_name ? "Included in this PDF" : "Review summary";
   block.appendChild(heading);
-  const rows = [
-    ["Output", summary.output_name || "Generated summary PDF"],
+  const rows = [];
+  if (summary.output_name) {
+    rows.push(["Output", summary.output_name]);
+  }
+  rows.push(
     ["Detected totals", countLabel(summary.detected_totals, "total")],
     ["Extra billing codes", countLabel(summary.extra_billing_codes, "code")],
-  ];
+  );
   if (Array.isArray(summary.materials) && summary.materials.length) {
     rows.push(["Materials", countLabel(summary.materials, "item")]);
   }

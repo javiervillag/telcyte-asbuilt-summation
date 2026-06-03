@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 import fitz
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -97,6 +98,13 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     },
                 )
         else:
+            review_summary = SummaryResult(
+                title="MKR Job Totals",
+                job_totals=exc.supported_totals,
+                warnings=exc.warnings,
+                confidence=0.0,
+                model=f"parser+{settings.openrouter_model}",
+            )
             return JSONResponse(
                 status_code=422,
                 content={
@@ -104,6 +112,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     "warnings": exc.warnings,
                     "supported_totals": exc.supported_totals,
                     "unresolved_callouts": exc.unresolved_callouts,
+                    "result_summary": _result_summary_payload(review_summary, None),
                 },
             )
     except PlacementReviewRequired as exc:
@@ -174,14 +183,18 @@ def _validate_pdf_upload(content: bytes) -> None:
 
 
 def _result_summary_header(summary: SummaryResult, output_name: str) -> str:
+    return json.dumps(_result_summary_payload(summary, output_name), ensure_ascii=True, separators=(",", ":"))
+
+
+def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) -> dict:
     payload = {
-        "output_name": output_name,
+        "output_name": output_name or "",
         "detected_totals": summary.job_totals[:20],
         "extra_billing_codes": summary.extra_totals[:20],
         "materials": summary.materials[:10],
         "result_lines": _result_detail_lines(summary),
     }
-    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    return payload
 
 
 def _result_detail_lines(summary: SummaryResult) -> list[str]:

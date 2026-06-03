@@ -262,6 +262,15 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     assert body["warnings"]
     assert body["supported_totals"] == ["UG-06 - 13"]
     assert body["unresolved_callouts"] == ["EOL - 48Ct - 66'"]
+    assert body["result_summary"]["output_name"] == ""
+    assert body["result_summary"]["detected_totals"] == ["UG-06 - 13"]
+    assert body["result_summary"]["extra_billing_codes"] == []
+    assert body["result_summary"]["result_lines"] == [
+        "MKR Job Totals",
+        "UG-06 - 13",
+        "Review",
+        "This PDF does not have enough readable text for automatic summation.",
+    ]
 
 
 def test_sample_manual_review_response_includes_supported_evidence() -> None:
