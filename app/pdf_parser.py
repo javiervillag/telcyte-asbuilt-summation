@@ -326,7 +326,7 @@ def _unresolved_callout_lines(blocks: list[TextBlock]) -> list[str]:
     for block in blocks:
         for line in block.text.splitlines():
             cleaned = _clean_text(line)
-            if UNRESOLVED_CALLOUT_PATTERN.search(cleaned) and not CODE_PATTERN.search(cleaned):
+            if UNRESOLVED_CALLOUT_PATTERN.search(cleaned):
                 if cleaned not in seen:
                     seen.add(cleaned)
                     callouts.append(cleaned)

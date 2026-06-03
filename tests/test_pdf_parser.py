@@ -98,6 +98,24 @@ def test_derive_code_totals_reads_quantity_first_code_notes() -> None:
     assert diagnostics.ambiguous_code_line_count == 0
 
 
+def test_unresolved_callout_is_kept_when_shared_with_supported_code_line() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-06 - 13 EOL - 48Ct - 66'")
+    page.insert_text((72, 96), "Readable note with enough quantity context for parser review.")
+    page.insert_text((72, 120), "Additional readable note for text-layer confidence.")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    totals = derive_code_totals(blocks)
+    diagnostics = diagnose_extraction(blocks, code_totals=totals)
+
+    assert totals == ["UG-06 - 13"]
+    assert diagnostics.review_required is True
+    assert diagnostics.unresolved_callouts == ["UG-06 - 13 EOL - 48Ct - 66'"]
+
+
 def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
