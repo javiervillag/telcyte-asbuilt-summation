@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.main import app
-from app.rate_cards import ZERO_PAD_EQUIVALENT_PREFIXES
+from app.rate_cards import CODE_SEPARATOR_PATTERN, TOTAL_SEPARATOR_PATTERN, ZERO_PAD_EQUIVALENT_PREFIXES
 from app.rate_cards import total_line_key
 
 
@@ -212,8 +212,9 @@ def _missing_total_evidence(input_text: str, total: str, unresolved_callouts: li
     (prefix, number), quantity, unit = key
     code_patterns = [_code_regex(prefix, variant) for variant in _code_number_variants(prefix, number)]
     quantity_pattern = _quantity_regex(quantity, unit)
+    exact_quantity_pattern = _quantity_regex(quantity, unit, allow_tiny_unitless=True)
     exact_patterns = [
-        re.compile(rf"{code.pattern}\s*-\s*{quantity_pattern.pattern}", re.I)
+        re.compile(rf"{code.pattern}\s*{TOTAL_SEPARATOR_PATTERN}\s*{exact_quantity_pattern.pattern}", re.I)
         for code in code_patterns
     ]
     lines = [line.strip() for line in input_text.splitlines() if line.strip()]
@@ -279,14 +280,21 @@ def _code_regex(prefix: str, number: str) -> re.Pattern[str]:
         number_pattern = rf"0*{re.escape(str(int(number)))}"
     else:
         number_pattern = re.escape(number)
-    return re.compile(rf"\b{re.escape(prefix)}-?{number_pattern}\b", re.I)
+    return re.compile(rf"\b{re.escape(prefix)}{CODE_SEPARATOR_PATTERN}{number_pattern}\b", re.I)
 
 
-def _quantity_regex(quantity: str, unit: str) -> re.Pattern[str]:
-    if not _quantity_is_distinct(quantity, unit):
+def _quantity_regex(quantity: str, unit: str, allow_tiny_unitless: bool = False) -> re.Pattern[str]:
+    if not allow_tiny_unitless and not _quantity_is_distinct(quantity, unit):
         return re.compile(r"a^")
     suffix = r"\s*" + re.escape(unit) if unit else r"(?!\s*(?:\d|'|sqft))"
-    return re.compile(rf"\b{re.escape(quantity)}{suffix}", re.I)
+    return re.compile(rf"\b{_quantity_number_pattern(quantity)}{suffix}", re.I)
+
+
+def _quantity_number_pattern(quantity: str) -> str:
+    if re.fullmatch(r"\d+", quantity) and len(quantity) > 3:
+        grouped = f"{int(quantity):,}"
+        return rf"(?:{re.escape(quantity)}|{re.escape(grouped)})"
+    return re.escape(quantity)
 
 
 def _quantity_is_distinct(quantity: str, unit: str) -> bool:

@@ -152,6 +152,19 @@ def test_missing_total_evidence_classifies_input_support() -> None:
     assert by_total["UG-56 - 170'"]["evidence_class"] == "direct_total_text"
 
 
+def test_missing_total_evidence_normalizes_pdf_separator_variants() -> None:
+    input_text = "UG\u201307 \u2013 10'\nPC\u00b701 \u00b7 1\nUG-03 - 1,904"
+    missing = ["UG-07 - 10'", "PC-01 - 1", "UG-03 - 1904"]
+
+    evidence = evaluate_samples.classify_missing_total_evidence(input_text, missing)
+
+    assert [item["evidence_class"] for item in evidence] == [
+        "direct_total_text",
+        "direct_total_text",
+        "direct_total_text",
+    ]
+
+
 def test_missing_total_evidence_ignores_tiny_unitless_quantities() -> None:
     evidence = evaluate_samples.classify_missing_total_evidence(
         "UG-7 - 1\nCD-1 - 1\nrandom 6",
