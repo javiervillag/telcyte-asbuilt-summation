@@ -244,11 +244,11 @@ function appendResultSummary(summary) {
   block.appendChild(heading);
   const rows = [
     ["Output", summary.output_name || "Generated summary PDF"],
-    ["Detected totals", compactList(summary.detected_totals)],
-    ["Extra billing codes", compactList(summary.extra_billing_codes)],
+    ["Detected totals", countLabel(summary.detected_totals, "total")],
+    ["Extra billing codes", countLabel(summary.extra_billing_codes, "code")],
   ];
   if (Array.isArray(summary.materials) && summary.materials.length) {
-    rows.push(["Materials", compactList(summary.materials)]);
+    rows.push(["Materials", countLabel(summary.materials, "item")]);
   }
   for (const [label, value] of rows) {
     const row = document.createElement("div");
@@ -261,7 +261,21 @@ function appendResultSummary(summary) {
     row.appendChild(rowValue);
     block.appendChild(row);
   }
+  appendResultDetails(block, summary.result_lines);
   statusBox.appendChild(block);
+}
+
+function appendResultDetails(block, lines) {
+  if (!Array.isArray(lines) || !lines.length) return;
+  const details = document.createElement("details");
+  details.className = "included-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "MKR Job Totals details";
+  const pre = document.createElement("pre");
+  pre.textContent = lines.filter(Boolean).join("\n");
+  details.appendChild(summary);
+  details.appendChild(pre);
+  block.appendChild(details);
 }
 
 function statusLabel(kind) {
@@ -298,13 +312,12 @@ function readResultSummary(response) {
   }
 }
 
-function compactList(items) {
+function countLabel(items, singular) {
   if (!Array.isArray(items)) return "None";
   const clean = items.filter(Boolean);
   if (!clean.length) return "None";
-  const visible = clean.slice(0, 6).join(", ");
-  const remaining = clean.length - 6;
-  return remaining > 0 ? `${visible}, +${remaining} more` : visible;
+  const plural = singular === "code" ? "codes" : `${singular}s`;
+  return `${clean.length} ${clean.length === 1 ? singular : plural}`;
 }
 
 async function loadExtraCodes() {

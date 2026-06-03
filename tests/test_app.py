@@ -55,6 +55,7 @@ def test_summarize_endpoint_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None
     assert result_summary["output_name"] == "sample-telcyte-summary.pdf"
     assert result_summary["detected_totals"] == ["UG-56 - 170'"]
     assert result_summary["extra_billing_codes"] == []
+    assert result_summary["result_lines"] == ["MKR Job Totals", "UG-56 - 170'"]
 
 
 def test_extra_billing_code_catalog_endpoint() -> None:
@@ -132,6 +133,12 @@ def test_summarize_endpoint_adds_selected_extras_separately(monkeypatch: pytest.
     result_summary = json.loads(response.headers["x-telcyte-result-summary"])
     assert result_summary["detected_totals"] == ["UG-56 - 170'"]
     assert result_summary["extra_billing_codes"] == ["PC-02 - 1"]
+    assert result_summary["result_lines"] == [
+        "MKR Job Totals",
+        "UG-56 - 170'",
+        "User-selected extra totals",
+        "PC-02 - 1",
+    ]
     assert captured["summary"].display_lines() == [
         "MKR Job Totals",
         "UG-56 - 170'",

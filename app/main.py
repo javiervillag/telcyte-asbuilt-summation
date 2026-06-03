@@ -179,5 +179,18 @@ def _result_summary_header(summary: SummaryResult, output_name: str) -> str:
         "detected_totals": summary.job_totals[:20],
         "extra_billing_codes": summary.extra_totals[:20],
         "materials": summary.materials[:10],
+        "result_lines": _result_detail_lines(summary),
     }
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+
+def _result_detail_lines(summary: SummaryResult) -> list[str]:
+    lines = [summary.title.strip() or "MKR Job Totals"]
+    lines.extend(line.strip() for line in summary.job_totals if line.strip())
+    if summary.extra_totals:
+        lines.append("User-selected extra totals")
+        lines.extend(line.strip() for line in summary.extra_totals if line.strip())
+    if summary.materials:
+        lines.append("Materials" if len(summary.materials) != 1 else "Material")
+        lines.extend(line.strip() for line in summary.materials if line.strip())
+    return lines[:80]
