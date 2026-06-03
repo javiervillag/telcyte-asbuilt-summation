@@ -96,6 +96,7 @@ Expected JSON shape:
 }
 Prefer the deterministic code totals when they are supported by the positioned text blocks.
 Focus on billing-code totals visible or inferable from drawing labels, callouts, notes, and quantity markings.
+Each job_totals item must be only a standalone CODE - quantity billing line, for example "PC-01 - 1"; do not include sentences, explanations, conditions, or review notes inside job_totals.
 Materials are phase-two unless the request explicitly enables them.
 Never add a detail unless the parsed PDF context supports it.
 For unresolved construction callouts, keep them in remaining_unresolved_callouts unless the parsed context explicitly proves they require no additional MKR total or are fully covered by deterministic supported totals.

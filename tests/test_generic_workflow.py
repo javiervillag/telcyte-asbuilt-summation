@@ -437,6 +437,7 @@ def test_unresolved_callouts_are_sent_to_openrouter_before_manual_review(monkeyp
     assert "EOL - 48Ct - 66'" in prompt_text
     assert "Unresolved callout groups from deterministic parser diagnostics" in prompt_text
     assert "EOL | 48Ct | count=1 | total_footage=66'" in prompt_text
+    assert "Each job_totals item must be only a standalone CODE - quantity billing line" in prompt_text
     assert exc.value.supported_totals == ["UG-06 - 13"]
     assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
     assert exc.value.verifier_model == settings.openrouter_model
