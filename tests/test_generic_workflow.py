@@ -214,6 +214,36 @@ def test_clean_supported_pdf_does_not_call_openrouter_when_parser_is_sufficient(
     assert summary.warnings == []
 
 
+def test_clean_supported_pdf_uses_openrouter_when_materials_are_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.status_code = 200
+    _FakeAsyncClient.payload = {
+        "title": "MKR Job Totals",
+        "job_totals": ["UG-06 - 13", "PC-01 - 2"],
+        "materials": ["Fiber marker - 2"],
+        "warnings": [],
+        "confidence": 0.9,
+        "remaining_unresolved_callouts": [],
+        "resolved_callouts": [],
+    }
+    monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", _FakeAsyncClient)
+    settings = Settings(
+        OPENROUTER_API_KEY="test-key",
+        INCLUDE_MATERIALS=True,
+        INCLUDE_PAGE_IMAGES=False,
+    )
+
+    summary = asyncio.run(summarize_with_model(_clean_supported_pdf(), settings))
+
+    assert _FakeAsyncClient.calls
+    assert summary.model == f"parser+{settings.openrouter_model}"
+    assert summary.job_totals == ["UG-06 - 13", "PC-01 - 2"]
+    assert summary.materials == ["Fiber marker - 2"]
+    assert summary.warnings == []
+
+
 def test_known_sample_requires_manual_review_without_page_image_verification(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeAsyncClient.calls = []
     _FakeAsyncClient.status_code = 200

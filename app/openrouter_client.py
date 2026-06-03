@@ -395,7 +395,7 @@ async def summarize_with_model(
             verifier_used=False,
             diagnostics=diagnostics,
         )
-    if not diagnostics.review_required:
+    if not diagnostics.review_required and not settings.include_materials:
         return _parser_only_summary(parser_totals, diagnostics)
 
     if not settings.openrouter_api_key:
