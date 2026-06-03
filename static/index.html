@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux14" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux15" />
   </head>
   <body>
     <header class="masthead">
@@ -102,12 +102,18 @@
 
     <div id="processing-overlay" class="processing-overlay" aria-live="assertive" aria-hidden="true">
       <div class="processing-card" role="status">
-        <div class="spinner" aria-hidden="true"></div>
-        <strong>Building summary PDF</strong>
-        <span>Reading the as-built, applying selected extras, and placing the totals box.</span>
+        <div class="progress-ring" aria-hidden="true">
+          <span id="processing-percent">0%</span>
+        </div>
+        <strong id="processing-title">Building summary PDF</strong>
+        <span id="processing-message">Preparing the file.</span>
+        <div class="progress-track" aria-hidden="true">
+          <span id="processing-bar"></span>
+        </div>
+        <small id="processing-eta">Estimated time left: about 25 seconds</small>
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260603-ux14"></script>
+    <script src="/static/app.js?v=20260603-ux15"></script>
   </body>
 </html>

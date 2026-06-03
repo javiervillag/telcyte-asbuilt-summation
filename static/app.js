@@ -11,6 +11,11 @@ const categoryTabs = document.querySelector("#category-tabs");
 const toggleAll = document.querySelector("#toggle-all");
 const toggleManual = document.querySelector("#toggle-manual");
 const processingOverlay = document.querySelector("#processing-overlay");
+const processingPercent = document.querySelector("#processing-percent");
+const processingTitle = document.querySelector("#processing-title");
+const processingMessage = document.querySelector("#processing-message");
+const processingBar = document.querySelector("#processing-bar");
+const processingEta = document.querySelector("#processing-eta");
 const manualExtra = document.querySelector("#manual-extra");
 const manualCode = document.querySelector("#manual-code");
 const manualAdd = document.querySelector("#manual-add");
@@ -27,6 +32,18 @@ let showAllCodes = false;
 let showManualEntry = false;
 let manualExtras = [];
 let currentDownload = null;
+let processingTimer = null;
+let processingStartedAt = 0;
+let processingProgress = 0;
+
+const processingSteps = [
+  { at: 5, title: "Preparing PDF", message: "Uploading the as-built and checking the selected extras." },
+  { at: 18, title: "Reading callouts", message: "Extracting visible labels, notes, and quantity text from the drawing." },
+  { at: 38, title: "Checking totals", message: "Combining repeated billing codes and flagging anything that needs review." },
+  { at: 58, title: "Reviewing evidence", message: "Using the configured model only as a second check against extracted PDF text." },
+  { at: 76, title: "Placing totals box", message: "Finding a clear top corner and writing the MKR Job Totals onto the PDF." },
+  { at: 90, title: "Finishing PDF", message: "Preparing the download and final review details." },
+];
 
 hideResult();
 updateManualControls();
@@ -123,7 +140,7 @@ form.addEventListener("submit", async (event) => {
   submit.disabled = true;
   submit.textContent = "Generating...";
   hideResult();
-  showProcessing(true);
+  startProcessingProgress();
   const data = new FormData();
   data.append("file", file);
   data.append("extra_billing_codes", JSON.stringify(selectedExtras.items));
@@ -176,7 +193,7 @@ form.addEventListener("submit", async (event) => {
       canStartOver: true,
     });
   } finally {
-    showProcessing(false);
+    stopProcessingProgress();
     submit.disabled = false;
     submit.textContent = "Generate PDF";
   }
@@ -363,9 +380,52 @@ function statusLabel(kind) {
   return "Status";
 }
 
-function showProcessing(isVisible) {
-  processingOverlay.classList.toggle("is-visible", isVisible);
-  processingOverlay.setAttribute("aria-hidden", isVisible ? "false" : "true");
+function startProcessingProgress() {
+  processingStartedAt = Date.now();
+  processingProgress = 0;
+  updateProcessingProgress(4);
+  processingOverlay.classList.add("is-visible");
+  processingOverlay.setAttribute("aria-hidden", "false");
+  window.clearInterval(processingTimer);
+  processingTimer = window.setInterval(() => {
+    const elapsedSeconds = (Date.now() - processingStartedAt) / 1000;
+    const target = Math.min(94, 8 + elapsedSeconds * 3.8);
+    const next = processingProgress + Math.max(0.4, (target - processingProgress) * 0.18);
+    updateProcessingProgress(next);
+  }, 550);
+}
+
+function stopProcessingProgress() {
+  window.clearInterval(processingTimer);
+  processingTimer = null;
+  updateProcessingProgress(100);
+  processingOverlay.classList.remove("is-visible");
+  processingOverlay.setAttribute("aria-hidden", "true");
+}
+
+function updateProcessingProgress(value) {
+  processingProgress = Math.max(0, Math.min(100, Math.round(value)));
+  const step = processingSteps.reduce((current, candidate) => {
+    return processingProgress >= candidate.at ? candidate : current;
+  }, processingSteps[0]);
+  const remaining = estimateRemainingSeconds(processingProgress);
+
+  processingPercent.textContent = `${processingProgress}%`;
+  processingTitle.textContent = step.title;
+  processingMessage.textContent = step.message;
+  processingPercent.parentElement?.style.setProperty("--progress", `${processingProgress}%`);
+  processingBar.style.width = `${processingProgress}%`;
+  processingEta.textContent =
+    processingProgress >= 94
+      ? "Almost done. Finalizing the PDF now."
+      : `Estimated time left: about ${remaining} seconds`;
+}
+
+function estimateRemainingSeconds(progress) {
+  const elapsedSeconds = Math.max(1, (Date.now() - processingStartedAt) / 1000);
+  const estimatedTotal = Math.max(18, elapsedSeconds / Math.max(progress, 1) * 100);
+  const remaining = Math.max(3, Math.round(estimatedTotal - elapsedSeconds));
+  return Math.min(45, remaining);
 }
 
 function readWarnings(response) {
