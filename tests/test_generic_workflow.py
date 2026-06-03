@@ -10,6 +10,7 @@ from app.models import SummaryResult
 from app.openrouter_client import (
     ManualReviewRequired,
     _merge_parser_and_model,
+    _retry_max_tokens_from_credit_limit,
     _safe_openrouter_error_body,
     summarize_with_model,
 )
@@ -111,6 +112,39 @@ class _FakeAsyncClient:
         return _FakeOpenRouterResponse(self.payload, self.status_code, self.response_text)
 
 
+class _RetryThenSuccessAsyncClient:
+    calls: list[dict] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers, json):
+        self.calls.append({"url": url, "headers": headers, "payload": json})
+        if len(self.calls) == 1:
+            return _FakeOpenRouterResponse(
+                {},
+                402,
+                '{"error":{"message":"This request requires fewer max_tokens. You can only afford 900."}}',
+            )
+        return _FakeOpenRouterResponse(
+            {
+                "title": "MKR Job Totals",
+                "job_totals": ["UG-06 - 13"],
+                "materials": [],
+                "warnings": [],
+                "confidence": 0.7,
+                "remaining_unresolved_callouts": ["EOL - 48Ct - 66'"],
+                "resolved_callouts": [],
+            }
+        )
+
+
 def test_sample_id_does_not_return_hardcoded_summary_without_evidence() -> None:
     blocks = extract_text_blocks(RL_SAMPLE.read_bytes())
     totals = derive_code_totals(blocks)
@@ -171,6 +205,34 @@ def test_openrouter_error_body_redacts_key_urls_and_token_shapes() -> None:
     assert "https://openrouter.ai/workspaces/[redacted]/keys/[redacted]" in sanitized
     assert "sk-or-v1-[redacted]" in sanitized
     assert "Bearer [redacted]" in sanitized
+
+
+def test_openrouter_credit_limit_retry_token_budget_is_parsed() -> None:
+    text = "You requested up to 1800 tokens, but can only afford 1216."
+
+    assert _retry_max_tokens_from_credit_limit(text, 1800) == 1216
+    assert _retry_max_tokens_from_credit_limit(text, 1000) is None
+    assert _retry_max_tokens_from_credit_limit("can only afford 120", 1800) is None
+
+
+def test_openrouter_credit_limit_retries_with_affordable_token_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _RetryThenSuccessAsyncClient.calls = []
+    monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", _RetryThenSuccessAsyncClient)
+    settings = Settings(
+        OPENROUTER_API_KEY="test-key",
+        OPENROUTER_MAX_TOKENS=1800,
+        INCLUDE_PAGE_IMAGES=False,
+    )
+
+    with pytest.raises(ManualReviewRequired) as exc:
+        asyncio.run(summarize_with_model(_reviewable_unresolved_pdf(), settings))
+
+    assert [call["payload"]["max_tokens"] for call in _RetryThenSuccessAsyncClient.calls] == [1800, 900]
+    assert exc.value.verifier_used is True
+    assert exc.value.verifier_model == settings.openrouter_model
+    assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
 
 
 def test_clean_supported_pdf_can_use_parser_without_openrouter() -> None:
@@ -254,11 +316,13 @@ def test_clean_supported_pdf_uses_openrouter_when_materials_are_requested(
         OPENROUTER_API_KEY="test-key",
         INCLUDE_MATERIALS=True,
         INCLUDE_PAGE_IMAGES=False,
+        OPENROUTER_MAX_TOKENS=1234,
     )
 
     summary = asyncio.run(summarize_with_model(_clean_supported_pdf(), settings))
 
     assert _FakeAsyncClient.calls
+    assert _FakeAsyncClient.calls[0]["payload"]["max_tokens"] == 1234
     assert summary.model == f"parser+{settings.openrouter_model}"
     assert summary.job_totals == ["UG-06 - 13", "PC-01 - 2"]
     assert summary.materials == ["Fiber marker - 2"]

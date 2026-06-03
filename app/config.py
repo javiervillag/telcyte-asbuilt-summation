@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     openrouter_http_referer: Optional[str] = Field(default=None, alias="OPENROUTER_HTTP_REFERER")
     openrouter_app_title: str = Field(default="Telcyte As-Built Summation", alias="OPENROUTER_APP_TITLE")
     openrouter_timeout_seconds: float = Field(default=90.0, alias="OPENROUTER_TIMEOUT_SECONDS")
+    openrouter_max_tokens: int = Field(default=1800, alias="OPENROUTER_MAX_TOKENS")
     max_upload_bytes: int = Field(default=35 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
     include_page_images: bool = Field(default=False, alias="INCLUDE_PAGE_IMAGES")
     include_materials: bool = Field(default=False, alias="INCLUDE_MATERIALS")

@@ -144,6 +144,16 @@ def _safe_openrouter_error_body(text: str, limit: int = 500) -> str:
     return redacted[:limit]
 
 
+def _retry_max_tokens_from_credit_limit(text: str, current_max_tokens: int) -> int | None:
+    match = re.search(r"can only afford\s+(\d+)", text, re.I)
+    if not match:
+        return None
+    affordable_tokens = int(match.group(1))
+    if affordable_tokens >= current_max_tokens or affordable_tokens < 256:
+        return None
+    return affordable_tokens
+
+
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -454,7 +464,7 @@ async def summarize_with_model(
             {"role": "user", "content": content},
         ],
         "temperature": 0.1,
-        "max_tokens": 2200,
+        "max_tokens": settings.openrouter_max_tokens,
         "response_format": {"type": "json_object"},
     }
 
@@ -462,6 +472,22 @@ async def summarize_with_model(
     try:
         async with httpx.AsyncClient(timeout=settings.openrouter_timeout_seconds) as client:
             response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+            retry_max_tokens = _retry_max_tokens_from_credit_limit(
+                response.text if response.status_code == 402 else "",
+                int(payload["max_tokens"]),
+            )
+            if retry_max_tokens is not None:
+                retry_payload = {**payload, "max_tokens": retry_max_tokens}
+                logger.warning(
+                    "openrouter_retry_reduced_max_tokens original=%s retry=%s",
+                    payload["max_tokens"],
+                    retry_max_tokens,
+                )
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=retry_payload,
+                )
     except httpx.HTTPError as exc:
         if diagnostics.review_required:
             _raise_manual_review_for_unavailable_verifier(

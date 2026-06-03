@@ -20,6 +20,7 @@ Open `http://127.0.0.1:8000`, upload one PDF, and download the annotated result.
 - `OPENROUTER_MODEL_CANDIDATES`: comma-separated list used by the sample evaluation script.
 - `OPENROUTER_HTTP_REFERER`: optional OpenRouter attribution URL.
 - `OPENROUTER_APP_TITLE`: optional OpenRouter attribution title.
+- `OPENROUTER_MAX_TOKENS`: optional verifier response budget; defaults to `1800`.
 - `INCLUDE_PAGE_IMAGES`: optional `true`/`false`; defaults to parser-first text context without page images.
 - `INCLUDE_MATERIALS`: optional `true`/`false`; defaults to `false` so phase one focuses on billing-code totals.
 - `ALLOW_LLM_INFERRED_TOTALS`: optional `true`/`false`; defaults to `false` so the box is driven by parsed/summed codes.
