@@ -105,6 +105,39 @@ def summarize_missing_total_evidence(evidence: list[dict[str, Any]]) -> list[dic
     return [grouped[evidence_class] for evidence_class in order]
 
 
+def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    result_counts: dict[str, int] = {}
+    totals = {
+        "team_added_total_count": 0,
+        "supported_total_count": 0,
+        "missing_total_count": 0,
+        "extra_total_count": 0,
+        "unresolved_callout_count": 0,
+    }
+    verifier_used_count = 0
+    for sample in samples:
+        result = str(sample.get("result") or "unknown")
+        result_counts[result] = result_counts.get(result, 0) + 1
+        totals["team_added_total_count"] += int(sample.get("team_added_total_count") or 0)
+        totals["supported_total_count"] += int(
+            sample.get("supported_total_count")
+            or sample.get("app_vs_team_totals", {}).get("actual_total_count")
+            or 0
+        )
+        comparison = sample.get("supported_vs_team_totals") or sample.get("app_vs_team_totals") or {}
+        totals["missing_total_count"] += int(comparison.get("missing_total_count") or 0)
+        totals["extra_total_count"] += int(comparison.get("extra_total_count") or 0)
+        totals["unresolved_callout_count"] += int(sample.get("unresolved_callout_count") or 0)
+        if sample.get("verifier_used"):
+            verifier_used_count += 1
+    return {
+        "sample_count": len(samples),
+        "result_counts": result_counts,
+        "verifier_used_count": verifier_used_count,
+        **totals,
+    }
+
+
 def _missing_total_evidence(input_text: str, total: str, unresolved_callouts: list[str]) -> dict[str, Any]:
     key = total_line_key(total)
     if not key:
@@ -387,11 +420,14 @@ def main() -> None:
         workflow = "FastAPI TestClient POST /api/summarize, then deterministic PDF text extraction comparison"
 
     with client_context as client:
+        endpoint_health = health_status(client)
+        samples = [evaluate_pair(client, before, team_output, out_dir) for before, team_output in pairs]
         report = {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "workflow": workflow,
-            "endpoint_health": health_status(client),
-            "samples": [evaluate_pair(client, before, team_output, out_dir) for before, team_output in pairs],
+            "endpoint_health": endpoint_health,
+            "summary": summarize_run(samples),
+            "samples": samples,
         }
     report_path = out_dir / "endpoint-validation.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

@@ -185,6 +185,45 @@ def test_missing_total_evidence_summary_groups_by_evidence_class() -> None:
     ]
 
 
+def test_summarize_run_totals_manual_review_and_annotated_pdf_counts() -> None:
+    summary = evaluate_samples.summarize_run(
+        [
+            {
+                "result": "manual_review",
+                "team_added_total_count": 3,
+                "supported_total_count": 2,
+                "unresolved_callout_count": 4,
+                "verifier_used": True,
+                "supported_vs_team_totals": {
+                    "missing_total_count": 1,
+                    "extra_total_count": 0,
+                },
+            },
+            {
+                "result": "annotated_pdf",
+                "team_added_total_count": 2,
+                "verifier_used": False,
+                "app_vs_team_totals": {
+                    "actual_total_count": 3,
+                    "missing_total_count": 0,
+                    "extra_total_count": 1,
+                },
+            },
+        ]
+    )
+
+    assert summary == {
+        "sample_count": 2,
+        "result_counts": {"manual_review": 1, "annotated_pdf": 1},
+        "verifier_used_count": 1,
+        "team_added_total_count": 5,
+        "supported_total_count": 5,
+        "missing_total_count": 1,
+        "extra_total_count": 1,
+        "unresolved_callout_count": 4,
+    }
+
+
 def test_health_status_records_endpoint_health() -> None:
     status = evaluate_samples.health_status(_FakeHealthClient())
 
