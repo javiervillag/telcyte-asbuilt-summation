@@ -188,12 +188,12 @@ def test_summarize_endpoint_accepts_manual_extra_code(monkeypatch: pytest.Monkey
     client = TestClient(app)
     response = client.post(
         "/api/summarize",
-        data={"extra_billing_codes": json.dumps([{"code": "ZZ-99", "quantity": "1"}])},
+        data={"extra_billing_codes": json.dumps([{"code": "XX", "quantity": "1"}])},
         files={"file": ("sample.pdf", SAMPLE.read_bytes(), "application/pdf")},
     )
 
     assert response.status_code == 200
-    assert captured["summary"].extra_totals == ["ZZ-99 - 1"]
+    assert captured["summary"].extra_totals == ["XX - 1"]
 
 
 def test_summarize_endpoint_rejects_malformed_manual_extra_code(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -393,6 +393,21 @@ input[type="file"] {
   gap: 8px;
 }
 
+.manual-message {
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manual-message.done {
+  color: var(--success-ink);
+}
+
+.manual-message.error {
+  color: var(--error-ink);
+}
+
 .manual-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

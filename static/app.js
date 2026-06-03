@@ -15,6 +15,7 @@ const manualQuantity = document.querySelector("#manual-quantity");
 const manualNote = document.querySelector("#manual-note");
 const manualAdd = document.querySelector("#manual-add");
 const manualList = document.querySelector("#manual-list");
+const manualMessage = document.querySelector("#manual-message");
 
 let extraCodeCategories = [];
 let activeCategory = "All";
@@ -56,12 +57,12 @@ manualAdd.addEventListener("click", () => {
   const note = manualNote.value.trim();
   const validation = validateManualExtra(code, quantity);
   if (!validation.ok) {
-    setStatus("Check manual code", validation.message, "error");
+    setManualMessage(validation.message, "error");
     return;
   }
   captureCodeState();
   if (codeState[code]?.checked || manualExtras.some((item) => item.code === code)) {
-    setStatus("Already selected", `${code} is already in the selected extras.`, "error");
+    setManualMessage(`${code} is already in the selected extras.`, "error");
     return;
   }
   manualExtras.push({ code, quantity, note });
@@ -70,6 +71,7 @@ manualAdd.addEventListener("click", () => {
   manualNote.value = "";
   renderManualExtras();
   updateSelectedCount();
+  setManualMessage(`Added ${code} - ${quantity}.`, "done");
   hideResult();
 });
 
@@ -79,6 +81,7 @@ manualList.addEventListener("click", (event) => {
   manualExtras = manualExtras.filter((item) => item.code !== button.dataset.removeManual);
   renderManualExtras();
   updateSelectedCount();
+  setManualMessage("", "");
 });
 
 form.addEventListener("submit", async (event) => {
@@ -440,14 +443,19 @@ function normalizeManualCode(value) {
 
 function validateManualExtra(code, quantity) {
   if (!code) return { ok: false, message: "Add a billing code." };
-  if (!/^[A-Z]{2,6}-\d{1,4}[A-Z]?$/.test(code)) {
-    return { ok: false, message: "Use a code like PC-02, TL-06, or COMP-13." };
+  if (!/^[A-Z0-9][A-Z0-9-]{1,19}$/.test(code)) {
+    return { ok: false, message: "Use letters, numbers, and hyphens only." };
   }
   if (!quantity) return { ok: false, message: `Add a quantity for ${code}.` };
   if (!/^\d+(\.\d+)?(\s*('|sqft|hr|hrs|ea|each))?$/i.test(quantity)) {
     return { ok: false, message: `${code} quantity must be a number.` };
   }
   return { ok: true, message: "" };
+}
+
+function setManualMessage(message, kind) {
+  manualMessage.textContent = message;
+  manualMessage.className = kind ? `manual-message ${kind}` : "manual-message";
 }
 
 function escapeHtml(value) {

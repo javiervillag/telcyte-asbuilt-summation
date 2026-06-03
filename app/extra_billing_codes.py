@@ -227,4 +227,4 @@ def _normalize_code(value: object) -> str:
 
 
 def _is_manual_code(code: str) -> bool:
-    return bool(re.fullmatch(r"[A-Z]{2,6}-\d{1,4}[A-Z]?", code))
+    return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9-]{1,19}", code))
