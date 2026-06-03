@@ -302,7 +302,13 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
     response_path = sample_dir / "02_app_response.json"
     response_path.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
     diagnostics = body.get("diagnostics") or {}
-    supported_totals = "\n".join(str(line) for line in body.get("supported_totals") or [])
+    supported_total_lines = [str(line) for line in body.get("supported_totals") or []]
+    supported_totals = "\n".join(supported_total_lines)
+    supported_normalized_totals = normalized_totals_from_text(supported_totals)
+    (sample_dir / "02_supported_totals.json").write_text(
+        json.dumps(supported_normalized_totals, indent=2),
+        encoding="utf-8",
+    )
     supported_comparison = compare_total_text(supported_totals, team_added)
     missing_total_input_evidence = classify_missing_total_evidence(
         before_text,
@@ -316,8 +322,9 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "detail": str(body.get("detail") or "")[:300],
             "warning_count": len(body.get("warnings") or []),
             "warnings": [str(warning) for warning in body.get("warnings") or []],
-            "supported_total_count": len(body.get("supported_totals") or []),
-            "supported_totals": [str(total) for total in body.get("supported_totals") or []],
+            "supported_total_count": len(supported_total_lines),
+            "supported_totals": supported_total_lines,
+            "supported_normalized_totals": supported_normalized_totals,
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
             "unresolved_callouts": [str(callout) for callout in body.get("unresolved_callouts") or []],
             "unresolved_callout_details": diagnostics.get("unresolved_callout_details") or [],

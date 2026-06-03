@@ -210,6 +210,8 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
         "Manual review is required; the app did not add unsupported totals.",
     ]
     assert result["supported_totals"] == ["UG-56 - 170'"]
+    assert result["supported_normalized_totals"] == ["UG-56 - 170'"]
+    assert (tmp_path / "out" / before.stem / "02_supported_totals.json").exists()
     assert result["team_added_totals"] == ["UG-56 - 170'"]
     assert (tmp_path / "out" / before.stem / "01_team_added_totals.json").exists()
     assert result["unresolved_callouts"] == ["EOL - 48Ct - 30'"]
