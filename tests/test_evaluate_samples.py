@@ -171,7 +171,7 @@ def test_missing_total_evidence_marks_unresolved_callout_context() -> None:
     assert evidence == [
         {
             "total": "FB-04 - 6",
-            "evidence_class": "unresolved_construction_callout_context",
+            "evidence_class": "no_direct_input_evidence_with_unresolved_callouts",
             "exact_total_present": False,
             "code_present": False,
             "quantity_present": False,
@@ -185,8 +185,8 @@ def test_missing_total_evidence_marks_unresolved_callout_context() -> None:
 def test_missing_total_evidence_summary_groups_by_evidence_class() -> None:
     evidence = [
         {"total": "UG-07 - 1", "evidence_class": "direct_total_text"},
-        {"total": "FB-04 - 6", "evidence_class": "unresolved_construction_callout_context"},
-        {"total": "FB-15 - 2", "evidence_class": "unresolved_construction_callout_context"},
+        {"total": "FB-04 - 6", "evidence_class": "no_direct_input_evidence_with_unresolved_callouts"},
+        {"total": "FB-15 - 2", "evidence_class": "no_direct_input_evidence_with_unresolved_callouts"},
     ]
 
     summary = evaluate_samples.summarize_missing_total_evidence(evidence)
@@ -198,7 +198,7 @@ def test_missing_total_evidence_summary_groups_by_evidence_class() -> None:
             "totals": ["UG-07 - 1"],
         },
         {
-            "evidence_class": "unresolved_construction_callout_context",
+            "evidence_class": "no_direct_input_evidence_with_unresolved_callouts",
             "count": 2,
             "totals": ["FB-04 - 6", "FB-15 - 2"],
         },
@@ -218,6 +218,13 @@ def test_summarize_run_totals_manual_review_and_annotated_pdf_counts() -> None:
                 "supported_prefix_counts": {"UG": 2},
                 "missing_prefix_counts": {"FB": 1},
                 "unresolved_callout_type_counts": {"EOL": 4},
+                "missing_total_evidence_summary": [
+                    {
+                        "evidence_class": "no_direct_input_evidence_with_unresolved_callouts",
+                        "count": 1,
+                        "totals": ["FB-04 - 6"],
+                    }
+                ],
                 "supported_vs_team_totals": {
                     "missing_total_count": 1,
                     "extra_total_count": 0,
@@ -253,6 +260,7 @@ def test_summarize_run_totals_manual_review_and_annotated_pdf_counts() -> None:
         "missing_prefix_counts": {"FB": 1},
         "extra_prefix_counts": {"FB": 1},
         "unresolved_callout_type_counts": {"EOL": 4},
+        "missing_evidence_class_counts": {"no_direct_input_evidence_with_unresolved_callouts": 1},
     }
 
 

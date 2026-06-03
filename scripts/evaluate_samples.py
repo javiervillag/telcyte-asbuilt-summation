@@ -139,6 +139,7 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "missing_prefix_counts": {},
         "extra_prefix_counts": {},
         "unresolved_callout_type_counts": {},
+        "missing_evidence_class_counts": {},
     }
     verifier_used_count = 0
     for sample in samples:
@@ -162,6 +163,10 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
             prefix_totals["unresolved_callout_type_counts"],
             sample.get("unresolved_callout_type_counts") or {},
         )
+        _add_evidence_summary_counts(
+            prefix_totals["missing_evidence_class_counts"],
+            sample.get("missing_total_evidence_summary") or [],
+        )
         if sample.get("verifier_used"):
             verifier_used_count += 1
     return {
@@ -176,6 +181,12 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
 def _add_counts(target: dict[str, int], source: dict[str, int]) -> None:
     for key, value in source.items():
         target[str(key)] = target.get(str(key), 0) + int(value or 0)
+
+
+def _add_evidence_summary_counts(target: dict[str, int], summary: list[dict[str, Any]]) -> None:
+    for item in summary:
+        evidence_class = str(item.get("evidence_class") or "unknown")
+        target[evidence_class] = target.get(evidence_class, 0) + int(item.get("count") or 0)
 
 
 def _missing_total_evidence(input_text: str, total: str, unresolved_callouts: list[str]) -> dict[str, Any]:
@@ -241,7 +252,7 @@ def _missing_total_evidence_class(
     if quantity_present:
         return "quantity_text_without_billing_code"
     if unresolved_callout_context:
-        return "unresolved_construction_callout_context"
+        return "no_direct_input_evidence_with_unresolved_callouts"
     return "no_direct_input_evidence"
 
 
