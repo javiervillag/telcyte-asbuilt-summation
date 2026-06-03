@@ -58,6 +58,12 @@ class ModelReview:
     resolved_callouts: list[dict[str, str]]
 
 
+@dataclass
+class CalloutResolutionReview:
+    remaining_callouts: list[str]
+    unsupported_resolution_count: int
+
+
 def _diagnostics_payload(diagnostics: object | None) -> dict[str, Any]:
     if diagnostics is None:
         return {}
@@ -239,18 +245,58 @@ def _norm_callout(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
+def _norm_evidence_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _resolved_callout_has_grounded_evidence(
+    callout: str,
+    evidence: str,
+    parsed_context: str,
+    parser_totals: list[str],
+) -> bool:
+    evidence_key = _norm_evidence_text(evidence)
+    if len(evidence_key) < 6:
+        return False
+    callout_key = _norm_evidence_text(callout)
+    if not evidence_key.replace(callout_key, "").strip():
+        return False
+    context_key = _norm_evidence_text(parsed_context)
+    if evidence_key in context_key:
+        return True
+    return any(
+        (total_key := _norm_evidence_text(total))
+        and total_key in evidence_key
+        and total_key in context_key
+        for total in parser_totals
+    )
+
+
 def _remaining_callouts_after_model_review(
     original_callouts: list[str],
     model_review: ModelReview,
-) -> list[str]:
+    parsed_context: str,
+    parser_totals: list[str],
+) -> CalloutResolutionReview:
     original_by_norm = {_norm_callout(callout): callout for callout in original_callouts if callout.strip()}
     remaining = dict(original_by_norm)
+    unsupported_resolution_count = 0
 
     for item in model_review.resolved_callouts:
         norm = _norm_callout(item.get("callout") or "")
         if norm not in original_by_norm:
             continue
-        if not (item.get("resolution") or "").strip() or not (item.get("evidence") or "").strip():
+        resolution = (item.get("resolution") or "").strip()
+        evidence = (item.get("evidence") or "").strip()
+        if not resolution or not evidence:
+            continue
+        if not _resolved_callout_has_grounded_evidence(
+            original_by_norm[norm],
+            evidence,
+            parsed_context,
+            parser_totals,
+        ):
+            unsupported_resolution_count += 1
             continue
         remaining.pop(norm, None)
 
@@ -259,7 +305,10 @@ def _remaining_callouts_after_model_review(
         if norm in original_by_norm:
             remaining[norm] = original_by_norm[norm]
 
-    return list(remaining.values())
+    return CalloutResolutionReview(
+        remaining_callouts=list(remaining.values()),
+        unsupported_resolution_count=unsupported_resolution_count,
+    )
 
 
 def _review_prompt_context(
@@ -410,12 +459,21 @@ async def summarize_with_model(
     summary = _merge_parser_and_model(parser_totals, model_review.summary, settings)
 
     if diagnostics.unresolved_callouts:
-        remaining_callouts = _remaining_callouts_after_model_review(diagnostics.unresolved_callouts, model_review)
-        if remaining_callouts:
+        callout_review = _remaining_callouts_after_model_review(
+            diagnostics.unresolved_callouts,
+            model_review,
+            parsed_context,
+            parser_totals,
+        )
+        if callout_review.unsupported_resolution_count:
+            summary.warnings.append(
+                "Verifier tried to clear unresolved callouts with evidence not found in parsed PDF evidence."
+            )
+        if callout_review.remaining_callouts:
             raise ManualReviewRequired(
                 _manual_review_warnings(diagnostics, summary),
                 supported_totals=summary.job_totals,
-                unresolved_callouts=remaining_callouts,
+                unresolved_callouts=callout_review.remaining_callouts,
                 verifier_model=selected_model,
                 verifier_used=True,
                 diagnostics=diagnostics,
