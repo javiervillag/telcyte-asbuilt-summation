@@ -40,7 +40,8 @@ UNRESOLVED_CALLOUT_PATTERN = re.compile(
     re.I,
 )
 UNRESOLVED_CALLOUT_SEGMENT_PATTERN = re.compile(
-    r"(?:#\d+\s+)?(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b.*",
+    r"(?:#\d+\s+)?(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b.*?"
+    r"(?=\s+(?:#\d+\s+)?(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b|$)",
     re.I,
 )
 
@@ -330,16 +331,15 @@ def _unresolved_callout_lines(blocks: list[TextBlock]) -> list[str]:
     for block in blocks:
         for line in block.text.splitlines():
             cleaned = _clean_text(line)
-            callout = _unresolved_callout_segment(cleaned)
-            if callout and callout not in seen:
-                seen.add(callout)
-                callouts.append(callout)
+            for callout in _unresolved_callout_segments(cleaned):
+                if callout not in seen:
+                    seen.add(callout)
+                    callouts.append(callout)
     return callouts
 
 
-def _unresolved_callout_segment(line: str) -> str:
-    match = UNRESOLVED_CALLOUT_SEGMENT_PATTERN.search(line)
-    return _clean_text(match.group(0)) if match else ""
+def _unresolved_callout_segments(line: str) -> list[str]:
+    return [_clean_text(match.group(0)) for match in UNRESOLVED_CALLOUT_SEGMENT_PATTERN.finditer(line)]
 
 
 def build_pdf_context(

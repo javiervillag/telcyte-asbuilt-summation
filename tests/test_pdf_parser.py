@@ -129,6 +129,26 @@ def test_unresolved_callout_segment_preserves_numbered_marker() -> None:
     assert diagnostics.unresolved_callouts == ["#3 EOL - 48Ct - 66'"]
 
 
+def test_unresolved_callouts_split_multiple_segments_on_one_line() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text(
+        (72, 72),
+        "UG-06 - 13 EOL - 48Ct - 66' #2 Tie Point - 48Ct - 52' Storage - 48Ct - 108'",
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callouts == [
+        "EOL - 48Ct - 66'",
+        "#2 Tie Point - 48Ct - 52'",
+        "Storage - 48Ct - 108'",
+    ]
+
+
 def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
