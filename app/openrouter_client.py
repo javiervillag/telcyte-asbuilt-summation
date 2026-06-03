@@ -30,11 +30,15 @@ class ManualReviewRequired(OpenRouterError):
         warnings: list[str],
         supported_totals: list[str] | None = None,
         unresolved_callouts: list[str] | None = None,
+        verifier_model: str = "",
+        verifier_used: bool = False,
         diagnostics: object | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
         self.unresolved_callouts = unresolved_callouts or []
+        self.verifier_model = verifier_model
+        self.verifier_used = verifier_used
         self.diagnostics = _diagnostics_payload(diagnostics)
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
@@ -277,6 +281,7 @@ def _raise_manual_review_for_unavailable_verifier(
     diagnostics,
     parser_totals: list[str],
     reason: str,
+    verifier_model: str,
 ) -> None:
     warnings = list(diagnostics.warnings)
     warnings.append(f"OpenRouter verifier was unavailable ({reason}); manual review is required.")
@@ -284,6 +289,8 @@ def _raise_manual_review_for_unavailable_verifier(
         warnings,
         supported_totals=parser_totals,
         unresolved_callouts=diagnostics.unresolved_callouts,
+        verifier_model=verifier_model,
+        verifier_used=True,
         diagnostics=diagnostics,
     )
 
@@ -304,6 +311,8 @@ async def summarize_with_model(
             diagnostics.warnings,
             supported_totals=parser_totals,
             unresolved_callouts=diagnostics.unresolved_callouts,
+            verifier_model=selected_model,
+            verifier_used=False,
             diagnostics=diagnostics,
         )
 
@@ -315,6 +324,8 @@ async def summarize_with_model(
                 warnings,
                 supported_totals=parser_totals,
                 unresolved_callouts=diagnostics.unresolved_callouts,
+                verifier_model=selected_model,
+                verifier_used=False,
                 diagnostics=diagnostics,
             )
         raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
@@ -360,7 +371,12 @@ async def summarize_with_model(
             response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
     except httpx.HTTPError as exc:
         if diagnostics.review_required:
-            _raise_manual_review_for_unavailable_verifier(diagnostics, parser_totals, exc.__class__.__name__)
+            _raise_manual_review_for_unavailable_verifier(
+                diagnostics,
+                parser_totals,
+                exc.__class__.__name__,
+                selected_model,
+            )
         raise
     if response.status_code >= 400:
         logger.warning("openrouter_error status=%s body=%s", response.status_code, response.text[:500])
@@ -369,6 +385,7 @@ async def summarize_with_model(
                 diagnostics,
                 parser_totals,
                 f"OpenRouter returned {response.status_code}",
+                selected_model,
             )
         raise OpenRouterError(f"OpenRouter returned {response.status_code}.")
 
@@ -384,6 +401,8 @@ async def summarize_with_model(
                 _manual_review_warnings(diagnostics, summary),
                 supported_totals=summary.job_totals,
                 unresolved_callouts=remaining_callouts,
+                verifier_model=selected_model,
+                verifier_used=True,
                 diagnostics=diagnostics,
             )
 

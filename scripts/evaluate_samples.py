@@ -242,6 +242,8 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "warning_count": len(body.get("warnings") or []),
             "supported_total_count": len(body.get("supported_totals") or []),
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
+            "verifier_model": body.get("verifier_model") or "",
+            "verifier_used": bool(body.get("verifier_used")),
             "diagnostics": body.get("diagnostics") or {},
             "supported_vs_team_totals": supported_comparison,
             "missing_total_input_evidence": classify_missing_total_evidence(

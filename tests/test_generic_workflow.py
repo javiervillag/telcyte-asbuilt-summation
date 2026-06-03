@@ -136,6 +136,8 @@ def test_known_sample_requires_manual_review_without_page_image_verification(mon
 
     assert "Readable construction callouts require rate-card/composite interpretation" in " ".join(exc.value.warnings)
     assert _FakeAsyncClient.calls
+    assert exc.value.verifier_model == settings.openrouter_model
+    assert exc.value.verifier_used is True
 
 
 def test_unresolved_callouts_are_sent_to_openrouter_before_manual_review(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,6 +167,8 @@ def test_unresolved_callouts_are_sent_to_openrouter_before_manual_review(monkeyp
     assert "EOL - 48Ct - 66'" in prompt_text
     assert exc.value.supported_totals == ["UG-06 - 13"]
     assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
+    assert exc.value.verifier_model == settings.openrouter_model
+    assert exc.value.verifier_used is True
     assert "Model verifier kept EOL callout in manual review." in exc.value.warnings
     assert (
         "OpenRouter verifier reviewed unresolved callouts but could not clear them from parsed evidence."
@@ -195,6 +199,8 @@ def test_openrouter_cannot_clear_unresolved_callout_without_resolution(monkeypat
 
     assert _FakeAsyncClient.calls
     assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
+    assert exc.value.verifier_model == settings.openrouter_model
+    assert exc.value.verifier_used is True
     assert "Model omitted the unresolved callout." in exc.value.warnings
 
 
@@ -215,6 +221,8 @@ def test_openrouter_error_falls_back_to_manual_review_for_unresolved_callouts(mo
     assert _FakeAsyncClient.calls
     assert exc.value.supported_totals == ["UG-06 - 13"]
     assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
+    assert exc.value.verifier_model == settings.openrouter_model
+    assert exc.value.verifier_used is True
     assert "OpenRouter verifier was unavailable (OpenRouter returned 401); manual review is required." in exc.value.warnings
 
 
