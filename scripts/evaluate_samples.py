@@ -64,6 +64,25 @@ def normalized_totals_from_text(text: str) -> list[str]:
     return sorted(_format_total_key(key) for key in total_keys_from_text(text))
 
 
+def prefix_counts_from_totals(totals: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for total in totals:
+        key = total_line_key(total)
+        if not key:
+            continue
+        prefix = key[0][0]
+        counts[prefix] = counts.get(prefix, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def callout_type_counts(callout_summary: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in callout_summary:
+        callout_type = str(item.get("callout_type") or "Unknown")
+        counts[callout_type] = counts.get(callout_type, 0) + int(item.get("count") or 0)
+    return dict(sorted(counts.items()))
+
+
 def compare_total_text(actual_text: str, expected_text: str) -> dict[str, Any]:
     actual_keys = total_keys_from_text(actual_text)
     expected_keys = total_keys_from_text(expected_text)
@@ -114,6 +133,13 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "extra_total_count": 0,
         "unresolved_callout_count": 0,
     }
+    prefix_totals = {
+        "team_added_prefix_counts": {},
+        "supported_prefix_counts": {},
+        "missing_prefix_counts": {},
+        "extra_prefix_counts": {},
+        "unresolved_callout_type_counts": {},
+    }
     verifier_used_count = 0
     for sample in samples:
         result = str(sample.get("result") or "unknown")
@@ -128,6 +154,14 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
         totals["missing_total_count"] += int(comparison.get("missing_total_count") or 0)
         totals["extra_total_count"] += int(comparison.get("extra_total_count") or 0)
         totals["unresolved_callout_count"] += int(sample.get("unresolved_callout_count") or 0)
+        _add_counts(prefix_totals["team_added_prefix_counts"], sample.get("team_added_prefix_counts") or {})
+        _add_counts(prefix_totals["supported_prefix_counts"], sample.get("supported_prefix_counts") or {})
+        _add_counts(prefix_totals["missing_prefix_counts"], sample.get("missing_prefix_counts") or {})
+        _add_counts(prefix_totals["extra_prefix_counts"], sample.get("extra_prefix_counts") or {})
+        _add_counts(
+            prefix_totals["unresolved_callout_type_counts"],
+            sample.get("unresolved_callout_type_counts") or {},
+        )
         if sample.get("verifier_used"):
             verifier_used_count += 1
     return {
@@ -135,7 +169,13 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "result_counts": result_counts,
         "verifier_used_count": verifier_used_count,
         **totals,
+        **{key: dict(sorted(value.items())) for key, value in prefix_totals.items()},
     }
+
+
+def _add_counts(target: dict[str, int], source: dict[str, int]) -> None:
+    for key, value in source.items():
+        target[str(key)] = target.get(str(key), 0) + int(value or 0)
 
 
 def _missing_total_evidence(input_text: str, total: str, unresolved_callouts: list[str]) -> dict[str, Any]:
@@ -280,6 +320,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
     team_text = pdf_text(team_output)
     team_added = added_text(before_text, team_text)
     team_added_totals = normalized_totals_from_text(team_added)
+    team_added_prefix_counts = prefix_counts_from_totals(team_added_totals)
     team_totals = compare_total_text(team_added, team_added)
 
     sample_dir = out_dir / before.stem
@@ -301,6 +342,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
         "content_type": response.headers.get("content-type", ""),
         "team_added_total_count": team_totals["expected_total_count"],
         "team_added_totals": team_added_totals,
+        "team_added_prefix_counts": team_added_prefix_counts,
     }
 
     if response.status_code == 200:
@@ -310,6 +352,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
         generated_text = pdf_text_from_bytes(generated_pdf)
         generated_added = added_text(before_text, generated_text)
         app_added_totals = normalized_totals_from_text(generated_added)
+        app_vs_team_totals = compare_total_text(generated_added, team_added)
         (sample_dir / "03_app_added_text.txt").write_text(generated_added, encoding="utf-8")
         (sample_dir / "03_app_added_totals.json").write_text(
             json.dumps(app_added_totals, indent=2),
@@ -323,7 +366,10 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
                 "confidence": response.headers.get("x-telcyte-confidence", ""),
                 "warnings": response.headers.get("x-telcyte-warnings", ""),
                 "app_added_totals": app_added_totals,
-                "app_vs_team_totals": compare_total_text(generated_added, team_added),
+                "supported_prefix_counts": prefix_counts_from_totals(app_added_totals),
+                "missing_prefix_counts": prefix_counts_from_totals(app_vs_team_totals["missing_totals"]),
+                "extra_prefix_counts": prefix_counts_from_totals(app_vs_team_totals["extra_totals"]),
+                "app_vs_team_totals": app_vs_team_totals,
             }
         )
         return result
@@ -343,6 +389,11 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
         encoding="utf-8",
     )
     supported_comparison = compare_total_text(supported_totals, team_added)
+    unresolved_callout_summary = (
+        body.get("unresolved_callout_summary")
+        or diagnostics.get("unresolved_callout_summary")
+        or []
+    )
     missing_total_input_evidence = classify_missing_total_evidence(
         before_text,
         supported_comparison["missing_totals"],
@@ -358,14 +409,14 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "supported_total_count": len(supported_total_lines),
             "supported_totals": supported_total_lines,
             "supported_normalized_totals": supported_normalized_totals,
+            "supported_prefix_counts": prefix_counts_from_totals(supported_normalized_totals),
+            "missing_prefix_counts": prefix_counts_from_totals(supported_comparison["missing_totals"]),
+            "extra_prefix_counts": prefix_counts_from_totals(supported_comparison["extra_totals"]),
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
             "unresolved_callouts": [str(callout) for callout in body.get("unresolved_callouts") or []],
             "unresolved_callout_details": diagnostics.get("unresolved_callout_details") or [],
-            "unresolved_callout_summary": (
-                body.get("unresolved_callout_summary")
-                or diagnostics.get("unresolved_callout_summary")
-                or []
-            ),
+            "unresolved_callout_summary": unresolved_callout_summary,
+            "unresolved_callout_type_counts": callout_type_counts(unresolved_callout_summary),
             "verifier_model": body.get("verifier_model") or "",
             "verifier_used": bool(body.get("verifier_used")),
             "diagnostics": diagnostics,

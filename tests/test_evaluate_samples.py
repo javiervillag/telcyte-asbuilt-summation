@@ -115,6 +115,26 @@ def test_normalized_totals_from_text_returns_sorted_display_totals() -> None:
     assert totals == ["COMP-9 - 2", "PC-01 - 1", "UG-07 - 10'"]
 
 
+def test_prefix_counts_from_totals_groups_normalized_prefixes() -> None:
+    counts = evaluate_samples.prefix_counts_from_totals(
+        ["UG-07 - 1", "UG-56 - 10'", "FB-04 - 6", "COMP-13 - 1"]
+    )
+
+    assert counts == {"COMP": 1, "FB": 1, "UG": 2}
+
+
+def test_callout_type_counts_sums_grouped_callouts() -> None:
+    counts = evaluate_samples.callout_type_counts(
+        [
+            {"callout_type": "EOL", "count": 2},
+            {"callout_type": "Storage", "count": 3},
+            {"callout_type": "EOL", "count": 1},
+        ]
+    )
+
+    assert counts == {"EOL": 3, "Storage": 3}
+
+
 def test_missing_total_evidence_classifies_input_support() -> None:
     input_text = "Construction note\nFB-4 storage note\nUG-56 - 170'\n13 fiber callout"
     missing = ["FB-04 - 6", "COMP-13 - 13", "UG-56 - 170'"]
@@ -194,6 +214,10 @@ def test_summarize_run_totals_manual_review_and_annotated_pdf_counts() -> None:
                 "supported_total_count": 2,
                 "unresolved_callout_count": 4,
                 "verifier_used": True,
+                "team_added_prefix_counts": {"UG": 2, "FB": 1},
+                "supported_prefix_counts": {"UG": 2},
+                "missing_prefix_counts": {"FB": 1},
+                "unresolved_callout_type_counts": {"EOL": 4},
                 "supported_vs_team_totals": {
                     "missing_total_count": 1,
                     "extra_total_count": 0,
@@ -203,6 +227,9 @@ def test_summarize_run_totals_manual_review_and_annotated_pdf_counts() -> None:
                 "result": "annotated_pdf",
                 "team_added_total_count": 2,
                 "verifier_used": False,
+                "team_added_prefix_counts": {"UG": 1, "PC": 1},
+                "supported_prefix_counts": {"UG": 1, "PC": 1, "FB": 1},
+                "extra_prefix_counts": {"FB": 1},
                 "app_vs_team_totals": {
                     "actual_total_count": 3,
                     "missing_total_count": 0,
@@ -221,6 +248,11 @@ def test_summarize_run_totals_manual_review_and_annotated_pdf_counts() -> None:
         "missing_total_count": 1,
         "extra_total_count": 1,
         "unresolved_callout_count": 4,
+        "team_added_prefix_counts": {"FB": 1, "PC": 1, "UG": 3},
+        "supported_prefix_counts": {"FB": 1, "PC": 1, "UG": 3},
+        "missing_prefix_counts": {"FB": 1},
+        "extra_prefix_counts": {"FB": 1},
+        "unresolved_callout_type_counts": {"EOL": 4},
     }
 
 
@@ -252,6 +284,10 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
     assert result["supported_normalized_totals"] == ["UG-56 - 170'"]
     assert (tmp_path / "out" / before.stem / "02_supported_totals.json").exists()
     assert result["team_added_totals"] == ["UG-56 - 170'"]
+    assert result["team_added_prefix_counts"] == {"UG": 1}
+    assert result["supported_prefix_counts"] == {"UG": 1}
+    assert result["missing_prefix_counts"] == {}
+    assert result["extra_prefix_counts"] == {}
     assert (tmp_path / "out" / before.stem / "01_team_added_totals.json").exists()
     assert result["unresolved_callouts"] == ["EOL - 48Ct - 30'"]
     assert result["unresolved_callout_details"] == [
@@ -264,6 +300,7 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
             "footage": "30'",
         }
     ]
+    assert result["unresolved_callout_type_counts"] == {"EOL": 1}
     assert result["unresolved_callout_summary"] == [
         {
             "callout_type": "EOL",
