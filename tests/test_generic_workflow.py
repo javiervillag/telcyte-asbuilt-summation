@@ -49,11 +49,12 @@ class _FakeOpenRouterResponse:
         self.text = text
 
     def json(self) -> dict:
+        content = self._payload if isinstance(self._payload, str) else json.dumps(self._payload)
         return {
             "choices": [
                 {
                     "message": {
-                        "content": json.dumps(self._payload),
+                        "content": content,
                     }
                 }
             ]
@@ -349,6 +350,29 @@ def test_openrouter_error_falls_back_to_manual_review_for_unresolved_callouts(mo
     assert exc.value.verifier_model == settings.openrouter_model
     assert exc.value.verifier_used is False
     assert "OpenRouter verifier was unavailable (OpenRouter returned 401); manual review is required." in exc.value.warnings
+
+
+def test_malformed_openrouter_response_falls_back_to_manual_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.status_code = 200
+    _FakeAsyncClient.payload = "not json"
+    monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", _FakeAsyncClient)
+    settings = Settings(
+        OPENROUTER_API_KEY="test-key",
+        INCLUDE_PAGE_IMAGES=False,
+    )
+
+    with pytest.raises(ManualReviewRequired) as exc:
+        asyncio.run(summarize_with_model(_reviewable_unresolved_pdf(), settings))
+
+    assert _FakeAsyncClient.calls
+    assert exc.value.supported_totals == ["UG-06 - 13"]
+    assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
+    assert exc.value.verifier_model == settings.openrouter_model
+    assert exc.value.verifier_used is False
+    assert "OpenRouter verifier was unavailable (Model did not return JSON.); manual review is required." in exc.value.warnings
 
 
 def test_known_sample_requires_manual_review_even_with_page_images(monkeypatch: pytest.MonkeyPatch) -> None:

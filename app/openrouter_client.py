@@ -453,9 +453,19 @@ async def summarize_with_model(
             )
         raise OpenRouterError(f"OpenRouter returned {response.status_code}.")
 
-    data = response.json()
-    text = data["choices"][0]["message"]["content"]
-    model_review = _normalize_review(_extract_json(text), selected_model)
+    try:
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        model_review = _normalize_review(_extract_json(text), selected_model)
+    except (OpenRouterError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        if diagnostics.review_required:
+            _raise_manual_review_for_unavailable_verifier(
+                diagnostics,
+                parser_totals,
+                str(exc) or exc.__class__.__name__,
+                selected_model,
+            )
+        raise
     summary = _merge_parser_and_model(parser_totals, model_review.summary, settings)
 
     if diagnostics.unresolved_callouts:
