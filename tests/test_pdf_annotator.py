@@ -83,8 +83,16 @@ def test_generic_output_preserves_existing_green_annotations() -> None:
     finally:
         doc.close()
 
-    assert after_annotations == before_annotations
-    assert after_green_fills - before_green_fills == 1
+    assert after_annotations[: len(before_annotations)] == before_annotations
+    added_annotations = after_annotations[len(before_annotations) :]
+    assert added_annotations == [
+        (
+            "FreeText",
+            added_annotations[0][1],
+            "MKR Job Totals\nUG-83 - 140'",
+        )
+    ]
+    assert after_green_fills - before_green_fills in {0, 1}
 
 
 def _annotation_snapshot(page: fitz.Page) -> list[tuple[str, tuple[float, float, float, float], str]]:

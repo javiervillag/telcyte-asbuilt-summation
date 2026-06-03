@@ -234,6 +234,12 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
+        if page.rotation in {90, 270}:
+            _add_rotated_page_note(page, lines)
+            buffer = BytesIO()
+            doc.save(buffer, garbage=4, deflate=True)
+            return buffer.getvalue()
+
         rect = choose_box_rect(page, lines)
         width, _, font_size, padding = _box_metrics(page, lines)
         line_height = font_size * 1.16
@@ -263,6 +269,37 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
         return buffer.getvalue()
     finally:
         doc.close()
+
+
+def _add_rotated_page_note(page: fitz.Page, lines: list[str]) -> None:
+    rotation = page.rotation
+    page.set_rotation(0)
+    try:
+        rect, font_size = _rotated_note_rect(page, lines)
+        annot = page.add_freetext_annot(
+            rect,
+            "\n".join(lines),
+            fontsize=font_size,
+            fontname="Helv",
+            text_color=TEXT_RED,
+            fill_color=BOX_FILL,
+            border_width=0,
+            rotate=rotation,
+        )
+        annot.update()
+    finally:
+        page.set_rotation(rotation)
+
+
+def _rotated_note_rect(page: fitz.Page, lines: list[str]) -> tuple[fitz.Rect, float]:
+    media = page.mediabox
+    x0 = media.x0 + max(18.0, media.width * 0.012)
+    y1 = media.y1 - max(6.0, media.height * 0.003)
+    longest = max((len(line) for line in lines), default=18)
+    width = max(media.width * 0.42, min(media.width * 0.54, longest * 13.5))
+    height = max(media.height * 0.26, min(media.height * 0.34, len(lines) * 42.0))
+    font_size = max(8.0, min(18.0, media.width / 96))
+    return fitz.Rect(x0, y1 - height, x0 + width, y1), font_size
 
 
 def _wrap_line(line: str, max_chars: int) -> list[str]:
