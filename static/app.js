@@ -26,6 +26,7 @@ let codeState = {};
 let showAllCodes = false;
 let showManualEntry = false;
 let manualExtras = [];
+let currentDownload = null;
 
 hideResult();
 updateManualControls();
@@ -156,18 +157,15 @@ form.addEventListener("submit", async (event) => {
     if (resultSummary && !resultSummary.output_name) {
       resultSummary.output_name = outputName;
     }
+    clearCurrentDownload();
     const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = outputName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    currentDownload = { url, filename: outputName };
+    triggerDownload(currentDownload);
     setStatus("PDF ready", "Download started.", warnings.length ? "warn" : "done", {
       warnings,
       resultSummary,
       canStartOver: true,
+      download: currentDownload,
     });
   } catch (error) {
     setStatus("Manual review", error.message, "error", {
@@ -185,11 +183,13 @@ form.addEventListener("submit", async (event) => {
 });
 
 function hideResult() {
+  clearCurrentDownload();
   resultCard.classList.add("is-hidden");
   statusBox.textContent = "";
 }
 
 function resetForAnotherPdf() {
+  clearCurrentDownload();
   fileInput.value = "";
   fileName.textContent = "No file selected";
   codeSearch.value = "";
@@ -247,7 +247,7 @@ function setStatus(title, message, kind, details = []) {
     appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
   }
   if (groups.canStartOver) {
-    appendStartAnotherAction();
+    appendStatusActions(groups.download || null);
   }
   statusBox.className = kind ? `status ${kind}` : "status";
 }
@@ -317,9 +317,17 @@ function appendDetailSection(block, title, lines) {
   block.appendChild(details);
 }
 
-function appendStartAnotherAction() {
+function appendStatusActions(download) {
   const block = document.createElement("div");
   block.className = "status-actions";
+  if (download?.url && download?.filename) {
+    const downloadButton = document.createElement("button");
+    downloadButton.type = "button";
+    downloadButton.className = "download-button";
+    downloadButton.textContent = "Download PDF";
+    downloadButton.addEventListener("click", () => triggerDownload(download));
+    block.appendChild(downloadButton);
+  }
   const button = document.createElement("button");
   button.type = "button";
   button.className = "start-over-button";
@@ -327,6 +335,24 @@ function appendStartAnotherAction() {
   button.addEventListener("click", resetForAnotherPdf);
   block.appendChild(button);
   statusBox.appendChild(block);
+}
+
+function triggerDownload(download) {
+  if (!download?.url || !download?.filename) return;
+  const link = document.createElement("a");
+  link.href = download.url;
+  link.download = download.filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function clearCurrentDownload() {
+  if (currentDownload?.url) {
+    URL.revokeObjectURL(currentDownload.url);
+  }
+  currentDownload = null;
 }
 
 function statusLabel(kind) {

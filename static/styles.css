@@ -752,20 +752,36 @@ input[type="file"] {
 }
 
 .status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   border-top: 1px solid var(--line);
   padding-top: 14px;
 }
 
+.download-button,
 .start-over-button {
   min-height: 42px;
   border: 0;
   border-radius: 7px;
-  background: var(--navy);
-  color: #fff;
   cursor: pointer;
   padding: 10px 16px;
   font-size: 13px;
   font-weight: 800;
+}
+
+.download-button {
+  background: var(--accent);
+  color: #fff;
+}
+
+.download-button:hover {
+  background: var(--accent-dark);
+}
+
+.start-over-button {
+  background: var(--navy);
+  color: #fff;
 }
 
 .start-over-button:hover {
