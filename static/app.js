@@ -1,41 +1,49 @@
 const form = document.querySelector("#upload-form");
 const fileInput = document.querySelector("#pdf-file");
 const fileName = document.querySelector("#file-name");
+const resultCard = document.querySelector("#result-card");
 const statusBox = document.querySelector("#status");
 const submit = document.querySelector("#submit");
 const codeList = document.querySelector("#code-list");
 const codeSearch = document.querySelector("#code-search");
+const selectedCount = document.querySelector("#selected-count");
+const categoryTabs = document.querySelector("#category-tabs");
+const processingOverlay = document.querySelector("#processing-overlay");
 
 let extraCodeCategories = [];
+let activeCategory = "All";
+let codeState = {};
 
-setReadyState();
+hideResult();
 
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   fileName.textContent = file ? file.name : "No file selected";
-  setReadyState();
+  hideResult();
 });
 
 codeSearch.addEventListener("input", () => {
-  renderExtraCodes(codeSearch.value);
+  renderExtraCodes();
 });
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const file = fileInput.files[0];
   if (!file) {
-    setStatus("Missing PDF", "Choose a PDF first.", "error");
+    setStatus("Choose a PDF first", "Select an as-built PDF before generating the output.", "error");
     return;
   }
 
   const selectedExtras = collectSelectedExtras();
   if (!selectedExtras.ok) {
-    setStatus("Check extras", selectedExtras.message, "error");
+    setStatus("Check extra codes", selectedExtras.message, "error");
     return;
   }
 
   submit.disabled = true;
-  setStatus("Processing", "Generating annotated PDF.", "working");
+  submit.textContent = "Generating...";
+  hideResult();
+  showProcessing(true);
   const data = new FormData();
   data.append("file", file);
   data.append("extra_billing_codes", JSON.stringify(selectedExtras.items));
@@ -79,15 +87,19 @@ form.addEventListener("submit", async (event) => {
       unresolvedCallouts: error.unresolvedCallouts || [],
     });
   } finally {
+    showProcessing(false);
     submit.disabled = false;
+    submit.textContent = "Generate PDF";
   }
 });
 
-function setReadyState() {
-  setStatus("Ready", "Waiting for PDF.", "empty");
+function hideResult() {
+  resultCard.classList.add("is-hidden");
+  statusBox.textContent = "";
 }
 
 function setStatus(title, message, kind, details = []) {
+  resultCard.classList.remove("is-hidden");
   statusBox.textContent = "";
   const groups = Array.isArray(details) ? { warnings: details } : details;
   const summary = document.createElement("div");
@@ -132,8 +144,12 @@ function statusLabel(kind) {
   if (kind === "done") return "Ready";
   if (kind === "warn") return "Check";
   if (kind === "error") return "Review";
-  if (kind === "working") return "Live";
-  return "Idle";
+  return "Status";
+}
+
+function showProcessing(isVisible) {
+  processingOverlay.classList.toggle("is-visible", isVisible);
+  processingOverlay.setAttribute("aria-hidden", isVisible ? "false" : "true");
 }
 
 function readWarnings(response) {
@@ -148,6 +164,7 @@ function readWarnings(response) {
 }
 
 async function loadExtraCodes() {
+  codeList.innerHTML = `<div class="code-empty">Loading code list...</div>`;
   try {
     const response = await fetch("/api/extra-billing-codes");
     if (!response.ok) {
@@ -155,20 +172,39 @@ async function loadExtraCodes() {
     }
     const data = await response.json();
     extraCodeCategories = data.categories || [];
-    renderExtraCodes("");
+    renderCategoryTabs();
+    renderExtraCodes();
   } catch (error) {
     codeList.innerHTML = `<div class="code-empty">${escapeHtml(error.message)}</div>`;
   }
 }
 
-function renderExtraCodes(filterText) {
-  const filter = filterText.trim().toLowerCase();
-  const selected = collectCurrentCodeState();
+function renderCategoryTabs() {
+  const names = ["All", ...extraCodeCategories.map((category) => category.name)];
+  categoryTabs.innerHTML = names
+    .map((name) => {
+      const isActive = name === activeCategory ? "active" : "";
+      return `<button class="category-tab ${isActive}" type="button" data-category="${escapeHtml(name)}">${escapeHtml(name)}</button>`;
+    })
+    .join("");
+  categoryTabs.querySelectorAll(".category-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      activeCategory = tab.dataset.category || "All";
+      renderCategoryTabs();
+      renderExtraCodes();
+    });
+  });
+}
+
+function renderExtraCodes() {
+  const filter = codeSearch.value.trim().toLowerCase();
+  captureCodeState();
   const groups = extraCodeCategories
+    .filter((category) => activeCategory === "All" || category.name === activeCategory)
     .map((category) => {
       const codes = (category.codes || []).filter((item) => {
         const haystack = `${item.code} ${item.name} ${item.description} ${item.when_to_consider}`.toLowerCase();
-        return selected[item.code]?.checked || !filter || haystack.includes(filter);
+        return codeState[item.code]?.checked || !filter || haystack.includes(filter);
       });
       return { name: category.name, codes };
     })
@@ -176,16 +212,28 @@ function renderExtraCodes(filterText) {
 
   if (!groups.length) {
     codeList.innerHTML = `<div class="code-empty">No matching codes.</div>`;
-    restoreCurrentCodeState(selected);
+    restoreCurrentCodeState();
+    updateSelectedCount();
     return;
   }
 
   codeList.innerHTML = groups.map(renderCategory).join("");
-  restoreCurrentCodeState(selected);
+  restoreCurrentCodeState();
   codeList.querySelectorAll(".code-toggle").forEach((checkbox) => {
-    checkbox.addEventListener("change", () => updateCodeRowState(checkbox.closest(".code-row")));
+    checkbox.addEventListener("change", () => {
+      updateCodeRowState(checkbox.closest(".code-row"));
+      captureCodeState();
+      updateSelectedCount();
+    });
     updateCodeRowState(checkbox.closest(".code-row"));
   });
+  codeList.querySelectorAll(".code-quantity, .code-note").forEach((input) => {
+    input.addEventListener("input", () => {
+      captureCodeState();
+      updateSelectedCount();
+    });
+  });
+  updateSelectedCount();
 }
 
 function renderCategory(category) {
@@ -233,12 +281,11 @@ function updateCodeRowState(row) {
 
 function collectSelectedExtras() {
   const items = [];
-  for (const row of codeList.querySelectorAll(".code-row")) {
-    const toggle = row.querySelector(".code-toggle");
-    if (!toggle.checked) continue;
-    const code = toggle.value;
-    const quantity = row.querySelector(".code-quantity").value.trim();
-    const note = row.querySelector(".code-note").value.trim();
+  captureCodeState();
+  for (const [code, state] of Object.entries(codeState)) {
+    if (!state.checked) continue;
+    const quantity = state.quantity.trim();
+    const note = state.note.trim();
     if (!quantity) {
       return { ok: false, message: `Add a quantity for ${code}.`, items: [] };
     }
@@ -250,27 +297,32 @@ function collectSelectedExtras() {
   return { ok: true, message: "", items };
 }
 
-function collectCurrentCodeState() {
-  const state = {};
-  codeList.querySelectorAll(".code-row").forEach((row) => {
+function captureCodeState() {
+  document.querySelectorAll(".code-row").forEach((row) => {
     const code = row.dataset.code;
-    state[code] = {
+    codeState[code] = {
       checked: row.querySelector(".code-toggle").checked,
       quantity: row.querySelector(".code-quantity").value,
       note: row.querySelector(".code-note").value,
     };
   });
-  return state;
 }
 
-function restoreCurrentCodeState(state) {
-  codeList.querySelectorAll(".code-row").forEach((row) => {
-    const prior = state[row.dataset.code];
+function restoreCurrentCodeState() {
+  document.querySelectorAll(".code-row").forEach((row) => {
+    const prior = codeState[row.dataset.code];
     if (!prior) return;
     row.querySelector(".code-toggle").checked = prior.checked;
     row.querySelector(".code-quantity").value = prior.quantity;
     row.querySelector(".code-note").value = prior.note;
   });
+}
+
+function updateSelectedCount() {
+  captureCodeState();
+  const count = Object.values(codeState).filter((state) => state.checked).length;
+  selectedCount.textContent = `${count} selected`;
+  selectedCount.classList.toggle("has-selection", count > 0);
 }
 
 function escapeHtml(value) {

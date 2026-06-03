@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux2" />
   </head>
   <body>
     <header class="masthead">
@@ -22,48 +22,58 @@
 
     <main class="shell">
       <section class="layout">
-        <article class="card upload-card">
-          <div class="card-heading">
-            <span class="eyebrow">PDF</span>
-            <h2>Input</h2>
-          </div>
+        <aside class="side-panel">
+          <article class="card upload-card">
+            <div class="card-heading">
+              <span class="eyebrow">PDF</span>
+              <h2>Input</h2>
+            </div>
 
-          <form id="upload-form" class="dropzone">
-            <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
-            <label for="pdf-file">
-              <span id="file-label">Choose PDF</span>
-              <strong id="file-name">No file selected</strong>
-            </label>
-            <button id="submit" type="submit">Generate PDF</button>
-          </form>
-        </article>
+            <form id="upload-form" class="dropzone">
+              <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
+              <label for="pdf-file">
+                <span id="file-label">Choose PDF</span>
+                <strong id="file-name">No file selected</strong>
+              </label>
+              <button id="submit" type="submit">Generate PDF</button>
+            </form>
+          </article>
+
+          <article id="result-card" class="card result-card is-hidden">
+            <div id="status" class="status empty" role="status" aria-live="polite"></div>
+          </article>
+        </aside>
 
         <article class="card extras-card">
-          <div class="card-heading">
-            <span class="eyebrow">Optional</span>
-            <h2>Extra Billing Codes</h2>
-          </div>
-          <div class="extras-toolbar">
-            <p>Only selected extras are added to the PDF.</p>
-            <input id="code-search" type="search" placeholder="Search codes" autocomplete="off" />
-          </div>
-          <div id="code-list" class="code-list" aria-live="polite"></div>
-        </article>
-
-        <article class="card result-card">
-          <div class="card-heading">
-            <span class="eyebrow">Result</span>
-            <h2>Processing</h2>
-          </div>
-          <div id="status" class="status empty" role="status" aria-live="polite">
+          <div class="extras-header">
             <div>
-              <strong>Ready</strong>
-              <span>Waiting for PDF</span>
+              <span class="eyebrow">Optional</span>
+              <h2>Extra Billing Codes</h2>
+              <p>Use this only for Telcyte-confirmed billing items that are not direct PDF labels.</p>
             </div>
+            <span id="selected-count" class="count-pill">0 selected</span>
+          </div>
+
+          <div class="extras-toolbar">
+            <input id="code-search" type="search" placeholder="Search by code or meaning" autocomplete="off" />
+            <div id="category-tabs" class="category-tabs" aria-label="Code categories"></div>
+          </div>
+
+          <div id="code-list" class="code-list" aria-live="polite">
+            <div class="code-empty">Loading code list...</div>
           </div>
         </article>
       </section>
     </main>
-    <script src="/static/app.js"></script>
+
+    <div id="processing-overlay" class="processing-overlay" aria-live="assertive" aria-hidden="true">
+      <div class="processing-card" role="status">
+        <div class="spinner" aria-hidden="true"></div>
+        <strong>Building summary PDF</strong>
+        <span>Reading the as-built, applying selected extras, and placing the totals box.</span>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=20260603-ux2"></script>
   </body>
 </html>
