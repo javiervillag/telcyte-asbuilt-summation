@@ -4,8 +4,9 @@ import base64
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from io import BytesIO
+from typing import Any
 
 import fitz
 import httpx
@@ -29,10 +30,12 @@ class ManualReviewRequired(OpenRouterError):
         warnings: list[str],
         supported_totals: list[str] | None = None,
         unresolved_callouts: list[str] | None = None,
+        diagnostics: object | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
         self.unresolved_callouts = unresolved_callouts or []
+        self.diagnostics = _diagnostics_payload(diagnostics)
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -49,6 +52,16 @@ class ModelReview:
     summary: SummaryResult
     remaining_unresolved_callouts: list[str]
     resolved_callouts: list[dict[str, str]]
+
+
+def _diagnostics_payload(diagnostics: object | None) -> dict[str, Any]:
+    if diagnostics is None:
+        return {}
+    if isinstance(diagnostics, dict):
+        return diagnostics
+    if hasattr(diagnostics, "__dataclass_fields__"):
+        return asdict(diagnostics)
+    return {}
 
 
 SYSTEM_PROMPT = """You are helping Telcyte review parsed as-built construction drawings.
@@ -271,6 +284,7 @@ def _raise_manual_review_for_unavailable_verifier(
         warnings,
         supported_totals=parser_totals,
         unresolved_callouts=diagnostics.unresolved_callouts,
+        diagnostics=diagnostics,
     )
 
 
@@ -290,6 +304,7 @@ async def summarize_with_model(
             diagnostics.warnings,
             supported_totals=parser_totals,
             unresolved_callouts=diagnostics.unresolved_callouts,
+            diagnostics=diagnostics,
         )
 
     if not settings.openrouter_api_key:
@@ -300,6 +315,7 @@ async def summarize_with_model(
                 warnings,
                 supported_totals=parser_totals,
                 unresolved_callouts=diagnostics.unresolved_callouts,
+                diagnostics=diagnostics,
             )
         raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
 
@@ -368,6 +384,7 @@ async def summarize_with_model(
                 _manual_review_warnings(diagnostics, summary),
                 supported_totals=summary.job_totals,
                 unresolved_callouts=remaining_callouts,
+                diagnostics=diagnostics,
             )
 
     for warning in diagnostics.warnings:

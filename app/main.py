@@ -64,6 +64,7 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
                 "warnings": exc.warnings,
                 "supported_totals": exc.supported_totals,
                 "unresolved_callouts": exc.unresolved_callouts,
+                "diagnostics": exc.diagnostics,
             },
         )
     except PlacementReviewRequired as exc:

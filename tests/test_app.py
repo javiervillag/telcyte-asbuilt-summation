@@ -99,6 +99,14 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
             ["This PDF does not have enough readable text for automatic summation."],
             supported_totals=["UG-06 - 13"],
             unresolved_callouts=["EOL - 48Ct - 66'"],
+            diagnostics={
+                "block_count": 3,
+                "text_chars": 80,
+                "quantity_line_count": 1,
+                "code_total_count": 1,
+                "unresolved_callout_count": 1,
+                "review_required": True,
+            },
         )
 
     monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
@@ -113,6 +121,14 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     assert body["warnings"]
     assert body["supported_totals"] == ["UG-06 - 13"]
     assert body["unresolved_callouts"] == ["EOL - 48Ct - 66'"]
+    assert body["diagnostics"] == {
+        "block_count": 3,
+        "text_chars": 80,
+        "quantity_line_count": 1,
+        "code_total_count": 1,
+        "unresolved_callout_count": 1,
+        "review_required": True,
+    }
 
 
 def test_sample_manual_review_response_includes_supported_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,3 +143,6 @@ def test_sample_manual_review_response_includes_supported_evidence(monkeypatch: 
     assert response.status_code == 422
     assert "UG-56 - 170'" in body["supported_totals"]
     assert "EOL - 48Ct - 30'" in body["unresolved_callouts"]
+    assert body["diagnostics"]["review_required"] is True
+    assert body["diagnostics"]["code_total_count"] == len(body["supported_totals"])
+    assert body["diagnostics"]["unresolved_callout_count"] >= 1
