@@ -240,7 +240,7 @@ function setStatus(title, message, kind, details = []) {
   summary.appendChild(badge);
   summary.appendChild(copy);
   statusBox.appendChild(summary);
-  appendResultSummary(groups.resultSummary || null);
+  appendResultSummary(groups.resultSummary || null, groups.warnings || []);
   if (!groups.resultSummary) {
     appendList("Warnings", groups.warnings || []);
     appendList("Supported totals found", groups.supportedTotals || []);
@@ -269,7 +269,7 @@ function appendList(title, items) {
   statusBox.appendChild(block);
 }
 
-function appendResultSummary(summary) {
+function appendResultSummary(summary, warnings = []) {
   if (!summary) return;
   const block = document.createElement("div");
   block.className = "included-summary";
@@ -300,6 +300,7 @@ function appendResultSummary(summary) {
   }
   appendDetailSection(block, "Detected totals details", summary.detected_totals);
   appendDetailSection(block, "Extra billing codes details", summary.extra_billing_codes);
+  appendDetailSection(block, "Review items", warnings);
   appendDetailSection(block, "MKR Job Totals details", summary.result_lines);
   statusBox.appendChild(block);
 }
