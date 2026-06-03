@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.main import app
+from app.rate_cards import ZERO_PAD_EQUIVALENT_PREFIXES
 from app.rate_cards import total_line_key
 
 
@@ -68,6 +70,84 @@ def compare_total_text(actual_text: str, expected_text: str) -> dict[str, Any]:
         "missing_totals": sorted(_format_total_key(key) for key in expected_keys - actual_keys),
         "extra_totals": sorted(_format_total_key(key) for key in actual_keys - expected_keys),
     }
+
+
+def classify_missing_total_evidence(input_text: str, missing_totals: list[str]) -> list[dict[str, Any]]:
+    return [
+        _missing_total_evidence(input_text, total)
+        for total in missing_totals
+    ]
+
+
+def _missing_total_evidence(input_text: str, total: str) -> dict[str, Any]:
+    key = total_line_key(total)
+    if not key:
+        return {
+            "total": total,
+            "exact_total_present": False,
+            "code_present": False,
+            "quantity_present": False,
+            "matching_lines": [],
+        }
+
+    (prefix, number), quantity, unit = key
+    code_patterns = [_code_regex(prefix, variant) for variant in _code_number_variants(prefix, number)]
+    quantity_pattern = _quantity_regex(quantity, unit)
+    exact_patterns = [
+        re.compile(rf"{code.pattern}\s*-\s*{quantity_pattern.pattern}", re.I)
+        for code in code_patterns
+    ]
+    lines = [line.strip() for line in input_text.splitlines() if line.strip()]
+    matching_lines = [
+        line
+        for line in lines
+        if any(pattern.search(line) for pattern in exact_patterns)
+        or any(pattern.search(line) for pattern in code_patterns)
+        or quantity_pattern.search(line)
+    ][:8]
+    return {
+        "total": total,
+        "exact_total_present": any(pattern.search(input_text) for pattern in exact_patterns),
+        "code_present": any(pattern.search(input_text) for pattern in code_patterns),
+        "quantity_present": bool(quantity_pattern.search(input_text)),
+        "matching_lines": matching_lines,
+    }
+
+
+def _code_number_variants(prefix: str, number: str) -> list[str]:
+    variants = [number]
+    if prefix in ZERO_PAD_EQUIVALENT_PREFIXES and number.isdigit():
+        variants.append(str(int(number)))
+        variants.append(f"{int(number):02d}")
+    deduped: list[str] = []
+    for variant in variants:
+        if variant not in deduped:
+            deduped.append(variant)
+    return deduped
+
+
+def _code_regex(prefix: str, number: str) -> re.Pattern[str]:
+    if prefix in ZERO_PAD_EQUIVALENT_PREFIXES and number.isdigit():
+        number_pattern = rf"0*{re.escape(str(int(number)))}"
+    else:
+        number_pattern = re.escape(number)
+    return re.compile(rf"\b{re.escape(prefix)}-?{number_pattern}\b", re.I)
+
+
+def _quantity_regex(quantity: str, unit: str) -> re.Pattern[str]:
+    if not _quantity_is_distinct(quantity, unit):
+        return re.compile(r"a^")
+    suffix = r"\s*" + re.escape(unit) if unit else r"(?!\s*(?:\d|'|sqft))"
+    return re.compile(rf"\b{re.escape(quantity)}{suffix}", re.I)
+
+
+def _quantity_is_distinct(quantity: str, unit: str) -> bool:
+    if unit:
+        return True
+    try:
+        return float(quantity) >= 10
+    except ValueError:
+        return False
 
 
 def find_pairs(folder: Path) -> list[tuple[Path, Path]]:
@@ -133,6 +213,7 @@ def evaluate_pair(client: TestClient, before: Path, team_output: Path, out_dir: 
     response_path = sample_dir / "02_app_response.json"
     response_path.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
     supported_totals = "\n".join(str(line) for line in body.get("supported_totals") or [])
+    supported_comparison = compare_total_text(supported_totals, team_added)
     result.update(
         {
             "result": "manual_review" if response.status_code == 422 else "error",
@@ -141,7 +222,11 @@ def evaluate_pair(client: TestClient, before: Path, team_output: Path, out_dir: 
             "warning_count": len(body.get("warnings") or []),
             "supported_total_count": len(body.get("supported_totals") or []),
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
-            "supported_vs_team_totals": compare_total_text(supported_totals, team_added),
+            "supported_vs_team_totals": supported_comparison,
+            "missing_total_input_evidence": classify_missing_total_evidence(
+                before_text,
+                supported_comparison["missing_totals"],
+            ),
         }
     )
     return result

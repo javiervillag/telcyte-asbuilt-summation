@@ -46,6 +46,29 @@ def test_compare_total_text_reports_missing_and_extra_normalized_totals() -> Non
     assert comparison["extra_totals"] == ["COMP-9 - 2"]
 
 
+def test_missing_total_evidence_classifies_input_support() -> None:
+    input_text = "Construction note\nFB-4 storage note\nUG-56 - 170'\n13 fiber callout"
+    missing = ["FB-04 - 6", "COMP-13 - 13", "UG-56 - 170'"]
+
+    evidence = evaluate_samples.classify_missing_total_evidence(input_text, missing)
+
+    by_total = {item["total"]: item for item in evidence}
+    assert by_total["FB-04 - 6"]["code_present"] is True
+    assert by_total["FB-04 - 6"]["exact_total_present"] is False
+    assert by_total["COMP-13 - 13"]["code_present"] is False
+    assert by_total["COMP-13 - 13"]["quantity_present"] is True
+    assert by_total["UG-56 - 170'"]["exact_total_present"] is True
+
+
+def test_missing_total_evidence_ignores_tiny_unitless_quantities() -> None:
+    evidence = evaluate_samples.classify_missing_total_evidence(
+        "UG-7 - 1\nCD-1 - 1\nrandom 6",
+        ["PC-01 - 1", "FB-04 - 6"],
+    )
+
+    assert all(item["quantity_present"] is False for item in evidence)
+
+
 def test_find_pairs_matches_totals_removed_to_team_output(tmp_path: Path) -> None:
     before = tmp_path / "FIBER-ASBUILT-(TelCyte)-BI-000001-Totals Removed.pdf"
     after = tmp_path / "FIBER-ASBUILT-(TelCyte)-BI-000001.pdf"
