@@ -148,6 +148,18 @@ def test_derive_code_totals_normalizes_thousands_separators() -> None:
     assert totals == ["UG-03 - 1904", "PC-01 - 1200"]
 
 
+def test_derive_code_totals_normalizes_dash_variants() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG\u201307 \u2013 10'\nPC\u221201 \u2014 1")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-07 - 10'", "PC-01 - 1"]
+
+
 def test_unresolved_callout_is_kept_when_shared_with_supported_code_line() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)

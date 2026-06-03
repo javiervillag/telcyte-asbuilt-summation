@@ -3,7 +3,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})(?!\.\d)\b", re.I)
+CODE_SEPARATOR_PATTERN = r"[-\u00b7\u2010-\u2015\u2212]?"
+TOTAL_SEPARATOR_PATTERN = r"[-\u00b7\u2010-\u2015\u2212]"
+CODE_PATTERN = re.compile(
+    rf"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}(\d{{1,3}})(?!\.\d)\b",
+    re.I,
+)
 NUMBER_PATTERN = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 UNIT_PATTERN = r"(?:'|sq\.?\s*ft\.?|sqft)"
 ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
@@ -42,7 +47,7 @@ def total_line_key(line: str) -> TotalKey | None:
     if not key:
         return None
     remainder = line[code_match.end() :]
-    qty_match = re.match(rf"\s*-\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?", remainder, re.I)
+    qty_match = re.match(rf"\s*{TOTAL_SEPARATOR_PATTERN}\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?", remainder, re.I)
     if not qty_match:
         return None
     qty = _normalize_quantity(qty_match.group(1))

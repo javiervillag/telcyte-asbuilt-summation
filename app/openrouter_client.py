@@ -15,7 +15,7 @@ from PIL import Image
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
-from app.rate_cards import CODE_PATTERN, NUMBER_PATTERN, UNIT_PATTERN, CodeKey, TotalKey, load_code_catalog, total_line_key
+from app.rate_cards import CODE_PATTERN, NUMBER_PATTERN, TOTAL_SEPARATOR_PATTERN, UNIT_PATTERN, CodeKey, TotalKey, load_code_catalog, total_line_key
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ def _conflicting_model_total_codes(model_total_keys: list[tuple[str, TotalKey]])
 
 def _model_total_line_key(line: str) -> TotalKey | None:
     if not re.fullmatch(
-        rf"\s*{CODE_PATTERN.pattern}\s*-\s*{NUMBER_PATTERN}(?:\s*{UNIT_PATTERN})?\s*",
+        rf"\s*{CODE_PATTERN.pattern}\s*{TOTAL_SEPARATOR_PATTERN}\s*{NUMBER_PATTERN}(?:\s*{UNIT_PATTERN})?\s*",
         line,
         re.I,
     ):

@@ -7,7 +7,7 @@ from typing import Any
 
 import fitz
 
-from app.rate_cards import CODE_PATTERN, NUMBER_PATTERN, UNIT_PATTERN, CodeKey, code_key
+from app.rate_cards import CODE_PATTERN, CODE_SEPARATOR_PATTERN, NUMBER_PATTERN, TOTAL_SEPARATOR_PATTERN, UNIT_PATTERN, CodeKey, code_key
 
 
 @dataclass(frozen=True)
@@ -150,15 +150,15 @@ def derive_code_totals(
     code_catalog: dict[CodeKey, str] | None = None,
 ) -> list[str]:
     direct_pattern = re.compile(
-        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?",
+        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+)\s*{TOTAL_SEPARATOR_PATTERN}\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        rf"\b({NUMBER_PATTERN})\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\b",
+        rf"\b({NUMBER_PATTERN})\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+)\b",
         re.I,
     )
     code_first_multiplier_pattern = re.compile(
-        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*x\s*({NUMBER_PATTERN})\b",
+        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+)\s*x\s*({NUMBER_PATTERN})\b",
         re.I,
     )
     catalog = code_catalog or {}
@@ -230,6 +230,8 @@ def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
         return f"{prefix}-{int(number):02d}"
     if "-" in raw_code:
         return raw_code.upper() if prefix != "COMP" else raw_code
+    if re.search(TOTAL_SEPARATOR_PATTERN, raw_code):
+        return f"{prefix}-{number}"
     match = re.match(r"([A-Za-z]+)(\d+)", raw_code)
     if match:
         return f"{match.group(1)}-{match.group(2)}"
@@ -345,15 +347,15 @@ def diagnose_extraction(
 
 def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     total_pattern = re.compile(
-        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*{NUMBER_PATTERN}(?:\s*{UNIT_PATTERN})?\b",
+        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+\s*{TOTAL_SEPARATOR_PATTERN}\s*{NUMBER_PATTERN}(?:\s*{UNIT_PATTERN})?\b",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        rf"\b{NUMBER_PATTERN}\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b",
+        rf"\b{NUMBER_PATTERN}\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+\b",
         re.I,
     )
     code_first_multiplier_pattern = re.compile(
-        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*x\s*{NUMBER_PATTERN}\b",
+        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+\s*x\s*{NUMBER_PATTERN}\b",
         re.I,
     )
     count = 0
