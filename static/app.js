@@ -10,11 +10,17 @@ const selectedCount = document.querySelector("#selected-count");
 const categoryTabs = document.querySelector("#category-tabs");
 const toggleAll = document.querySelector("#toggle-all");
 const processingOverlay = document.querySelector("#processing-overlay");
+const manualCode = document.querySelector("#manual-code");
+const manualQuantity = document.querySelector("#manual-quantity");
+const manualNote = document.querySelector("#manual-note");
+const manualAdd = document.querySelector("#manual-add");
+const manualList = document.querySelector("#manual-list");
 
 let extraCodeCategories = [];
 let activeCategory = "All";
 let codeState = {};
 let showAllCodes = false;
+let manualExtras = [];
 
 hideResult();
 
@@ -42,6 +48,37 @@ toggleAll.addEventListener("click", () => {
   }
   updateCatalogControls();
   renderExtraCodes();
+});
+
+manualAdd.addEventListener("click", () => {
+  const code = normalizeManualCode(manualCode.value);
+  const quantity = manualQuantity.value.trim() || "1";
+  const note = manualNote.value.trim();
+  const validation = validateManualExtra(code, quantity);
+  if (!validation.ok) {
+    setStatus("Check manual code", validation.message, "error");
+    return;
+  }
+  captureCodeState();
+  if (codeState[code]?.checked || manualExtras.some((item) => item.code === code)) {
+    setStatus("Already selected", `${code} is already in the selected extras.`, "error");
+    return;
+  }
+  manualExtras.push({ code, quantity, note });
+  manualCode.value = "";
+  manualQuantity.value = "";
+  manualNote.value = "";
+  renderManualExtras();
+  updateSelectedCount();
+  hideResult();
+});
+
+manualList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-remove-manual]");
+  if (!button) return;
+  manualExtras = manualExtras.filter((item) => item.code !== button.dataset.removeManual);
+  renderManualExtras();
+  updateSelectedCount();
 });
 
 form.addEventListener("submit", async (event) => {
@@ -118,6 +155,7 @@ function hideResult() {
 
 function setStatus(title, message, kind, details = []) {
   resultCard.classList.remove("is-hidden");
+  resultCard.scrollIntoView({ behavior: "smooth", block: "start" });
   statusBox.textContent = "";
   const groups = Array.isArray(details) ? { warnings: details } : details;
   const summary = document.createElement("div");
@@ -311,6 +349,7 @@ function updateCodeRowState(row) {
 
 function collectSelectedExtras() {
   const items = [];
+  const seen = new Set();
   captureCodeState();
   for (const [code, state] of Object.entries(codeState)) {
     if (!state.checked) continue;
@@ -322,7 +361,20 @@ function collectSelectedExtras() {
     if (!/^\d+(\.\d+)?(\s*('|sqft|hr|hrs|ea|each))?$/i.test(quantity)) {
       return { ok: false, message: `${code} quantity must be a number.`, items: [] };
     }
+    if (seen.has(code)) {
+      return { ok: false, message: `${code} is selected more than once.`, items: [] };
+    }
+    seen.add(code);
     items.push({ code, quantity, note });
+  }
+  for (const item of manualExtras) {
+    const validation = validateManualExtra(item.code, item.quantity);
+    if (!validation.ok) return { ok: false, message: validation.message, items: [] };
+    if (seen.has(item.code)) {
+      return { ok: false, message: `${item.code} is selected more than once.`, items: [] };
+    }
+    seen.add(item.code);
+    items.push(item);
   }
   return { ok: true, message: "", items };
 }
@@ -350,7 +402,7 @@ function restoreCurrentCodeState() {
 
 function updateSelectedCount() {
   captureCodeState();
-  const count = Object.values(codeState).filter((state) => state.checked).length;
+  const count = Object.values(codeState).filter((state) => state.checked).length + manualExtras.length;
   selectedCount.textContent = `${count} selected`;
   selectedCount.classList.toggle("has-selection", count > 0);
 }
@@ -363,6 +415,39 @@ function updateCatalogControls() {
 
 function _categoryHasSelectedCode(category) {
   return (category.codes || []).some((item) => codeState[item.code]?.checked);
+}
+
+function renderManualExtras() {
+  if (!manualExtras.length) {
+    manualList.innerHTML = "";
+    return;
+  }
+  manualList.innerHTML = manualExtras
+    .map(
+      (item) => `
+        <div class="manual-item">
+          <span><strong>${escapeHtml(item.code)}</strong> - ${escapeHtml(item.quantity)}${item.note ? ` · ${escapeHtml(item.note)}` : ""}</span>
+          <button type="button" aria-label="Remove ${escapeHtml(item.code)}" data-remove-manual="${escapeHtml(item.code)}">Remove</button>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function normalizeManualCode(value) {
+  return value.trim().toUpperCase().replace(/\s+/g, "").replace(/^([A-Z]{2,6})(\d)/, "$1-$2");
+}
+
+function validateManualExtra(code, quantity) {
+  if (!code) return { ok: false, message: "Add a billing code." };
+  if (!/^[A-Z]{2,6}-\d{1,4}[A-Z]?$/.test(code)) {
+    return { ok: false, message: "Use a code like PC-02, TL-06, or COMP-13." };
+  }
+  if (!quantity) return { ok: false, message: `Add a quantity for ${code}.` };
+  if (!/^\d+(\.\d+)?(\s*('|sqft|hr|hrs|ea|each))?$/i.test(quantity)) {
+    return { ok: false, message: `${code} quantity must be a number.` };
+  }
+  return { ok: true, message: "" };
 }
 
 function escapeHtml(value) {

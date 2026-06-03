@@ -183,13 +183,15 @@ def parse_extra_billing_code_selections(raw: str | None) -> list[ExtraBillingCod
     for item in payload:
         if not isinstance(item, dict):
             raise ValueError("Each extra billing code must be an object.")
-        code = str(item.get("code") or "").strip()
+        code = _normalize_code(item.get("code"))
         catalog_item = catalog_item_for_code(code)
-        if not catalog_item:
-            raise ValueError(f"{code or 'Unknown code'} is not available as an optional extra code.")
+        if catalog_item:
+            code = catalog_item.code
+        elif not _is_manual_code(code):
+            raise ValueError(f"{code or 'Unknown code'} is not a valid manual extra billing code.")
         quantity = _normalize_quantity(item.get("quantity"))
         note = re.sub(r"\s+", " ", str(item.get("note") or "")).strip()
-        selections.append(ExtraBillingCodeSelection(code=catalog_item.code, quantity=quantity, note=note))
+        selections.append(ExtraBillingCodeSelection(code=code, quantity=quantity, note=note))
     return selections
 
 
@@ -217,3 +219,12 @@ def _normalize_quantity(value: object) -> str:
     if not re.fullmatch(r"\d+(?:\.\d+)?(?:\s*(?:'|sqft|hr|hrs|ea|each))?", quantity, re.I):
         raise ValueError("Extra-code quantity must be a number, optionally followed by ', sqft, hr, or each.")
     return quantity
+
+
+def _normalize_code(value: object) -> str:
+    code = re.sub(r"\s+", "", str(value or "")).strip().upper()
+    return re.sub(r"^([A-Z]{2,6})(\d)", r"\1-\2", code)
+
+
+def _is_manual_code(code: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]{2,6}-\d{1,4}[A-Z]?", code))

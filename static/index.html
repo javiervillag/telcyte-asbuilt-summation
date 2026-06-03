@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux3" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux4" />
   </head>
   <body>
     <header class="masthead">
@@ -22,10 +22,15 @@
 
     <main class="shell">
       <section class="layout">
+        <article id="result-card" class="card result-card is-hidden">
+          <div id="status" class="status empty" role="status" aria-live="polite"></div>
+        </article>
+
         <article class="card upload-card">
           <div class="card-heading">
             <span class="eyebrow">PDF</span>
             <h2>Input</h2>
+            <p>Upload the as-built PDF, then add only Telcyte-confirmed extras if needed.</p>
           </div>
 
           <form id="upload-form" class="dropzone">
@@ -53,15 +58,25 @@
             <button id="toggle-all" class="ghost-button" type="button">Show all codes</button>
           </div>
 
+          <div class="manual-extra">
+            <div class="manual-extra-copy">
+              <strong>Manual exception</strong>
+              <span>Add a confirmed code that is not in the catalog.</span>
+            </div>
+            <div class="manual-extra-fields">
+              <input id="manual-code" type="text" placeholder="Code" autocomplete="off" aria-label="Manual code" />
+              <input id="manual-quantity" type="text" inputmode="decimal" placeholder="Qty" aria-label="Manual quantity" />
+              <input id="manual-note" type="text" maxlength="180" placeholder="Note" aria-label="Manual note" />
+              <button id="manual-add" class="ghost-button" type="button">Add</button>
+            </div>
+            <div id="manual-list" class="manual-list" aria-live="polite"></div>
+          </div>
+
           <div id="category-tabs" class="category-tabs is-hidden" aria-label="Code categories"></div>
 
           <div id="code-list" class="code-list" aria-live="polite">
             <div class="code-empty">Loading code list...</div>
           </div>
-        </article>
-
-        <article id="result-card" class="card result-card is-hidden">
-          <div id="status" class="status empty" role="status" aria-live="polite"></div>
         </article>
       </section>
     </main>
@@ -74,6 +89,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260603-ux3"></script>
+    <script src="/static/app.js?v=20260603-ux4"></script>
   </body>
 </html>

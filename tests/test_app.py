@@ -167,11 +167,23 @@ def test_selected_extras_allow_supported_totals_pdf_after_manual_review(monkeypa
     assert captured["summary"].warnings == ["Unresolved callouts remain."]
 
 
-def test_summarize_endpoint_rejects_unknown_extra_code(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_summarize_endpoint_accepts_manual_extra_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, SummaryResult] = {}
+
     async def fake_summarize(content, settings, source_name=None):
-        raise AssertionError("summarize should not run for invalid extra codes")
+        return SummaryResult(
+            model="parser+fake-model",
+            confidence=0.91,
+            job_totals=["UG-56 - 170'"],
+            materials=[],
+        )
+
+    def fake_annotate(content, summary, source_name=None):
+        captured["summary"] = summary
+        return b"%PDF-1.4 fake"
 
     monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", fake_annotate)
 
     client = TestClient(app)
     response = client.post(
@@ -180,8 +192,25 @@ def test_summarize_endpoint_rejects_unknown_extra_code(monkeypatch: pytest.Monke
         files={"file": ("sample.pdf", SAMPLE.read_bytes(), "application/pdf")},
     )
 
+    assert response.status_code == 200
+    assert captured["summary"].extra_totals == ["ZZ-99 - 1"]
+
+
+def test_summarize_endpoint_rejects_malformed_manual_extra_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_summarize(content, settings, source_name=None):
+        raise AssertionError("summarize should not run for invalid extra codes")
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        data={"extra_billing_codes": json.dumps([{"code": "BAD CODE!", "quantity": "1"}])},
+        files={"file": ("sample.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
     assert response.status_code == 400
-    assert "not available" in response.json()["detail"]
+    assert "not a valid" in response.json()["detail"]
 
 
 def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatch) -> None:

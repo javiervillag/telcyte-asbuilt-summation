@@ -157,6 +157,7 @@ h2 {
   letter-spacing: 0;
 }
 
+.card-heading p,
 .extras-header p {
   margin-top: 7px;
   max-width: 560px;
@@ -286,6 +287,7 @@ input[type="file"] {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+  margin-top: 14px;
 }
 
 .category-tabs.is-hidden {
@@ -330,6 +332,97 @@ input[type="file"] {
   border-color: rgba(240, 90, 66, 0.5);
   color: var(--accent-dark);
   background: #fff3ef;
+}
+
+.manual-extra {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfc;
+  padding: 12px;
+}
+
+.manual-extra-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+}
+
+.manual-extra-copy strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.manual-extra-copy span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.manual-extra-fields {
+  display: grid;
+  grid-template-columns: 112px 86px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+#manual-code,
+#manual-quantity,
+#manual-note {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  padding: 9px 11px;
+  font-size: 13px;
+}
+
+#manual-code:focus,
+#manual-quantity:focus,
+#manual-note:focus {
+  border-color: var(--accent);
+  outline: 2px solid rgba(240, 90, 66, 0.16);
+}
+
+.manual-list {
+  display: grid;
+  gap: 8px;
+}
+
+.manual-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(240, 90, 66, 0.32);
+  border-radius: 7px;
+  background: #fff;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.manual-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.manual-item strong {
+  color: var(--accent-dark);
+}
+
+.manual-item button {
+  border: 0;
+  background: transparent;
+  color: var(--accent-dark);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px;
 }
 
 .code-list {
@@ -441,6 +534,10 @@ input[type="file"] {
 
 .result-card.is-hidden {
   display: none;
+}
+
+.result-card {
+  border-left: 4px solid var(--accent);
 }
 
 .status {
@@ -619,7 +716,8 @@ input[type="file"] {
   }
 
   .dropzone,
-  .extras-toolbar {
+  .extras-toolbar,
+  .manual-extra-fields {
     grid-template-columns: 1fr;
   }
 
