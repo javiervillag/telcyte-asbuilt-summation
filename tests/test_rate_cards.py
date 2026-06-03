@@ -61,6 +61,11 @@ def test_total_line_key_normalizes_supported_code_variants_and_spacing() -> None
     assert total_line_key("CD-1 -1") == total_line_key("CD-01 - 1")
     assert total_line_key("MDU-5 - 2") == total_line_key("MDU-05 - 2")
     assert total_line_key("UG-7 - 10'") == total_line_key("UG-07 - 10'")
+    assert total_line_key("UG\u201307 \u2013 10'") == total_line_key("UG-07 - 10'")
+    assert total_line_key("PC\u221201 \u2014 1") == total_line_key("PC-01 - 1")
+    assert total_line_key("UG-80 - 132 sq ft") == total_line_key("UG-80 - 132sqft")
+    assert total_line_key("UG-80 - 132 sq. ft.") == total_line_key("UG-80 - 132sqft")
+    assert total_line_key("UG-03 - 1,904") == total_line_key("UG-03 - 1904")
 
 
 def test_total_line_key_keeps_composite_zero_padding_distinct() -> None:

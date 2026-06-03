@@ -1,24 +1,26 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import difflib
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import fitz
+import httpx
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config import get_settings
-from app.openrouter_client import try_models
-from app.pdf_annotator import annotate_pdf
+from app.main import app
+from app.rate_cards import CODE_SEPARATOR_PATTERN, TOTAL_SEPARATOR_PATTERN, ZERO_PAD_EQUIVALENT_PREFIXES
 from app.rate_cards import total_line_key
 
 
-def normalized_text(path: Path) -> str:
+def pdf_text(path: Path) -> str:
     doc = fitz.open(path)
     try:
         return "\n".join(page.get_text("text") for page in doc)
@@ -26,9 +28,15 @@ def normalized_text(path: Path) -> str:
         doc.close()
 
 
-def expected_added_text(before: Path, after: Path) -> str:
-    before_text = normalized_text(before)
-    after_text = normalized_text(after)
+def pdf_text_from_bytes(pdf_bytes: bytes) -> str:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return "\n".join(page.get_text("text") for page in doc)
+    finally:
+        doc.close()
+
+
+def added_text(before_text: str, after_text: str) -> str:
     matcher = difflib.SequenceMatcher(None, before_text, after_text)
     chunks: list[str] = []
     for tag, _, _, j1, j2 in matcher.get_opcodes():
@@ -39,20 +47,263 @@ def expected_added_text(before: Path, after: Path) -> str:
     return "\n".join(chunks)
 
 
-def tokens(text: str) -> set[str]:
-    return {t.lower() for t in re.findall(r"[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)?|'|sqft", text) if len(t) > 1}
+def expected_added_text(before: Path, after: Path) -> str:
+    return added_text(pdf_text(before), pdf_text(after))
 
 
-def score_summary(summary_text: str, expected_text: str) -> float:
-    found = tokens(summary_text)
-    expected = tokens(expected_text)
-    if not expected:
-        return 0.0
-    return len(found & expected) / len(expected)
+def total_keys_from_text(text: str) -> set[tuple[tuple[str, str], str, str]]:
+    keys = set()
+    for line in text.splitlines():
+        key = total_line_key(line)
+        if key:
+            keys.add(key)
+    return keys
 
 
-def total_keys(lines: list[str]) -> set:
-    return {key for line in lines if (key := total_line_key(line))}
+def normalized_totals_from_text(text: str) -> list[str]:
+    return sorted(_format_total_key(key) for key in total_keys_from_text(text))
+
+
+def prefix_counts_from_totals(totals: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for total in totals:
+        key = total_line_key(total)
+        if not key:
+            continue
+        prefix = key[0][0]
+        counts[prefix] = counts.get(prefix, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def callout_type_counts(callout_summary: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in callout_summary:
+        callout_type = str(item.get("callout_type") or "Unknown")
+        counts[callout_type] = counts.get(callout_type, 0) + int(item.get("count") or 0)
+    return dict(sorted(counts.items()))
+
+
+def compare_total_text(actual_text: str, expected_text: str) -> dict[str, Any]:
+    actual_keys = total_keys_from_text(actual_text)
+    expected_keys = total_keys_from_text(expected_text)
+    return {
+        "actual_total_count": len(actual_keys),
+        "expected_total_count": len(expected_keys),
+        "missing_total_count": len(expected_keys - actual_keys),
+        "extra_total_count": len(actual_keys - expected_keys),
+        "missing_totals": sorted(_format_total_key(key) for key in expected_keys - actual_keys),
+        "extra_totals": sorted(_format_total_key(key) for key in actual_keys - expected_keys),
+    }
+
+
+def classify_missing_total_evidence(
+    input_text: str,
+    missing_totals: list[str],
+    unresolved_callouts: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        _missing_total_evidence(input_text, total, unresolved_callouts or [])
+        for total in missing_totals
+    ]
+
+
+def summarize_missing_total_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in evidence:
+        evidence_class = str(item.get("evidence_class") or "unknown")
+        if evidence_class not in grouped:
+            order.append(evidence_class)
+            grouped[evidence_class] = {
+                "evidence_class": evidence_class,
+                "count": 0,
+                "totals": [],
+            }
+        grouped[evidence_class]["count"] += 1
+        grouped[evidence_class]["totals"].append(str(item.get("total") or ""))
+    return [grouped[evidence_class] for evidence_class in order]
+
+
+def evidence_class_counts(evidence_summary: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    _add_evidence_summary_counts(counts, evidence_summary)
+    return dict(sorted(counts.items()))
+
+
+def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    result_counts: dict[str, int] = {}
+    totals = {
+        "team_added_total_count": 0,
+        "supported_total_count": 0,
+        "missing_total_count": 0,
+        "extra_total_count": 0,
+        "unresolved_callout_count": 0,
+    }
+    prefix_totals = {
+        "team_added_prefix_counts": {},
+        "supported_prefix_counts": {},
+        "missing_prefix_counts": {},
+        "extra_prefix_counts": {},
+        "unresolved_callout_type_counts": {},
+        "missing_evidence_class_counts": {},
+    }
+    verifier_used_count = 0
+    for sample in samples:
+        result = str(sample.get("result") or "unknown")
+        result_counts[result] = result_counts.get(result, 0) + 1
+        totals["team_added_total_count"] += int(sample.get("team_added_total_count") or 0)
+        totals["supported_total_count"] += int(
+            sample.get("supported_total_count")
+            or sample.get("app_vs_team_totals", {}).get("actual_total_count")
+            or 0
+        )
+        comparison = sample.get("supported_vs_team_totals") or sample.get("app_vs_team_totals") or {}
+        totals["missing_total_count"] += int(comparison.get("missing_total_count") or 0)
+        totals["extra_total_count"] += int(comparison.get("extra_total_count") or 0)
+        totals["unresolved_callout_count"] += int(sample.get("unresolved_callout_count") or 0)
+        _add_counts(prefix_totals["team_added_prefix_counts"], sample.get("team_added_prefix_counts") or {})
+        _add_counts(prefix_totals["supported_prefix_counts"], sample.get("supported_prefix_counts") or {})
+        _add_counts(prefix_totals["missing_prefix_counts"], sample.get("missing_prefix_counts") or {})
+        _add_counts(prefix_totals["extra_prefix_counts"], sample.get("extra_prefix_counts") or {})
+        _add_counts(
+            prefix_totals["unresolved_callout_type_counts"],
+            sample.get("unresolved_callout_type_counts") or {},
+        )
+        _add_evidence_summary_counts(
+            prefix_totals["missing_evidence_class_counts"],
+            sample.get("missing_total_evidence_summary") or [],
+        )
+        if sample.get("verifier_used"):
+            verifier_used_count += 1
+    return {
+        "sample_count": len(samples),
+        "result_counts": result_counts,
+        "verifier_used_count": verifier_used_count,
+        **totals,
+        **{key: dict(sorted(value.items())) for key, value in prefix_totals.items()},
+    }
+
+
+def _add_counts(target: dict[str, int], source: dict[str, int]) -> None:
+    for key, value in source.items():
+        target[str(key)] = target.get(str(key), 0) + int(value or 0)
+
+
+def _add_evidence_summary_counts(target: dict[str, int], summary: list[dict[str, Any]]) -> None:
+    for item in summary:
+        evidence_class = str(item.get("evidence_class") or "unknown")
+        target[evidence_class] = target.get(evidence_class, 0) + int(item.get("count") or 0)
+
+
+def _missing_total_evidence(input_text: str, total: str, unresolved_callouts: list[str]) -> dict[str, Any]:
+    key = total_line_key(total)
+    if not key:
+        return {
+            "total": total,
+            "evidence_class": "unparseable_total",
+            "exact_total_present": False,
+            "code_present": False,
+            "quantity_present": False,
+            "unresolved_callout_context": bool(unresolved_callouts),
+            "related_unresolved_callouts": unresolved_callouts,
+            "matching_lines": [],
+        }
+
+    (prefix, number), quantity, unit = key
+    code_patterns = [_code_regex(prefix, variant) for variant in _code_number_variants(prefix, number)]
+    quantity_pattern = _quantity_regex(quantity, unit)
+    exact_quantity_pattern = _quantity_regex(quantity, unit, allow_tiny_unitless=True)
+    exact_patterns = [
+        re.compile(rf"{code.pattern}\s*{TOTAL_SEPARATOR_PATTERN}\s*{exact_quantity_pattern.pattern}", re.I)
+        for code in code_patterns
+    ]
+    lines = [line.strip() for line in input_text.splitlines() if line.strip()]
+    matching_lines = [
+        line
+        for line in lines
+        if any(pattern.search(line) for pattern in exact_patterns)
+        or any(pattern.search(line) for pattern in code_patterns)
+        or quantity_pattern.search(line)
+    ][:8]
+    exact_total_present = any(pattern.search(input_text) for pattern in exact_patterns)
+    code_present = any(pattern.search(input_text) for pattern in code_patterns)
+    quantity_present = bool(quantity_pattern.search(input_text))
+    unresolved_callout_context = bool(unresolved_callouts)
+    return {
+        "total": total,
+        "evidence_class": _missing_total_evidence_class(
+            exact_total_present,
+            code_present,
+            quantity_present,
+            unresolved_callout_context,
+        ),
+        "exact_total_present": exact_total_present,
+        "code_present": code_present,
+        "quantity_present": quantity_present,
+        "unresolved_callout_context": unresolved_callout_context,
+        "related_unresolved_callouts": unresolved_callouts if unresolved_callout_context else [],
+        "matching_lines": matching_lines,
+    }
+
+
+def _missing_total_evidence_class(
+    exact_total_present: bool,
+    code_present: bool,
+    quantity_present: bool,
+    unresolved_callout_context: bool,
+) -> str:
+    if exact_total_present:
+        return "direct_total_text"
+    if code_present:
+        return "billing_code_text_without_matching_total"
+    if quantity_present:
+        return "quantity_text_without_billing_code"
+    if unresolved_callout_context:
+        return "no_direct_input_evidence_with_unresolved_callouts"
+    return "no_direct_input_evidence"
+
+
+def _code_number_variants(prefix: str, number: str) -> list[str]:
+    variants = [number]
+    if prefix in ZERO_PAD_EQUIVALENT_PREFIXES and number.isdigit():
+        variants.append(str(int(number)))
+        variants.append(f"{int(number):02d}")
+    deduped: list[str] = []
+    for variant in variants:
+        if variant not in deduped:
+            deduped.append(variant)
+    return deduped
+
+
+def _code_regex(prefix: str, number: str) -> re.Pattern[str]:
+    if prefix in ZERO_PAD_EQUIVALENT_PREFIXES and number.isdigit():
+        number_pattern = rf"0*{re.escape(str(int(number)))}"
+    else:
+        number_pattern = re.escape(number)
+    return re.compile(rf"\b{re.escape(prefix)}{CODE_SEPARATOR_PATTERN}{number_pattern}\b", re.I)
+
+
+def _quantity_regex(quantity: str, unit: str, allow_tiny_unitless: bool = False) -> re.Pattern[str]:
+    if not allow_tiny_unitless and not _quantity_is_distinct(quantity, unit):
+        return re.compile(r"a^")
+    suffix = r"\s*" + re.escape(unit) if unit else r"(?!\s*(?:\d|'|sqft))"
+    return re.compile(rf"\b{_quantity_number_pattern(quantity)}{suffix}", re.I)
+
+
+def _quantity_number_pattern(quantity: str) -> str:
+    if re.fullmatch(r"\d+", quantity) and len(quantity) > 3:
+        grouped = f"{int(quantity):,}"
+        return rf"(?:{re.escape(quantity)}|{re.escape(grouped)})"
+    return re.escape(quantity)
+
+
+def _quantity_is_distinct(quantity: str, unit: str) -> bool:
+    if unit:
+        return True
+    try:
+        return float(quantity) >= 10
+    except ValueError:
+        return False
 
 
 def find_pairs(folder: Path) -> list[tuple[Path, Path]]:
@@ -70,76 +321,200 @@ def find_pairs(folder: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser()
+def health_status(client: Any) -> dict[str, Any]:
+    try:
+        response = client.get("/health")
+        try:
+            body = response.json()
+        except Exception:
+            body = {"text": response.text[:1000]}
+        return {
+            "ok": response.status_code < 400,
+            "status_code": response.status_code,
+            "body": body,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc)[:500],
+        }
+
+
+def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -> dict[str, Any]:
+    before_text = pdf_text(before)
+    team_text = pdf_text(team_output)
+    team_added = added_text(before_text, team_text)
+    team_added_totals = normalized_totals_from_text(team_added)
+    team_added_prefix_counts = prefix_counts_from_totals(team_added_totals)
+    team_totals = compare_total_text(team_added, team_added)
+
+    sample_dir = out_dir / before.stem
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    (sample_dir / "01_team_added_text.txt").write_text(team_added, encoding="utf-8")
+    (sample_dir / "01_team_added_totals.json").write_text(
+        json.dumps(team_added_totals, indent=2),
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/api/summarize",
+        files={"file": (before.name, before.read_bytes(), "application/pdf")},
+    )
+    result: dict[str, Any] = {
+        "input": str(before),
+        "input_pdf": str(before),
+        "team_output": str(team_output),
+        "team_output_pdf": str(team_output),
+        "status_code": response.status_code,
+        "content_type": response.headers.get("content-type", ""),
+        "team_added_total_count": team_totals["expected_total_count"],
+        "team_added_totals": team_added_totals,
+        "team_added_prefix_counts": team_added_prefix_counts,
+    }
+
+    if response.status_code == 200:
+        generated_pdf = response.content
+        output_path = sample_dir / "02_app_output.pdf"
+        output_path.write_bytes(generated_pdf)
+        generated_text = pdf_text_from_bytes(generated_pdf)
+        generated_added = added_text(before_text, generated_text)
+        app_added_totals = normalized_totals_from_text(generated_added)
+        app_vs_team_totals = compare_total_text(generated_added, team_added)
+        (sample_dir / "03_app_added_text.txt").write_text(generated_added, encoding="utf-8")
+        (sample_dir / "03_app_added_totals.json").write_text(
+            json.dumps(app_added_totals, indent=2),
+            encoding="utf-8",
+        )
+        result.update(
+            {
+                "result": "annotated_pdf",
+                "output_pdf": str(output_path),
+                "model": response.headers.get("x-telcyte-model", ""),
+                "confidence": response.headers.get("x-telcyte-confidence", ""),
+                "warnings": response.headers.get("x-telcyte-warnings", ""),
+                "app_added_totals": app_added_totals,
+                "supported_prefix_counts": prefix_counts_from_totals(app_added_totals),
+                "missing_total_count": app_vs_team_totals["missing_total_count"],
+                "extra_total_count": app_vs_team_totals["extra_total_count"],
+                "missing_prefix_counts": prefix_counts_from_totals(app_vs_team_totals["missing_totals"]),
+                "extra_prefix_counts": prefix_counts_from_totals(app_vs_team_totals["extra_totals"]),
+                "app_vs_team_totals": app_vs_team_totals,
+            }
+        )
+        return result
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {"detail": response.text[:1000]}
+    response_path = sample_dir / "02_app_response.json"
+    response_path.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+    diagnostics = body.get("diagnostics") or {}
+    supported_total_lines = [str(line) for line in body.get("supported_totals") or []]
+    supported_totals = "\n".join(supported_total_lines)
+    supported_normalized_totals = normalized_totals_from_text(supported_totals)
+    (sample_dir / "02_supported_totals.json").write_text(
+        json.dumps(supported_normalized_totals, indent=2),
+        encoding="utf-8",
+    )
+    supported_comparison = compare_total_text(supported_totals, team_added)
+    unresolved_callout_summary = (
+        body.get("unresolved_callout_summary")
+        or diagnostics.get("unresolved_callout_summary")
+        or []
+    )
+    missing_total_input_evidence = classify_missing_total_evidence(
+        before_text,
+        supported_comparison["missing_totals"],
+        [str(callout) for callout in body.get("unresolved_callouts") or []],
+    )
+    missing_total_evidence_summary = summarize_missing_total_evidence(missing_total_input_evidence)
+    result.update(
+        {
+            "result": "manual_review" if response.status_code == 422 else "error",
+            "response_json": str(response_path),
+            "detail": str(body.get("detail") or "")[:300],
+            "warning_count": len(body.get("warnings") or []),
+            "warnings": [str(warning) for warning in body.get("warnings") or []],
+            "supported_total_count": len(supported_total_lines),
+            "supported_totals": supported_total_lines,
+            "supported_normalized_totals": supported_normalized_totals,
+            "supported_prefix_counts": prefix_counts_from_totals(supported_normalized_totals),
+            "missing_total_count": supported_comparison["missing_total_count"],
+            "extra_total_count": supported_comparison["extra_total_count"],
+            "missing_prefix_counts": prefix_counts_from_totals(supported_comparison["missing_totals"]),
+            "extra_prefix_counts": prefix_counts_from_totals(supported_comparison["extra_totals"]),
+            "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
+            "unresolved_callouts": [str(callout) for callout in body.get("unresolved_callouts") or []],
+            "unresolved_callout_details": diagnostics.get("unresolved_callout_details") or [],
+            "unresolved_callout_summary": unresolved_callout_summary,
+            "unresolved_callout_type_counts": callout_type_counts(unresolved_callout_summary),
+            "verifier_model": body.get("verifier_model") or "",
+            "verifier_used": bool(body.get("verifier_used")),
+            "diagnostics": diagnostics,
+            "supported_vs_team_totals": supported_comparison,
+            "missing_total_input_evidence": missing_total_input_evidence,
+            "missing_total_evidence_summary": missing_total_evidence_summary,
+            "missing_evidence_class_counts": evidence_class_counts(missing_total_evidence_summary),
+        }
+    )
+    return result
+
+
+def _format_total_key(key: tuple[tuple[str, str], str, str]) -> str:
+    (prefix, number), quantity, unit = key
+    number_text = number if prefix == "COMP" else f"{int(number):02d}" if number.isdigit() else number
+    return f"{prefix}-{number_text} - {quantity}{unit}"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run sample PDFs through the app endpoint and compare extracted output text to Telcyte team PDFs."
+    )
     parser.add_argument(
         "--samples",
         default="/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation",
     )
-    parser.add_argument("--out", default="sample_reports")
-    parser.add_argument("--models", default=None)
+    parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--base-url",
+        default="",
+        help="Optional deployed app base URL. When omitted, the local FastAPI app is used through TestClient.",
+    )
+    parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
 
     sample_dir = Path(args.samples)
-    out_dir = Path(args.out)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_dir = Path(args.out) if args.out else sample_dir / "Results" / f"endpoint_validation_{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    settings = get_settings()
-    models = [m.strip() for m in args.models.split(",")] if args.models else settings.candidate_models
+
     pairs = find_pairs(sample_dir)
     if not pairs:
         raise SystemExit(f"No sample pairs found in {sample_dir}")
 
-    report = {"models": models, "samples": []}
-    for before, after in pairs:
-        print(f"Evaluating {before.name}")
-        expected = expected_added_text(before, after)
-        attempts = await try_models(before.read_bytes(), settings, models, source_name=before.name)
-        rows = []
-        best = None
-        best_score = -1.0
-        for attempt in attempts:
-            if attempt.ok and attempt.summary:
-                summary_text = "\n".join(attempt.summary.display_lines())
-                score = score_summary(summary_text, expected)
-                found_keys = total_keys(attempt.summary.job_totals)
-                expected_keys = total_keys(expected.splitlines())
-                rows.append(
-                    {
-                        "model": attempt.model,
-                        "ok": True,
-                        "score": round(score, 4),
-                        "normalized_missing_total_count": len(expected_keys - found_keys),
-                        "normalized_extra_total_count": len(found_keys - expected_keys),
-                        "confidence": attempt.summary.confidence,
-                        "totals": attempt.summary.job_totals,
-                        "materials": attempt.summary.materials,
-                        "warnings": attempt.summary.warnings,
-                    }
-                )
-                if score > best_score:
-                    best = attempt.summary
-                    best_score = score
-            else:
-                rows.append({"model": attempt.model, "ok": False, "error": attempt.error})
-        if best:
-            output_pdf = annotate_pdf(before.read_bytes(), best, source_name=before.name)
-            output_path = out_dir / before.name.replace(".pdf", "-generated.pdf")
-            output_path.write_bytes(output_pdf)
-        report["samples"].append(
-            {
-                "input": str(before),
-                "expected": str(after),
-                "expected_added_text": expected,
-                "attempts": rows,
-                "chosen_model": best.model if best else None,
-                "best_score": round(best_score, 4) if best else None,
-                "output_pdf": str(output_path) if best else None,
-            }
-        )
+    base_url = args.base_url.rstrip("/")
+    if base_url:
+        client_context = httpx.Client(base_url=base_url, timeout=args.timeout)
+        workflow = f"HTTP POST {base_url}/api/summarize, then deterministic PDF text extraction comparison"
+    else:
+        client_context = TestClient(app)
+        workflow = "FastAPI TestClient POST /api/summarize, then deterministic PDF text extraction comparison"
 
-    (out_dir / "model-comparison.json").write_text(json.dumps(report, indent=2))
-    print(f"Wrote {out_dir / 'model-comparison.json'}")
+    with client_context as client:
+        endpoint_health = health_status(client)
+        samples = [evaluate_pair(client, before, team_output, out_dir) for before, team_output in pairs]
+        report = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "workflow": workflow,
+            "endpoint_health": endpoint_health,
+            "summary": summarize_run(samples),
+            "samples": samples,
+        }
+    report_path = out_dir / "endpoint-validation.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"Wrote {report_path}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

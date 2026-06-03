@@ -98,6 +98,214 @@ def test_derive_code_totals_reads_quantity_first_code_notes() -> None:
     assert diagnostics.ambiguous_code_line_count == 0
 
 
+def test_derive_code_totals_reads_code_first_multiplier_notes() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Planner approved PC-01 x 2 for the splice work.")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+
+    assert derive_code_totals(blocks) == ["PC-01 - 2"]
+    diagnostics = diagnose_extraction(blocks, code_totals=["PC-01 - 2"])
+    assert diagnostics.ambiguous_code_line_count == 0
+
+
+def test_derive_code_totals_reads_quantity_first_code_when_line_has_direct_total() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-06 - 13 plus 2 x PC-01 for splice work.")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-06 - 13", "PC-01 - 2"]
+
+
+def test_derive_code_totals_normalizes_square_foot_unit_variants() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-80 - 132 sq ft\nUG-80 - 20sqft\nUG-80 - 12 sq. ft.")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-80 - 164sqft"]
+
+
+def test_derive_code_totals_normalizes_thousands_separators() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-03 - 1,000\nUG-03 - 904\n1,200 x PC-01")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-03 - 1904", "PC-01 - 1200"]
+
+
+def test_derive_code_totals_normalizes_dash_variants() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG\u201307 \u2013 10'\nPC\u221201 \u2014 1")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["UG-07 - 10'", "PC-01 - 1"]
+
+
+def test_unresolved_callout_is_kept_when_shared_with_supported_code_line() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-06 - 13 EOL - 48Ct - 66'")
+    page.insert_text((72, 96), "Readable note with enough quantity context for parser review.")
+    page.insert_text((72, 120), "Additional readable note for text-layer confidence.")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    totals = derive_code_totals(blocks)
+    diagnostics = diagnose_extraction(blocks, code_totals=totals)
+
+    assert totals == ["UG-06 - 13"]
+    assert diagnostics.review_required is True
+    assert diagnostics.unresolved_callouts == ["EOL - 48Ct - 66'"]
+
+
+def test_unresolved_callout_segment_preserves_numbered_marker() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-06 - 13 #3 EOL - 48Ct - 66'")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callouts == ["#3 EOL - 48Ct - 66'"]
+
+
+def test_unresolved_callouts_split_multiple_segments_on_one_line() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text(
+        (72, 72),
+        "UG-06 - 13 EOL - 48Ct - 66' #2 Tie Point - 48Ct - 52' Storage - 48Ct - 108'",
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callouts == [
+        "EOL - 48Ct - 66'",
+        "#2 Tie Point - 48Ct - 52'",
+        "Storage - 48Ct - 108'",
+    ]
+
+
+def test_unresolved_callout_details_extract_generic_fields() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text(
+        (72, 72),
+        "Pull through - 48Ct #3 EOL - 48Ct - 40' Tie Point - .625",
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callout_details == [
+        {
+            "raw_text": "Pull through - 48Ct",
+            "marker": "",
+            "callout_type": "Pull Through",
+            "descriptor": "48Ct",
+            "cable_count": "48Ct",
+            "footage": "",
+        },
+        {
+            "raw_text": "#3 EOL - 48Ct - 40'",
+            "marker": "#3",
+            "callout_type": "EOL",
+            "descriptor": "48Ct - 40'",
+            "cable_count": "48Ct",
+            "footage": "40'",
+        },
+        {
+            "raw_text": "Tie Point - .625",
+            "marker": "",
+            "callout_type": "Tie Point",
+            "descriptor": ".625",
+            "cable_count": "",
+            "footage": "",
+        },
+    ]
+    assert diagnostics.unresolved_callout_summary == [
+        {
+            "callout_type": "Pull Through",
+            "cable_count": "48Ct",
+            "count": 1,
+            "total_footage": "",
+            "callouts": ["Pull through - 48Ct"],
+        },
+        {
+            "callout_type": "EOL",
+            "cable_count": "48Ct",
+            "count": 1,
+            "total_footage": "40'",
+            "callouts": ["#3 EOL - 48Ct - 40'"],
+        },
+        {
+            "callout_type": "Tie Point",
+            "cable_count": "",
+            "count": 1,
+            "total_footage": "",
+            "callouts": ["Tie Point - .625"],
+        },
+    ]
+
+
+def test_unresolved_callout_summary_groups_repeated_generic_callouts() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text(
+        (72, 72),
+        "EOL - 48Ct - 30' EOL - 48Ct - 40' Storage - 144Ct - 100'",
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callout_summary == [
+        {
+            "callout_type": "EOL",
+            "cable_count": "48Ct",
+            "count": 2,
+            "total_footage": "70'",
+            "callouts": ["EOL - 48Ct - 30'", "EOL - 48Ct - 40'"],
+        },
+        {
+            "callout_type": "Storage",
+            "cable_count": "144Ct",
+            "count": 1,
+            "total_footage": "100'",
+            "callouts": ["Storage - 144Ct - 100'"],
+        },
+    ]
+
+
 def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
@@ -107,6 +315,16 @@ def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
     doc.close()
 
     assert derive_code_totals(extract_text_blocks(content)) == ["UG-06 - 13"]
+
+
+def test_quantity_first_code_notes_do_not_duplicate_direct_totals_with_units() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-56 - 170' and field note 170 x UG-56.")
+    content = doc.tobytes()
+    doc.close()
+
+    assert derive_code_totals(extract_text_blocks(content)) == ["UG-56 - 170'"]
 
 
 def test_derive_code_totals_ignores_bore_context_notes() -> None:

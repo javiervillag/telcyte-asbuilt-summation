@@ -4,8 +4,9 @@ import base64
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from io import BytesIO
+from typing import Any
 
 import fitz
 import httpx
@@ -14,7 +15,7 @@ from PIL import Image
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
-from app.rate_cards import CodeKey, code_key, load_code_catalog
+from app.rate_cards import CODE_PATTERN, NUMBER_PATTERN, TOTAL_SEPARATOR_PATTERN, UNIT_PATTERN, CodeKey, TotalKey, load_code_catalog, total_line_key
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,16 @@ class ManualReviewRequired(OpenRouterError):
         warnings: list[str],
         supported_totals: list[str] | None = None,
         unresolved_callouts: list[str] | None = None,
+        verifier_model: str = "",
+        verifier_used: bool = False,
+        diagnostics: object | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
         self.unresolved_callouts = unresolved_callouts or []
+        self.verifier_model = verifier_model
+        self.verifier_used = verifier_used
+        self.diagnostics = _diagnostics_payload(diagnostics)
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -42,6 +49,29 @@ class ModelAttempt:
     ok: bool
     summary: SummaryResult | None = None
     error: str | None = None
+
+
+@dataclass
+class ModelReview:
+    summary: SummaryResult
+    remaining_unresolved_callouts: list[str]
+    resolved_callouts: list[dict[str, str]]
+
+
+@dataclass
+class CalloutResolutionReview:
+    remaining_callouts: list[str]
+    unsupported_resolution_count: int
+
+
+def _diagnostics_payload(diagnostics: object | None) -> dict[str, Any]:
+    if diagnostics is None:
+        return {}
+    if isinstance(diagnostics, dict):
+        return diagnostics
+    if hasattr(diagnostics, "__dataclass_fields__"):
+        return asdict(diagnostics)
+    return {}
 
 
 SYSTEM_PROMPT = """You are helping Telcyte review parsed as-built construction drawings.
@@ -58,12 +88,19 @@ Expected JSON shape:
   "job_totals": ["CODE - quantity", "..."],
   "materials": ["material - quantity", "..."],
   "warnings": ["short warning if needed"],
-  "confidence": 0.0
+  "confidence": 0.0,
+  "remaining_unresolved_callouts": ["copy any unresolved callout that still needs human interpretation"],
+  "resolved_callouts": [
+    {"callout": "exact unresolved callout text", "resolution": "why no manual interpretation is needed", "evidence": "specific parsed text evidence"}
+  ]
 }
 Prefer the deterministic code totals when they are supported by the positioned text blocks.
 Focus on billing-code totals visible or inferable from drawing labels, callouts, notes, and quantity markings.
+Each job_totals item must be only a standalone CODE - quantity billing line, for example "PC-01 - 1"; do not include sentences, explanations, conditions, or review notes inside job_totals.
 Materials are phase-two unless the request explicitly enables them.
 Never add a detail unless the parsed PDF context supports it.
+For unresolved construction callouts, keep them in remaining_unresolved_callouts unless the parsed context explicitly proves they require no additional MKR total or are fully covered by deterministic supported totals.
+Do not clear EOL, Tie Point, Storage, Pull through, or Pull-through callouts just because they look familiar; clear them only with explicit evidence.
 
 Parsed context:
 {context}"""
@@ -97,8 +134,51 @@ def _extract_json(text: str) -> dict:
     return json.loads(cleaned)
 
 
-def _normalize_summary(data: dict, model: str) -> SummaryResult:
-    return SummaryResult(
+def _safe_openrouter_error_body(text: str, limit: int = 500) -> str:
+    redacted = re.sub(
+        r"https://openrouter\.ai/workspaces/[^\"'\s]+/keys/[^\"'\s]+",
+        "https://openrouter.ai/workspaces/[redacted]/keys/[redacted]",
+        text,
+    )
+    redacted = re.sub(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", redacted, flags=re.I)
+    redacted = re.sub(r"\bsk-or-v1-[A-Za-z0-9_-]+", "sk-or-v1-[redacted]", redacted)
+    return redacted[:limit]
+
+
+def _retry_max_tokens_from_credit_limit(text: str, current_max_tokens: int) -> int | None:
+    match = re.search(r"can only afford\s+(\d+)", text, re.I)
+    if not match:
+        return None
+    affordable_tokens = int(match.group(1))
+    if affordable_tokens >= current_max_tokens or affordable_tokens < 256:
+        return None
+    return affordable_tokens
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _normalize_review(data: dict, model: str) -> ModelReview:
+    resolved_callouts: list[dict[str, str]] = []
+    for item in data.get("resolved_callouts") or []:
+        if not isinstance(item, dict):
+            continue
+        callout = str(item.get("callout") or "").strip()
+        resolution = str(item.get("resolution") or "").strip()
+        evidence = str(item.get("evidence") or "").strip()
+        if callout:
+            resolved_callouts.append(
+                {
+                    "callout": callout,
+                    "resolution": resolution,
+                    "evidence": evidence,
+                }
+            )
+
+    summary = SummaryResult(
         title=str(data.get("title") or "MKR Job Totals"),
         job_totals=[str(v) for v in data.get("job_totals") or [] if str(v).strip()],
         materials=[str(v) for v in data.get("materials") or [] if str(v).strip()],
@@ -106,13 +186,11 @@ def _normalize_summary(data: dict, model: str) -> SummaryResult:
         confidence=float(data.get("confidence") or 0),
         model=model,
     )
-
-
-def _line_code_key(line: str) -> CodeKey | None:
-    code_part = line.split("-", 2)
-    if len(code_part) >= 2:
-        return code_key("-".join(code_part[:2]))
-    return code_key(line)
+    return ModelReview(
+        summary=summary,
+        remaining_unresolved_callouts=_string_list(data.get("remaining_unresolved_callouts")),
+        resolved_callouts=resolved_callouts,
+    )
 
 
 def _merge_parser_and_model(
@@ -122,34 +200,240 @@ def _merge_parser_and_model(
 ) -> SummaryResult:
     totals = list(parser_totals)
     omitted_model_totals = 0
+    parser_total_keys = {key for line in parser_totals if (key := total_line_key(line))}
+    parser_total_codes = {key[0] for key in parser_total_keys}
+    model_total_keys = [(line, key) for line in model_summary.job_totals if (key := _model_total_line_key(line))]
+    malformed_model_totals = len(model_summary.job_totals) - len(model_total_keys)
+    conflicting_model_codes = _conflicting_model_total_codes(model_total_keys)
+    model_disagreed_total_count = sum(
+        1
+        for _, model_key in model_total_keys
+        if (
+            model_key[0] in parser_total_codes
+            and model_key not in parser_total_keys
+        )
+    )
     if settings.allow_llm_inferred_totals:
-        seen = {_line_code_key(line) for line in totals}
-        for line in model_summary.job_totals:
-            key = _line_code_key(line)
+        seen = {key[0] for key in parser_total_keys}
+        for line, model_key in model_total_keys:
+            key = model_key[0]
+            if key in conflicting_model_codes:
+                continue
             if key and key not in seen:
                 totals.append(line)
                 seen.add(key)
     else:
-        parser_keys = {_line_code_key(line) for line in totals}
+        parser_keys = {key[0] for key in parser_total_keys}
         omitted_model_totals = sum(
             1
-            for line in model_summary.job_totals
-            if (_line_code_key(line) not in parser_keys)
+            for _, model_key in model_total_keys
+            if model_key[0] not in parser_keys
         )
 
     warnings = list(model_summary.warnings)
+    if malformed_model_totals:
+        warnings.append("Verifier returned lines that were not valid billing totals; they were ignored.")
+    if conflicting_model_codes:
+        warnings.append(
+            "Verifier returned conflicting quantities for the same billing code; those model totals were ignored."
+        )
     if omitted_model_totals:
         warnings.append(
             "Possible extra totals were not added because the parsed PDF text did not support them."
         )
+    if model_disagreed_total_count:
+        warnings.append(
+            "Verifier returned a different quantity for a parser-supported code; the parser total was kept."
+        )
 
     return SummaryResult(
         title="MKR Job Totals",
-        job_totals=totals if totals or not settings.allow_llm_inferred_totals else model_summary.job_totals,
+        job_totals=totals,
         materials=model_summary.materials if settings.include_materials else [],
         warnings=warnings,
         confidence=model_summary.confidence,
         model=f"parser+{model_summary.model}" if totals else model_summary.model,
+    )
+
+
+def _conflicting_model_total_codes(model_total_keys: list[tuple[str, TotalKey]]) -> set[CodeKey]:
+    totals_by_code: dict[CodeKey, set[TotalKey]] = {}
+    for _, key in model_total_keys:
+        totals_by_code.setdefault(key[0], set()).add(key)
+    return {code for code, totals in totals_by_code.items() if len(totals) > 1}
+
+
+def _model_total_line_key(line: str) -> TotalKey | None:
+    if not re.fullmatch(
+        rf"\s*{CODE_PATTERN.pattern}\s*{TOTAL_SEPARATOR_PATTERN}\s*{NUMBER_PATTERN}(?:\s*{UNIT_PATTERN})?\s*",
+        line,
+        re.I,
+    ):
+        return None
+    return total_line_key(line)
+
+
+def _requires_manual_review_before_model(diagnostics) -> bool:
+    return (
+        diagnostics.block_count < 5
+        or diagnostics.text_chars < 120
+        or diagnostics.quantity_line_count < 2
+        or diagnostics.code_total_count == 0
+        or diagnostics.ambiguous_code_line_count > 0
+    )
+
+
+def _norm_callout(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip()).casefold()
+
+
+def _norm_evidence_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _resolved_callout_has_grounded_evidence(
+    callout: str,
+    evidence: str,
+    parsed_context: str,
+    parser_totals: list[str],
+) -> bool:
+    evidence_key = _norm_evidence_text(evidence)
+    if len(evidence_key) < 6:
+        return False
+    callout_key = _norm_evidence_text(callout)
+    if not evidence_key.replace(callout_key, "").strip():
+        return False
+    if callout_key not in evidence_key:
+        return False
+    parser_total_keys = [_norm_evidence_text(total) for total in parser_totals]
+    if any(evidence_key == total_key for total_key in parser_total_keys):
+        return False
+    context_key = _norm_evidence_text(parsed_context)
+    if evidence_key in context_key:
+        return True
+    return False
+
+
+def _remaining_callouts_after_model_review(
+    original_callouts: list[str],
+    model_review: ModelReview,
+    parsed_context: str,
+    parser_totals: list[str],
+) -> CalloutResolutionReview:
+    original_by_norm = {_norm_callout(callout): callout for callout in original_callouts if callout.strip()}
+    remaining = dict(original_by_norm)
+    unsupported_resolution_count = 0
+
+    for item in model_review.resolved_callouts:
+        norm = _norm_callout(item.get("callout") or "")
+        if norm not in original_by_norm:
+            continue
+        resolution = (item.get("resolution") or "").strip()
+        evidence = (item.get("evidence") or "").strip()
+        if not resolution or not evidence:
+            continue
+        if not _resolved_callout_has_grounded_evidence(
+            original_by_norm[norm],
+            evidence,
+            parsed_context,
+            parser_totals,
+        ):
+            unsupported_resolution_count += 1
+            continue
+        remaining.pop(norm, None)
+
+    for callout in model_review.remaining_unresolved_callouts:
+        norm = _norm_callout(callout)
+        if norm in original_by_norm:
+            remaining[norm] = original_by_norm[norm]
+
+    return CalloutResolutionReview(
+        remaining_callouts=list(remaining.values()),
+        unsupported_resolution_count=unsupported_resolution_count,
+    )
+
+
+def _review_prompt_context(
+    parsed_context: str,
+    parser_totals: list[str],
+    diagnostics,
+) -> str:
+    context_parts = [
+        "Deterministic supported totals:",
+        *(parser_totals or ["None"]),
+        "",
+        "Unresolved construction callouts needing verifier review:",
+        *(diagnostics.unresolved_callouts or ["None"]),
+        "",
+        "Unresolved callout groups from deterministic parser diagnostics:",
+        *_callout_summary_lines(diagnostics.unresolved_callout_summary),
+        "",
+        parsed_context,
+    ]
+    return "\n".join(context_parts)
+
+
+def _callout_summary_lines(callout_summary: list[dict[str, Any]]) -> list[str]:
+    if not callout_summary:
+        return ["None"]
+    lines: list[str] = []
+    for item in callout_summary:
+        callout_type = str(item.get("callout_type") or "Unknown")
+        cable_count = str(item.get("cable_count") or "unspecified")
+        count = int(item.get("count") or 0)
+        total_footage = str(item.get("total_footage") or "unknown")
+        callouts = "; ".join(str(callout) for callout in item.get("callouts") or [] if str(callout).strip())
+        line = f"{callout_type} | {cable_count} | count={count} | total_footage={total_footage}"
+        if callouts:
+            line += f" | callouts={callouts}"
+        lines.append(line)
+    return lines
+
+
+def _manual_review_warnings(
+    diagnostics,
+    model_summary: SummaryResult | None = None,
+) -> list[str]:
+    warnings = list(model_summary.warnings if model_summary else [])
+    if model_summary is not None:
+        verifier_warning = "OpenRouter verifier reviewed unresolved callouts but could not clear them from parsed evidence."
+        if verifier_warning not in warnings:
+            warnings.append(verifier_warning)
+    warnings.extend(warning for warning in diagnostics.warnings if warning not in warnings)
+    return warnings
+
+
+def _raise_manual_review_for_unavailable_verifier(
+    diagnostics,
+    parser_totals: list[str],
+    reason: str,
+    verifier_model: str,
+) -> None:
+    warnings = list(diagnostics.warnings)
+    warnings.append(f"OpenRouter verifier was unavailable ({reason}); manual review is required.")
+    raise ManualReviewRequired(
+        warnings,
+        supported_totals=parser_totals,
+        unresolved_callouts=diagnostics.unresolved_callouts,
+        verifier_model=verifier_model,
+        verifier_used=False,
+        diagnostics=diagnostics,
+    )
+
+
+def _parser_only_summary(parser_totals: list[str], diagnostics) -> SummaryResult:
+    warnings = [
+        warning
+        for warning in diagnostics.warnings
+        if warning != "Manual review is required; the app did not add unsupported totals."
+    ]
+    return SummaryResult(
+        title="MKR Job Totals",
+        job_totals=parser_totals,
+        materials=[],
+        warnings=warnings,
+        confidence=0.0,
+        model="parser",
     )
 
 
@@ -164,19 +448,36 @@ async def summarize_with_model(
     blocks = extract_text_blocks(pdf_bytes)
     parser_totals = derive_code_totals(blocks, code_catalog=code_catalog)
     diagnostics = diagnose_extraction(blocks, parser_totals)
-    if diagnostics.review_required:
+    if diagnostics.review_required and _requires_manual_review_before_model(diagnostics):
         raise ManualReviewRequired(
             diagnostics.warnings,
             supported_totals=parser_totals,
             unresolved_callouts=diagnostics.unresolved_callouts,
+            verifier_model=selected_model,
+            verifier_used=False,
+            diagnostics=diagnostics,
         )
+    if not diagnostics.review_required and not settings.include_materials:
+        return _parser_only_summary(parser_totals, diagnostics)
 
     if not settings.openrouter_api_key:
-        raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
+        if diagnostics.review_required:
+            warnings = list(diagnostics.warnings)
+            warnings.append("OpenRouter verifier is not configured, so unresolved callouts need manual review.")
+            raise ManualReviewRequired(
+                warnings,
+                supported_totals=parser_totals,
+                unresolved_callouts=diagnostics.unresolved_callouts,
+                verifier_model=selected_model,
+                verifier_used=False,
+                diagnostics=diagnostics,
+            )
+        return _parser_only_summary(parser_totals, diagnostics)
 
     parsed_context = build_pdf_context(pdf_bytes, code_catalog=code_catalog)
+    verifier_context = _review_prompt_context(parsed_context, parser_totals, diagnostics)
 
-    content: list[dict] = [{"type": "text", "text": USER_PROMPT.replace("{context}", parsed_context)}]
+    content: list[dict] = [{"type": "text", "text": USER_PROMPT.replace("{context}", verifier_context)}]
     image_count = 0
     if settings.include_page_images:
         images = render_pdf_images(pdf_bytes)
@@ -204,22 +505,95 @@ async def summarize_with_model(
             {"role": "user", "content": content},
         ],
         "temperature": 0.1,
-        "max_tokens": 2200,
+        "max_tokens": settings.openrouter_max_tokens,
         "response_format": {"type": "json_object"},
     }
 
     logger.info("requesting_summary model=%s image_pages=%s parsed_chars=%s", selected_model, image_count, len(parsed_context))
-    async with httpx.AsyncClient(timeout=settings.openrouter_timeout_seconds) as client:
-        response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    try:
+        async with httpx.AsyncClient(timeout=settings.openrouter_timeout_seconds) as client:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+            retry_max_tokens = _retry_max_tokens_from_credit_limit(
+                response.text if response.status_code == 402 else "",
+                int(payload["max_tokens"]),
+            )
+            if retry_max_tokens is not None:
+                retry_payload = {**payload, "max_tokens": retry_max_tokens}
+                logger.warning(
+                    "openrouter_retry_reduced_max_tokens original=%s retry=%s",
+                    payload["max_tokens"],
+                    retry_max_tokens,
+                )
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=retry_payload,
+                )
+    except httpx.HTTPError as exc:
+        if diagnostics.review_required:
+            _raise_manual_review_for_unavailable_verifier(
+                diagnostics,
+                parser_totals,
+                exc.__class__.__name__,
+                selected_model,
+            )
+        return _parser_only_summary(parser_totals, diagnostics)
     if response.status_code >= 400:
-        logger.warning("openrouter_error status=%s body=%s", response.status_code, response.text[:500])
-        raise OpenRouterError(f"OpenRouter returned {response.status_code}.")
+        logger.warning(
+            "openrouter_error status=%s body=%s",
+            response.status_code,
+            _safe_openrouter_error_body(response.text),
+        )
+        if diagnostics.review_required:
+            _raise_manual_review_for_unavailable_verifier(
+                diagnostics,
+                parser_totals,
+                f"OpenRouter returned {response.status_code}",
+                selected_model,
+            )
+        return _parser_only_summary(parser_totals, diagnostics)
 
-    data = response.json()
-    text = data["choices"][0]["message"]["content"]
-    model_summary = _normalize_summary(_extract_json(text), selected_model)
-    summary = _merge_parser_and_model(parser_totals, model_summary, settings)
+    try:
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        model_review = _normalize_review(_extract_json(text), selected_model)
+    except (OpenRouterError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        if diagnostics.review_required:
+            _raise_manual_review_for_unavailable_verifier(
+                diagnostics,
+                parser_totals,
+                str(exc) or exc.__class__.__name__,
+                selected_model,
+            )
+        return _parser_only_summary(parser_totals, diagnostics)
+    summary = _merge_parser_and_model(parser_totals, model_review.summary, settings)
+
+    if diagnostics.unresolved_callouts:
+        callout_review = _remaining_callouts_after_model_review(
+            diagnostics.unresolved_callouts,
+            model_review,
+            parsed_context,
+            parser_totals,
+        )
+        if callout_review.unsupported_resolution_count:
+            summary.warnings.append(
+                "Verifier tried to clear unresolved callouts with evidence not found in parsed PDF evidence."
+            )
+        if callout_review.remaining_callouts:
+            raise ManualReviewRequired(
+                _manual_review_warnings(diagnostics, summary),
+                supported_totals=summary.job_totals,
+                unresolved_callouts=callout_review.remaining_callouts,
+                verifier_model=selected_model,
+                verifier_used=True,
+                diagnostics=diagnostics,
+            )
+
     for warning in diagnostics.warnings:
+        if "Readable construction callouts require rate-card/composite interpretation" in warning:
+            continue
+        if warning == "Manual review is required; the app did not add unsupported totals.":
+            continue
         if warning not in summary.warnings:
             summary.warnings.append(warning)
     if not summary.job_totals and not summary.materials:

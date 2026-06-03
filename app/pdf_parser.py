@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 import fitz
 
-from app.rate_cards import CODE_PATTERN, CodeKey, code_key
+from app.rate_cards import CODE_PATTERN, CODE_SEPARATOR_PATTERN, NUMBER_PATTERN, TOTAL_SEPARATOR_PATTERN, UNIT_PATTERN, CodeKey, code_key
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,8 @@ class ExtractionDiagnostics:
     ambiguous_code_line_count: int
     unresolved_callout_count: int
     unresolved_callouts: list[str]
+    unresolved_callout_details: list[dict[str, str]]
+    unresolved_callout_summary: list[dict[str, Any]]
     code_total_count: int
     material_candidate_count: int
     review_required: bool
@@ -37,6 +40,11 @@ MIN_READABLE_CHARS = 120
 MIN_QUANTITY_LINES = 2
 UNRESOLVED_CALLOUT_PATTERN = re.compile(
     r"\b(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b",
+    re.I,
+)
+UNRESOLVED_CALLOUT_SEGMENT_PATTERN = re.compile(
+    r"(?:#\d+\s+)?(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b.*?"
+    r"(?=\s+(?:#\d+\s+)?(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b|$)",
     re.I,
 )
 
@@ -142,11 +150,15 @@ def derive_code_totals(
     code_catalog: dict[CodeKey, str] | None = None,
 ) -> list[str]:
     direct_pattern = re.compile(
-        r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
+        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+)\s*{TOTAL_SEPARATOR_PATTERN}\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        r"\b([0-9]+(?:\.[0-9]+)?)\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\b",
+        rf"\b({NUMBER_PATTERN})\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+)\b",
+        re.I,
+    )
+    code_first_multiplier_pattern = re.compile(
+        rf"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+)\s*x\s*({NUMBER_PATTERN})\b",
         re.I,
     )
     catalog = code_catalog or {}
@@ -164,18 +176,16 @@ def derive_code_totals(
                     continue
                 if catalog and normalized_key not in catalog:
                     continue
-                unit = (raw_unit or "").strip()
+                unit = _normalize_unit(raw_unit or "")
                 key = (normalized_key, unit)
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
-                totals[key] += float(raw_qty)
+                totals[key] += _quantity_value(raw_qty)
 
-    direct_keys = set(totals)
+    direct_code_keys = {key[0] for key in totals}
     for block in blocks:
         for line in block.text.splitlines():
-            if direct_pattern.search(line):
-                continue
             for match in quantity_first_pattern.finditer(line):
                 raw_qty, raw_code = match.groups()
                 normalized_key = code_key(raw_code)
@@ -184,12 +194,26 @@ def derive_code_totals(
                 if catalog and normalized_key not in catalog:
                     continue
                 key = (normalized_key, "")
-                if key in direct_keys:
+                if normalized_key in direct_code_keys:
                     continue
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
-                totals[key] += float(raw_qty)
+                totals[key] += _quantity_value(raw_qty)
+            for match in code_first_multiplier_pattern.finditer(line):
+                raw_code, raw_qty = match.groups()
+                normalized_key = code_key(raw_code)
+                if not normalized_key:
+                    continue
+                if catalog and normalized_key not in catalog:
+                    continue
+                if normalized_key in direct_code_keys:
+                    continue
+                key = (normalized_key, "")
+                if key not in totals:
+                    order.append(key)
+                    display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
+                totals[key] += _quantity_value(raw_qty)
 
     rows: list[str] = []
     for key in order:
@@ -206,10 +230,23 @@ def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
         return f"{prefix}-{int(number):02d}"
     if "-" in raw_code:
         return raw_code.upper() if prefix != "COMP" else raw_code
+    if re.search(TOTAL_SEPARATOR_PATTERN, raw_code):
+        return f"{prefix}-{number}"
     match = re.match(r"([A-Za-z]+)(\d+)", raw_code)
     if match:
         return f"{match.group(1)}-{match.group(2)}"
     return raw_code
+
+
+def _quantity_value(value: str) -> float:
+    return float(value.replace(",", ""))
+
+
+def _normalize_unit(value: str) -> str:
+    normalized = re.sub(r"[\s.]+", "", value.strip().lower())
+    if normalized == "sqft":
+        return "sqft"
+    return value.strip()
 
 
 def _is_non_billing_context(line: str, match_start: int) -> bool:
@@ -255,6 +292,8 @@ def diagnose_extraction(
     annotation_text_count = sum(1 for block in blocks if block.source == "annotation")
     ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
     unresolved_callouts = _unresolved_callout_lines(blocks)
+    unresolved_callout_details = [_callout_detail(callout) for callout in unresolved_callouts]
+    unresolved_callout_summary = _callout_summary(unresolved_callout_details)
     unresolved_callout_count = len(unresolved_callouts)
     warnings: list[str] = []
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
@@ -297,6 +336,8 @@ def diagnose_extraction(
         ambiguous_code_line_count=ambiguous_code_line_count,
         unresolved_callout_count=unresolved_callout_count,
         unresolved_callouts=unresolved_callouts,
+        unresolved_callout_details=unresolved_callout_details,
+        unresolved_callout_summary=unresolved_callout_summary,
         code_total_count=len(code_totals),
         material_candidate_count=len(material_candidates),
         review_required=review_required,
@@ -306,16 +347,25 @@ def diagnose_extraction(
 
 def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     total_pattern = re.compile(
-        r"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\b",
+        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+\s*{TOTAL_SEPARATOR_PATTERN}\s*{NUMBER_PATTERN}(?:\s*{UNIT_PATTERN})?\b",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        r"\b[0-9]+(?:\.[0-9]+)?\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b",
+        rf"\b{NUMBER_PATTERN}\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+\b",
+        re.I,
+    )
+    code_first_multiplier_pattern = re.compile(
+        rf"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}\d+\s*x\s*{NUMBER_PATTERN}\b",
         re.I,
     )
     count = 0
     for line in quantity_lines:
-        if CODE_PATTERN.search(line) and not total_pattern.search(line) and not quantity_first_pattern.search(line):
+        if (
+            CODE_PATTERN.search(line)
+            and not total_pattern.search(line)
+            and not quantity_first_pattern.search(line)
+            and not code_first_multiplier_pattern.search(line)
+        ):
             count += 1
     return count
 
@@ -326,11 +376,100 @@ def _unresolved_callout_lines(blocks: list[TextBlock]) -> list[str]:
     for block in blocks:
         for line in block.text.splitlines():
             cleaned = _clean_text(line)
-            if UNRESOLVED_CALLOUT_PATTERN.search(cleaned) and not CODE_PATTERN.search(cleaned):
-                if cleaned not in seen:
-                    seen.add(cleaned)
-                    callouts.append(cleaned)
+            for callout in _unresolved_callout_segments(cleaned):
+                if callout not in seen:
+                    seen.add(callout)
+                    callouts.append(callout)
     return callouts
+
+
+def _unresolved_callout_segments(line: str) -> list[str]:
+    return [_clean_text(match.group(0)) for match in UNRESOLVED_CALLOUT_SEGMENT_PATTERN.finditer(line)]
+
+
+def _callout_detail(callout: str) -> dict[str, str]:
+    detail = {
+        "raw_text": callout,
+        "marker": "",
+        "callout_type": "",
+        "descriptor": "",
+        "cable_count": "",
+        "footage": "",
+    }
+    match = re.match(
+        r"^(?:(?P<marker>#\d+)\s+)?"
+        r"(?P<type>EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b"
+        r"(?P<rest>.*)$",
+        callout,
+        re.I,
+    )
+    if not match:
+        return detail
+
+    descriptor = _clean_text(re.sub(r"^\s*-\s*", "", match.group("rest") or ""))
+    detail["marker"] = match.group("marker") or ""
+    detail["callout_type"] = _display_callout_type(match.group("type"))
+    detail["descriptor"] = descriptor
+
+    cable_match = re.search(r"\b\d+(?:\.\d+)?\s*[Cc]t\b", descriptor)
+    if cable_match:
+        detail["cable_count"] = re.sub(r"\s+", "", cable_match.group(0))
+
+    footage_match = re.search(r"\b\d+(?:\.\d+)?\s*'", descriptor)
+    if footage_match:
+        detail["footage"] = re.sub(r"\s+", "", footage_match.group(0))
+    return detail
+
+
+def _display_callout_type(value: str) -> str:
+    normalized = re.sub(r"[\s-]+", " ", value.strip()).casefold()
+    display = {
+        "eol": "EOL",
+        "tie point": "Tie Point",
+        "storage": "Storage",
+        "pull through": "Pull Through",
+    }
+    return display.get(normalized, value.strip())
+
+
+def _callout_summary(details: list[dict[str, str]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for detail in details:
+        callout_type = detail.get("callout_type") or "Unknown"
+        cable_count = detail.get("cable_count") or ""
+        key = (callout_type, cable_count)
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = {
+                "callout_type": callout_type,
+                "cable_count": cable_count,
+                "count": 0,
+                "total_footage": "",
+                "callouts": [],
+            }
+        grouped[key]["count"] += 1
+        grouped[key]["callouts"].append(detail.get("raw_text") or "")
+
+        footage = _footage_value(detail.get("footage") or "")
+        if footage is not None:
+            grouped[key]["_footage_total"] = grouped[key].get("_footage_total", 0.0) + footage
+
+    summaries: list[dict[str, Any]] = []
+    for key in order:
+        summary = dict(grouped[key])
+        footage_total = summary.pop("_footage_total", None)
+        if footage_total is not None:
+            summary["total_footage"] = f"{_format_number(float(footage_total))}'"
+        summaries.append(summary)
+    return summaries
+
+
+def _footage_value(value: str) -> float | None:
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*'", value)
+    if not match:
+        return None
+    return float(match.group(1))
 
 
 def build_pdf_context(

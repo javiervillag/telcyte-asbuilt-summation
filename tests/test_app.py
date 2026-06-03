@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +10,46 @@ from app.openrouter_client import ManualReviewRequired
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
+
+
+class _FakeOpenRouterResponse:
+    status_code = 200
+    text = "ok"
+
+    def json(self) -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "title": "MKR Job Totals",
+                                "job_totals": [],
+                                "materials": [],
+                                "warnings": ["Model verifier kept construction callouts in manual review."],
+                                "confidence": 0.5,
+                                "remaining_unresolved_callouts": ["EOL - 48Ct - 30'"],
+                                "resolved_callouts": [],
+                            }
+                        ),
+                    }
+                }
+            ]
+        }
+
+
+class _FakeAsyncClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers, json):
+        return _FakeOpenRouterResponse()
 
 
 def test_health_endpoint() -> None:
@@ -58,6 +99,25 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
             ["This PDF does not have enough readable text for automatic summation."],
             supported_totals=["UG-06 - 13"],
             unresolved_callouts=["EOL - 48Ct - 66'"],
+            verifier_model="anthropic/claude-sonnet-4",
+            verifier_used=True,
+            diagnostics={
+                "block_count": 3,
+                "text_chars": 80,
+                "quantity_line_count": 1,
+                "code_total_count": 1,
+                "unresolved_callout_count": 1,
+                "unresolved_callout_summary": [
+                    {
+                        "callout_type": "EOL",
+                        "cable_count": "48Ct",
+                        "count": 1,
+                        "total_footage": "66'",
+                        "callouts": ["EOL - 48Ct - 66'"],
+                    }
+                ],
+                "review_required": True,
+            },
         )
 
     monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
@@ -72,9 +132,38 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     assert body["warnings"]
     assert body["supported_totals"] == ["UG-06 - 13"]
     assert body["unresolved_callouts"] == ["EOL - 48Ct - 66'"]
+    assert body["unresolved_callout_summary"] == [
+        {
+            "callout_type": "EOL",
+            "cable_count": "48Ct",
+            "count": 1,
+            "total_footage": "66'",
+            "callouts": ["EOL - 48Ct - 66'"],
+        }
+    ]
+    assert body["verifier_model"] == "anthropic/claude-sonnet-4"
+    assert body["verifier_used"] is True
+    assert body["diagnostics"] == {
+        "block_count": 3,
+        "text_chars": 80,
+        "quantity_line_count": 1,
+        "code_total_count": 1,
+        "unresolved_callout_count": 1,
+        "unresolved_callout_summary": [
+            {
+                "callout_type": "EOL",
+                "cable_count": "48Ct",
+                "count": 1,
+                "total_footage": "66'",
+                "callouts": ["EOL - 48Ct - 66'"],
+            }
+        ],
+        "review_required": True,
+    }
 
 
-def test_sample_manual_review_response_includes_supported_evidence() -> None:
+def test_sample_manual_review_response_includes_supported_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", _FakeAsyncClient)
     client = TestClient(app)
     response = client.post(
         "/api/summarize",
@@ -85,3 +174,9 @@ def test_sample_manual_review_response_includes_supported_evidence() -> None:
     assert response.status_code == 422
     assert "UG-56 - 170'" in body["supported_totals"]
     assert "EOL - 48Ct - 30'" in body["unresolved_callouts"]
+    assert body["diagnostics"]["review_required"] is True
+    assert body["diagnostics"]["code_total_count"] == len(body["supported_totals"])
+    assert body["diagnostics"]["unresolved_callout_count"] >= 1
+    assert body["unresolved_callout_summary"]
+    assert body["verifier_model"]
+    assert body["verifier_used"] is True

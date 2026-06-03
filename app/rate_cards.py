@@ -3,7 +3,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})(?!\.\d)\b", re.I)
+CODE_SEPARATOR_PATTERN = r"[-\u00b7\u2010-\u2015\u2212]?"
+TOTAL_SEPARATOR_PATTERN = r"[-\u00b7\u2010-\u2015\u2212]"
+CODE_PATTERN = re.compile(
+    rf"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC){CODE_SEPARATOR_PATTERN}(\d{{1,3}})(?!\.\d)\b",
+    re.I,
+)
+NUMBER_PATTERN = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+UNIT_PATTERN = r"(?:'|sq\.?\s*ft\.?|sqft)"
 ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
 CodeKey = tuple[str, str]
 TotalKey = tuple[CodeKey, str, str]
@@ -40,11 +47,11 @@ def total_line_key(line: str) -> TotalKey | None:
     if not key:
         return None
     remainder = line[code_match.end() :]
-    qty_match = re.match(r"\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?", remainder, re.I)
+    qty_match = re.match(rf"\s*{TOTAL_SEPARATOR_PATTERN}\s*({NUMBER_PATTERN})(\s*{UNIT_PATTERN})?", remainder, re.I)
     if not qty_match:
         return None
     qty = _normalize_quantity(qty_match.group(1))
-    unit = (qty_match.group(2) or "").strip().lower()
+    unit = _normalize_unit(qty_match.group(2) or "")
     return (key, qty, unit)
 
 
@@ -110,8 +117,15 @@ def _format_code(prefix: str, number: str, raw: str) -> str:
 
 
 def _normalize_quantity(value: str) -> str:
-    number = float(value)
+    number = float(value.replace(",", ""))
     return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+def _normalize_unit(value: str) -> str:
+    normalized = re.sub(r"[\s.]+", "", value.strip().lower())
+    if normalized == "sqft":
+        return "sqft"
+    return value.strip().lower()
 
 
 def _has_highlight_fill(fill) -> bool:
