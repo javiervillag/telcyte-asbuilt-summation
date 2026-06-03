@@ -60,6 +60,10 @@ def total_keys_from_text(text: str) -> set[tuple[tuple[str, str], str, str]]:
     return keys
 
 
+def normalized_totals_from_text(text: str) -> list[str]:
+    return sorted(_format_total_key(key) for key in total_keys_from_text(text))
+
+
 def compare_total_text(actual_text: str, expected_text: str) -> dict[str, Any]:
     actual_keys = total_keys_from_text(actual_text)
     expected_keys = total_keys_from_text(expected_text)
@@ -242,11 +246,16 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
     before_text = pdf_text(before)
     team_text = pdf_text(team_output)
     team_added = added_text(before_text, team_text)
+    team_added_totals = normalized_totals_from_text(team_added)
     team_totals = compare_total_text(team_added, team_added)
 
     sample_dir = out_dir / before.stem
     sample_dir.mkdir(parents=True, exist_ok=True)
     (sample_dir / "01_team_added_text.txt").write_text(team_added, encoding="utf-8")
+    (sample_dir / "01_team_added_totals.json").write_text(
+        json.dumps(team_added_totals, indent=2),
+        encoding="utf-8",
+    )
 
     response = client.post(
         "/api/summarize",
@@ -258,6 +267,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
         "status_code": response.status_code,
         "content_type": response.headers.get("content-type", ""),
         "team_added_total_count": team_totals["expected_total_count"],
+        "team_added_totals": team_added_totals,
     }
 
     if response.status_code == 200:
@@ -266,7 +276,12 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
         output_path.write_bytes(generated_pdf)
         generated_text = pdf_text_from_bytes(generated_pdf)
         generated_added = added_text(before_text, generated_text)
+        app_added_totals = normalized_totals_from_text(generated_added)
         (sample_dir / "03_app_added_text.txt").write_text(generated_added, encoding="utf-8")
+        (sample_dir / "03_app_added_totals.json").write_text(
+            json.dumps(app_added_totals, indent=2),
+            encoding="utf-8",
+        )
         result.update(
             {
                 "result": "annotated_pdf",
@@ -274,6 +289,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
                 "model": response.headers.get("x-telcyte-model", ""),
                 "confidence": response.headers.get("x-telcyte-confidence", ""),
                 "warnings": response.headers.get("x-telcyte-warnings", ""),
+                "app_added_totals": app_added_totals,
                 "app_vs_team_totals": compare_total_text(generated_added, team_added),
             }
         )

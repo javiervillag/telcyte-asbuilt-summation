@@ -107,6 +107,14 @@ def test_compare_total_text_reports_missing_and_extra_normalized_totals() -> Non
     assert comparison["extra_totals"] == ["COMP-9 - 2"]
 
 
+def test_normalized_totals_from_text_returns_sorted_display_totals() -> None:
+    totals = evaluate_samples.normalized_totals_from_text(
+        "MKR Job Totals\nPC-1 - 1\nUG-7 - 10'\nCOMP-9 - 2"
+    )
+
+    assert totals == ["COMP-9 - 2", "PC-01 - 1", "UG-07 - 10'"]
+
+
 def test_missing_total_evidence_classifies_input_support() -> None:
     input_text = "Construction note\nFB-4 storage note\nUG-56 - 170'\n13 fiber callout"
     missing = ["FB-04 - 6", "COMP-13 - 13", "UG-56 - 170'"]
@@ -202,6 +210,8 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
         "Manual review is required; the app did not add unsupported totals.",
     ]
     assert result["supported_totals"] == ["UG-56 - 170'"]
+    assert result["team_added_totals"] == ["UG-56 - 170'"]
+    assert (tmp_path / "out" / before.stem / "01_team_added_totals.json").exists()
     assert result["unresolved_callouts"] == ["EOL - 48Ct - 30'"]
     assert result["unresolved_callout_details"] == [
         {
