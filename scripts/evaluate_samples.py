@@ -268,6 +268,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
         body = {"detail": response.text[:1000]}
     response_path = sample_dir / "02_app_response.json"
     response_path.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+    diagnostics = body.get("diagnostics") or {}
     supported_totals = "\n".join(str(line) for line in body.get("supported_totals") or [])
     supported_comparison = compare_total_text(supported_totals, team_added)
     result.update(
@@ -281,9 +282,10 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "supported_totals": [str(total) for total in body.get("supported_totals") or []],
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
             "unresolved_callouts": [str(callout) for callout in body.get("unresolved_callouts") or []],
+            "unresolved_callout_details": diagnostics.get("unresolved_callout_details") or [],
             "verifier_model": body.get("verifier_model") or "",
             "verifier_used": bool(body.get("verifier_used")),
-            "diagnostics": body.get("diagnostics") or {},
+            "diagnostics": diagnostics,
             "supported_vs_team_totals": supported_comparison,
             "missing_total_input_evidence": classify_missing_total_evidence(
                 before_text,

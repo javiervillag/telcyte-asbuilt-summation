@@ -175,6 +175,47 @@ def test_unresolved_callouts_split_multiple_segments_on_one_line() -> None:
     ]
 
 
+def test_unresolved_callout_details_extract_generic_fields() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text(
+        (72, 72),
+        "Pull through - 48Ct #3 EOL - 48Ct - 40' Tie Point - .625",
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callout_details == [
+        {
+            "raw_text": "Pull through - 48Ct",
+            "marker": "",
+            "callout_type": "Pull Through",
+            "descriptor": "48Ct",
+            "cable_count": "48Ct",
+            "footage": "",
+        },
+        {
+            "raw_text": "#3 EOL - 48Ct - 40'",
+            "marker": "#3",
+            "callout_type": "EOL",
+            "descriptor": "48Ct - 40'",
+            "cable_count": "48Ct",
+            "footage": "40'",
+        },
+        {
+            "raw_text": "Tie Point - .625",
+            "marker": "",
+            "callout_type": "Tie Point",
+            "descriptor": ".625",
+            "cable_count": "",
+            "footage": "",
+        },
+    ]
+
+
 def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)

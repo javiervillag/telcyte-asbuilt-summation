@@ -42,7 +42,20 @@ class _FakeManualReviewResponse:
             "unresolved_callouts": ["EOL - 48Ct - 30'"],
             "verifier_model": "anthropic/claude-sonnet-4",
             "verifier_used": True,
-            "diagnostics": {"review_required": True, "code_total_count": 1},
+            "diagnostics": {
+                "review_required": True,
+                "code_total_count": 1,
+                "unresolved_callout_details": [
+                    {
+                        "raw_text": "EOL - 48Ct - 30'",
+                        "marker": "",
+                        "callout_type": "EOL",
+                        "descriptor": "48Ct - 30'",
+                        "cable_count": "48Ct",
+                        "footage": "30'",
+                    }
+                ],
+            },
         }
 
 
@@ -158,6 +171,16 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
     ]
     assert result["supported_totals"] == ["UG-56 - 170'"]
     assert result["unresolved_callouts"] == ["EOL - 48Ct - 30'"]
+    assert result["unresolved_callout_details"] == [
+        {
+            "raw_text": "EOL - 48Ct - 30'",
+            "marker": "",
+            "callout_type": "EOL",
+            "descriptor": "48Ct - 30'",
+            "cable_count": "48Ct",
+            "footage": "30'",
+        }
+    ]
 
 
 def test_find_pairs_matches_totals_removed_to_team_output(tmp_path: Path) -> None:

@@ -26,6 +26,7 @@ class ExtractionDiagnostics:
     ambiguous_code_line_count: int
     unresolved_callout_count: int
     unresolved_callouts: list[str]
+    unresolved_callout_details: list[dict[str, str]]
     code_total_count: int
     material_candidate_count: int
     review_required: bool
@@ -276,6 +277,7 @@ def diagnose_extraction(
     annotation_text_count = sum(1 for block in blocks if block.source == "annotation")
     ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
     unresolved_callouts = _unresolved_callout_lines(blocks)
+    unresolved_callout_details = [_callout_detail(callout) for callout in unresolved_callouts]
     unresolved_callout_count = len(unresolved_callouts)
     warnings: list[str] = []
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
@@ -318,6 +320,7 @@ def diagnose_extraction(
         ambiguous_code_line_count=ambiguous_code_line_count,
         unresolved_callout_count=unresolved_callout_count,
         unresolved_callouts=unresolved_callouts,
+        unresolved_callout_details=unresolved_callout_details,
         code_total_count=len(code_totals),
         material_candidate_count=len(material_candidates),
         review_required=review_required,
@@ -365,6 +368,51 @@ def _unresolved_callout_lines(blocks: list[TextBlock]) -> list[str]:
 
 def _unresolved_callout_segments(line: str) -> list[str]:
     return [_clean_text(match.group(0)) for match in UNRESOLVED_CALLOUT_SEGMENT_PATTERN.finditer(line)]
+
+
+def _callout_detail(callout: str) -> dict[str, str]:
+    detail = {
+        "raw_text": callout,
+        "marker": "",
+        "callout_type": "",
+        "descriptor": "",
+        "cable_count": "",
+        "footage": "",
+    }
+    match = re.match(
+        r"^(?:(?P<marker>#\d+)\s+)?"
+        r"(?P<type>EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b"
+        r"(?P<rest>.*)$",
+        callout,
+        re.I,
+    )
+    if not match:
+        return detail
+
+    descriptor = _clean_text(re.sub(r"^\s*-\s*", "", match.group("rest") or ""))
+    detail["marker"] = match.group("marker") or ""
+    detail["callout_type"] = _display_callout_type(match.group("type"))
+    detail["descriptor"] = descriptor
+
+    cable_match = re.search(r"\b\d+(?:\.\d+)?\s*[Cc]t\b", descriptor)
+    if cable_match:
+        detail["cable_count"] = re.sub(r"\s+", "", cable_match.group(0))
+
+    footage_match = re.search(r"\b\d+(?:\.\d+)?\s*'", descriptor)
+    if footage_match:
+        detail["footage"] = re.sub(r"\s+", "", footage_match.group(0))
+    return detail
+
+
+def _display_callout_type(value: str) -> str:
+    normalized = re.sub(r"[\s-]+", " ", value.strip()).casefold()
+    display = {
+        "eol": "EOL",
+        "tie point": "Tie Point",
+        "storage": "Storage",
+        "pull through": "Pull Through",
+    }
+    return display.get(normalized, value.strip())
 
 
 def build_pdf_context(
