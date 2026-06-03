@@ -124,6 +124,12 @@ def summarize_missing_total_evidence(evidence: list[dict[str, Any]]) -> list[dic
     return [grouped[evidence_class] for evidence_class in order]
 
 
+def evidence_class_counts(evidence_summary: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    _add_evidence_summary_counts(counts, evidence_summary)
+    return dict(sorted(counts.items()))
+
+
 def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any]:
     result_counts: dict[str, int] = {}
     totals = {
@@ -348,7 +354,9 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
     )
     result: dict[str, Any] = {
         "input": str(before),
+        "input_pdf": str(before),
         "team_output": str(team_output),
+        "team_output_pdf": str(team_output),
         "status_code": response.status_code,
         "content_type": response.headers.get("content-type", ""),
         "team_added_total_count": team_totals["expected_total_count"],
@@ -378,6 +386,8 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
                 "warnings": response.headers.get("x-telcyte-warnings", ""),
                 "app_added_totals": app_added_totals,
                 "supported_prefix_counts": prefix_counts_from_totals(app_added_totals),
+                "missing_total_count": app_vs_team_totals["missing_total_count"],
+                "extra_total_count": app_vs_team_totals["extra_total_count"],
                 "missing_prefix_counts": prefix_counts_from_totals(app_vs_team_totals["missing_totals"]),
                 "extra_prefix_counts": prefix_counts_from_totals(app_vs_team_totals["extra_totals"]),
                 "app_vs_team_totals": app_vs_team_totals,
@@ -410,6 +420,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
         supported_comparison["missing_totals"],
         [str(callout) for callout in body.get("unresolved_callouts") or []],
     )
+    missing_total_evidence_summary = summarize_missing_total_evidence(missing_total_input_evidence)
     result.update(
         {
             "result": "manual_review" if response.status_code == 422 else "error",
@@ -421,6 +432,8 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "supported_totals": supported_total_lines,
             "supported_normalized_totals": supported_normalized_totals,
             "supported_prefix_counts": prefix_counts_from_totals(supported_normalized_totals),
+            "missing_total_count": supported_comparison["missing_total_count"],
+            "extra_total_count": supported_comparison["extra_total_count"],
             "missing_prefix_counts": prefix_counts_from_totals(supported_comparison["missing_totals"]),
             "extra_prefix_counts": prefix_counts_from_totals(supported_comparison["extra_totals"]),
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
@@ -433,9 +446,8 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "diagnostics": diagnostics,
             "supported_vs_team_totals": supported_comparison,
             "missing_total_input_evidence": missing_total_input_evidence,
-            "missing_total_evidence_summary": summarize_missing_total_evidence(
-                missing_total_input_evidence
-            ),
+            "missing_total_evidence_summary": missing_total_evidence_summary,
+            "missing_evidence_class_counts": evidence_class_counts(missing_total_evidence_summary),
         }
     )
     return result

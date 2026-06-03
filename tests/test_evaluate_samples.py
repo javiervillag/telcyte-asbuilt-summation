@@ -278,7 +278,7 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
     before = tmp_path / "sample-Totals Removed.pdf"
     after = tmp_path / "sample.pdf"
     _text_pdf(before, ["Existing note", "UG-56 - 170'"])
-    _text_pdf(after, ["Existing note", "UG-56 - 170'", "MKR Job Totals", "UG-56 - 170'"])
+    _text_pdf(after, ["Existing note", "UG-56 - 170'", "MKR Job Totals", "UG-56 - 170'", "FB-04 - 6"])
 
     result = evaluate_samples.evaluate_pair(_FakeManualReviewClient(), before, after, tmp_path / "out")
 
@@ -291,10 +291,12 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
     assert result["supported_totals"] == ["UG-56 - 170'"]
     assert result["supported_normalized_totals"] == ["UG-56 - 170'"]
     assert (tmp_path / "out" / before.stem / "02_supported_totals.json").exists()
-    assert result["team_added_totals"] == ["UG-56 - 170'"]
-    assert result["team_added_prefix_counts"] == {"UG": 1}
+    assert result["team_added_totals"] == ["FB-04 - 6", "UG-56 - 170'"]
+    assert result["team_added_prefix_counts"] == {"FB": 1, "UG": 1}
     assert result["supported_prefix_counts"] == {"UG": 1}
-    assert result["missing_prefix_counts"] == {}
+    assert result["missing_total_count"] == 1
+    assert result["extra_total_count"] == 0
+    assert result["missing_prefix_counts"] == {"FB": 1}
     assert result["extra_prefix_counts"] == {}
     assert (tmp_path / "out" / before.stem / "01_team_added_totals.json").exists()
     assert result["unresolved_callouts"] == ["EOL - 48Ct - 30'"]
@@ -318,7 +320,16 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
             "callouts": ["EOL - 48Ct - 30'"],
         }
     ]
-    assert result["missing_total_evidence_summary"] == []
+    assert result["missing_total_evidence_summary"] == [
+        {
+            "evidence_class": "no_direct_input_evidence_with_unresolved_callouts",
+            "count": 1,
+            "totals": ["FB-04 - 6"],
+        }
+    ]
+    assert result["missing_evidence_class_counts"] == {
+        "no_direct_input_evidence_with_unresolved_callouts": 1
+    }
 
 
 def test_find_pairs_matches_totals_removed_to_team_output(tmp_path: Path) -> None:
