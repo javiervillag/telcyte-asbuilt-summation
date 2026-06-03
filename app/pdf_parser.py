@@ -154,6 +154,10 @@ def derive_code_totals(
         r"\b([0-9]+(?:\.[0-9]+)?)\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\b",
         re.I,
     )
+    code_first_multiplier_pattern = re.compile(
+        r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*x\s*([0-9]+(?:\.[0-9]+)?)\b",
+        re.I,
+    )
     catalog = code_catalog or {}
     totals: dict[tuple[CodeKey, str], float] = defaultdict(float)
     display: dict[tuple[CodeKey, str], str] = {}
@@ -189,6 +193,20 @@ def derive_code_totals(
                 key = (normalized_key, "")
                 if normalized_key in direct_code_keys:
                     continue
+                if key not in totals:
+                    order.append(key)
+                    display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
+                totals[key] += float(raw_qty)
+            for match in code_first_multiplier_pattern.finditer(line):
+                raw_code, raw_qty = match.groups()
+                normalized_key = code_key(raw_code)
+                if not normalized_key:
+                    continue
+                if catalog and normalized_key not in catalog:
+                    continue
+                if normalized_key in direct_code_keys:
+                    continue
+                key = (normalized_key, "")
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
