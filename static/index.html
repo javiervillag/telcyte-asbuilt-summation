@@ -19,10 +19,22 @@
 
         <form id="upload-form" class="dropzone">
           <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
-          <label for="pdf-file">
+          <label class="file-picker" for="pdf-file">
             <span id="file-label">Choose PDF</span>
             <strong id="file-name">No file selected</strong>
           </label>
+
+          <section class="extras" aria-labelledby="extras-title">
+            <div class="extras-head">
+              <div>
+                <h2 id="extras-title">Optional extra billing codes</h2>
+                <p>Only selected codes are added to the PDF.</p>
+              </div>
+              <input id="code-search" type="search" placeholder="Search codes" autocomplete="off" />
+            </div>
+            <div id="code-list" class="code-list" aria-live="polite"></div>
+          </section>
+
           <button id="submit" type="submit">Generate PDF</button>
         </form>
 

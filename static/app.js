@@ -3,12 +3,20 @@ const fileInput = document.querySelector("#pdf-file");
 const fileName = document.querySelector("#file-name");
 const statusBox = document.querySelector("#status");
 const submit = document.querySelector("#submit");
+const codeList = document.querySelector("#code-list");
+const codeSearch = document.querySelector("#code-search");
+
+let extraCodeCategories = [];
 
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   fileName.textContent = file ? file.name : "No file selected";
   statusBox.textContent = "";
   statusBox.className = "status";
+});
+
+codeSearch.addEventListener("input", () => {
+  renderExtraCodes(codeSearch.value);
 });
 
 form.addEventListener("submit", async (event) => {
@@ -19,10 +27,17 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  const selectedExtras = collectSelectedExtras();
+  if (!selectedExtras.ok) {
+    setStatus(selectedExtras.message, "error");
+    return;
+  }
+
   submit.disabled = true;
   setStatus("Generating annotated PDF...", "");
   const data = new FormData();
   data.append("file", file);
+  data.append("extra_billing_codes", JSON.stringify(selectedExtras.items));
 
   try {
     const response = await fetch("/api/summarize", { method: "POST", body: data });
@@ -60,3 +75,140 @@ function setStatus(message, kind) {
   statusBox.textContent = message;
   statusBox.className = kind ? `status ${kind}` : "status";
 }
+
+async function loadExtraCodes() {
+  try {
+    const response = await fetch("/api/extra-billing-codes");
+    if (!response.ok) {
+      throw new Error("Code list unavailable.");
+    }
+    const data = await response.json();
+    extraCodeCategories = data.categories || [];
+    renderExtraCodes("");
+  } catch (error) {
+    codeList.innerHTML = `<div class="code-empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderExtraCodes(filterText) {
+  const filter = filterText.trim().toLowerCase();
+  const selected = collectCurrentCodeState();
+  const groups = extraCodeCategories
+    .map((category) => {
+      const codes = (category.codes || []).filter((item) => {
+        const haystack = `${item.code} ${item.name} ${item.description} ${item.when_to_consider}`.toLowerCase();
+        return selected[item.code]?.checked || !filter || haystack.includes(filter);
+      });
+      return { name: category.name, codes };
+    })
+    .filter((category) => category.codes.length > 0);
+
+  if (groups.length === 0) {
+    codeList.innerHTML = `<div class="code-empty">No matching codes.</div>`;
+    restoreCurrentCodeState(selected);
+    return;
+  }
+
+  codeList.innerHTML = groups.map(renderCategory).join("");
+  restoreCurrentCodeState(selected);
+  codeList.querySelectorAll(".code-toggle").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => updateCodeRowState(checkbox.closest(".code-row")));
+    updateCodeRowState(checkbox.closest(".code-row"));
+  });
+}
+
+function renderCategory(category) {
+  return `
+    <div class="code-group">
+      <h3>${escapeHtml(category.name)}</h3>
+      ${category.codes.map(renderCodeRow).join("")}
+    </div>
+  `;
+}
+
+function renderCodeRow(item) {
+  const code = escapeHtml(item.code);
+  return `
+    <article class="code-row" data-code="${code}">
+      <label class="code-main">
+        <input class="code-toggle" type="checkbox" value="${code}" />
+        <span>
+          <strong>${code}</strong>
+          <b>${escapeHtml(item.name)}</b>
+          <small>${escapeHtml(item.description)}</small>
+          <em>${escapeHtml(item.when_to_consider)}</em>
+        </span>
+      </label>
+      <div class="code-fields">
+        <input class="code-quantity" type="text" inputmode="decimal" placeholder="Qty" aria-label="${code} quantity" disabled />
+        <input class="code-note" type="text" maxlength="180" placeholder="Note" aria-label="${code} note" disabled />
+        <span>${escapeHtml(item.unit)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function updateCodeRowState(row) {
+  if (!row) return;
+  const checked = row.querySelector(".code-toggle").checked;
+  row.classList.toggle("selected", checked);
+  row.querySelectorAll(".code-quantity, .code-note").forEach((input) => {
+    input.disabled = !checked;
+    if (checked && input.classList.contains("code-quantity") && !input.value) {
+      input.value = "1";
+    }
+  });
+}
+
+function collectSelectedExtras() {
+  const items = [];
+  for (const row of codeList.querySelectorAll(".code-row")) {
+    const toggle = row.querySelector(".code-toggle");
+    if (!toggle.checked) continue;
+    const code = toggle.value;
+    const quantity = row.querySelector(".code-quantity").value.trim();
+    const note = row.querySelector(".code-note").value.trim();
+    if (!quantity) {
+      return { ok: false, message: `Add a quantity for ${code}.`, items: [] };
+    }
+    if (!/^\d+(\.\d+)?(\s*('|sqft|hr|hrs|ea|each))?$/i.test(quantity)) {
+      return { ok: false, message: `${code} quantity must be a number.`, items: [] };
+    }
+    items.push({ code, quantity, note });
+  }
+  return { ok: true, message: "", items };
+}
+
+function collectCurrentCodeState() {
+  const state = {};
+  codeList.querySelectorAll(".code-row").forEach((row) => {
+    const code = row.dataset.code;
+    state[code] = {
+      checked: row.querySelector(".code-toggle").checked,
+      quantity: row.querySelector(".code-quantity").value,
+      note: row.querySelector(".code-note").value,
+    };
+  });
+  return state;
+}
+
+function restoreCurrentCodeState(state) {
+  codeList.querySelectorAll(".code-row").forEach((row) => {
+    const prior = state[row.dataset.code];
+    if (!prior) return;
+    row.querySelector(".code-toggle").checked = prior.checked;
+    row.querySelector(".code-quantity").value = prior.quantity;
+    row.querySelector(".code-note").value = prior.note;
+  });
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+loadExtraCodes();

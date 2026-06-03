@@ -25,3 +25,24 @@ def test_annotate_pdf_adds_totals_text() -> None:
     assert "MKR Job Totals" in text
     assert "UG-56 - 170'" in text
     assert "605-3277 48Ct - 750'" in text
+
+
+def test_annotate_pdf_keeps_selected_extras_separate() -> None:
+    summary = SummaryResult(
+        model="test-model",
+        confidence=0.9,
+        job_totals=["UG-56 - 170'"],
+        extra_totals=["PC-02 - 1", "TL-06 - 1"],
+        extra_notes=["PC-02: White lining confirmed.", "TL-06: Approved HFC troubleshooting."],
+    )
+    output = annotate_pdf(SAMPLE.read_bytes(), summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        text = doc[0].get_text("text")
+    finally:
+        doc.close()
+    assert "User-selected extra totals" in text
+    assert "PC-02 - 1" in text
+    assert "TL-06 - 1" in text
+    assert "Extra notes" in text
+    assert "PC-02: White lining confirmed." in text

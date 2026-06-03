@@ -1,11 +1,17 @@
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
+from app.extra_billing_codes import (
+    extra_totals_from_selections,
+    grouped_extra_billing_codes,
+    parse_extra_billing_code_selections,
+)
+from app.models import SummaryResult
 from app.openrouter_client import OpenRouterError, summarize_with_model
 from app.pdf_annotator import annotate_pdf
 
@@ -37,10 +43,19 @@ async def favicon() -> Response:
     return Response(status_code=204)
 
 
+@app.get("/api/extra-billing-codes")
+async def extra_billing_codes() -> dict:
+    return {"categories": grouped_extra_billing_codes()}
+
+
 @app.post("/api/summarize")
-async def summarize_pdf(file: UploadFile = File(...)) -> Response:
+async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str = Form(default="[]")) -> Response:
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Upload a PDF file.")
+    try:
+        selected_extras = parse_extra_billing_code_selections(extra_billing_codes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
@@ -50,6 +65,7 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
     logger.info("upload_received filename=%s bytes=%s", file.filename, len(content))
     try:
         summary = await summarize_with_model(content, settings)
+        summary = _with_user_selected_extras(summary, selected_extras)
         output = annotate_pdf(content, summary)
     except OpenRouterError as exc:
         logger.warning("summary_failed filename=%s error=%s", file.filename, exc)
@@ -75,4 +91,16 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
             "X-Telcyte-Model": summary.model,
             "X-Telcyte-Confidence": f"{summary.confidence:.2f}",
         },
+    )
+
+
+def _with_user_selected_extras(summary: SummaryResult, selections: list) -> SummaryResult:
+    if not selections:
+        return summary
+    extra_totals, extra_notes = extra_totals_from_selections(selections)
+    return summary.model_copy(
+        update={
+            "extra_totals": [*summary.extra_totals, *extra_totals],
+            "extra_notes": [*summary.extra_notes, *extra_notes],
+        }
     )
