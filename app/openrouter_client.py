@@ -133,6 +133,17 @@ def _extract_json(text: str) -> dict:
     return json.loads(cleaned)
 
 
+def _safe_openrouter_error_body(text: str, limit: int = 500) -> str:
+    redacted = re.sub(
+        r"https://openrouter\.ai/workspaces/[^\"'\s]+/keys/[^\"'\s]+",
+        "https://openrouter.ai/workspaces/[redacted]/keys/[redacted]",
+        text,
+    )
+    redacted = re.sub(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", redacted, flags=re.I)
+    redacted = re.sub(r"\bsk-or-v1-[A-Za-z0-9_-]+", "sk-or-v1-[redacted]", redacted)
+    return redacted[:limit]
+
+
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -461,7 +472,11 @@ async def summarize_with_model(
             )
         return _parser_only_summary(parser_totals, diagnostics)
     if response.status_code >= 400:
-        logger.warning("openrouter_error status=%s body=%s", response.status_code, response.text[:500])
+        logger.warning(
+            "openrouter_error status=%s body=%s",
+            response.status_code,
+            _safe_openrouter_error_body(response.text),
+        )
         if diagnostics.review_required:
             _raise_manual_review_for_unavailable_verifier(
                 diagnostics,

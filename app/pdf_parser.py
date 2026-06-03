@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 import fitz
 
@@ -27,6 +28,7 @@ class ExtractionDiagnostics:
     unresolved_callout_count: int
     unresolved_callouts: list[str]
     unresolved_callout_details: list[dict[str, str]]
+    unresolved_callout_summary: list[dict[str, Any]]
     code_total_count: int
     material_candidate_count: int
     review_required: bool
@@ -278,6 +280,7 @@ def diagnose_extraction(
     ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
     unresolved_callouts = _unresolved_callout_lines(blocks)
     unresolved_callout_details = [_callout_detail(callout) for callout in unresolved_callouts]
+    unresolved_callout_summary = _callout_summary(unresolved_callout_details)
     unresolved_callout_count = len(unresolved_callouts)
     warnings: list[str] = []
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
@@ -321,6 +324,7 @@ def diagnose_extraction(
         unresolved_callout_count=unresolved_callout_count,
         unresolved_callouts=unresolved_callouts,
         unresolved_callout_details=unresolved_callout_details,
+        unresolved_callout_summary=unresolved_callout_summary,
         code_total_count=len(code_totals),
         material_candidate_count=len(material_candidates),
         review_required=review_required,
@@ -413,6 +417,46 @@ def _display_callout_type(value: str) -> str:
         "pull through": "Pull Through",
     }
     return display.get(normalized, value.strip())
+
+
+def _callout_summary(details: list[dict[str, str]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for detail in details:
+        callout_type = detail.get("callout_type") or "Unknown"
+        cable_count = detail.get("cable_count") or ""
+        key = (callout_type, cable_count)
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = {
+                "callout_type": callout_type,
+                "cable_count": cable_count,
+                "count": 0,
+                "total_footage": "",
+                "callouts": [],
+            }
+        grouped[key]["count"] += 1
+        grouped[key]["callouts"].append(detail.get("raw_text") or "")
+
+        footage = _footage_value(detail.get("footage") or "")
+        if footage is not None:
+            grouped[key]["_footage_total"] = grouped[key].get("_footage_total", 0.0) + footage
+
+    summaries: list[dict[str, Any]] = []
+    for key in order:
+        summary = dict(grouped[key])
+        footage_total = summary.pop("_footage_total", None)
+        if footage_total is not None:
+            summary["total_footage"] = f"{_format_number(float(footage_total))}'"
+        summaries.append(summary)
+    return summaries
+
+
+def _footage_value(value: str) -> float | None:
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*'", value)
+    if not match:
+        return None
+    return float(match.group(1))
 
 
 def build_pdf_context(

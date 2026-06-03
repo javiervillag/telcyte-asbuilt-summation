@@ -7,7 +7,12 @@ import pytest
 
 from app.config import Settings
 from app.models import SummaryResult
-from app.openrouter_client import ManualReviewRequired, _merge_parser_and_model, summarize_with_model
+from app.openrouter_client import (
+    ManualReviewRequired,
+    _merge_parser_and_model,
+    _safe_openrouter_error_body,
+    summarize_with_model,
+)
 from app.pdf_parser import diagnose_extraction, derive_code_totals, extract_text_blocks
 from app.rate_cards import total_line_key
 from tests.fixtures.expected_samples import summary_for_source
@@ -150,6 +155,22 @@ def test_model_quantity_disagreement_is_reported_without_replacing_parser_total(
     assert merged.job_totals == ["UG-56 - 170'"]
     assert "Possible extra totals were not added because the parsed PDF text did not support them." in merged.warnings
     assert any("different quantity" in warning.lower() for warning in merged.warnings)
+
+
+def test_openrouter_error_body_redacts_key_urls_and_token_shapes() -> None:
+    body = (
+        "visit https://openrouter.ai/workspaces/default/keys/abc123secret "
+        "Authorization: Bearer headersecret token sk-or-v1-secretvalue"
+    )
+
+    sanitized = _safe_openrouter_error_body(body)
+
+    assert "abc123secret" not in sanitized
+    assert "secretvalue" not in sanitized
+    assert "headersecret" not in sanitized
+    assert "https://openrouter.ai/workspaces/[redacted]/keys/[redacted]" in sanitized
+    assert "sk-or-v1-[redacted]" in sanitized
+    assert "Bearer [redacted]" in sanitized
 
 
 def test_clean_supported_pdf_can_use_parser_without_openrouter() -> None:

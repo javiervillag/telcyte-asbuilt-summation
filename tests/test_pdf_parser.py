@@ -214,6 +214,60 @@ def test_unresolved_callout_details_extract_generic_fields() -> None:
             "footage": "",
         },
     ]
+    assert diagnostics.unresolved_callout_summary == [
+        {
+            "callout_type": "Pull Through",
+            "cable_count": "48Ct",
+            "count": 1,
+            "total_footage": "",
+            "callouts": ["Pull through - 48Ct"],
+        },
+        {
+            "callout_type": "EOL",
+            "cable_count": "48Ct",
+            "count": 1,
+            "total_footage": "40'",
+            "callouts": ["#3 EOL - 48Ct - 40'"],
+        },
+        {
+            "callout_type": "Tie Point",
+            "cable_count": "",
+            "count": 1,
+            "total_footage": "",
+            "callouts": ["Tie Point - .625"],
+        },
+    ]
+
+
+def test_unresolved_callout_summary_groups_repeated_generic_callouts() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text(
+        (72, 72),
+        "EOL - 48Ct - 30' EOL - 48Ct - 40' Storage - 144Ct - 100'",
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    diagnostics = diagnose_extraction(blocks, code_totals=derive_code_totals(blocks))
+
+    assert diagnostics.unresolved_callout_summary == [
+        {
+            "callout_type": "EOL",
+            "cable_count": "48Ct",
+            "count": 2,
+            "total_footage": "70'",
+            "callouts": ["EOL - 48Ct - 30'", "EOL - 48Ct - 40'"],
+        },
+        {
+            "callout_type": "Storage",
+            "cable_count": "144Ct",
+            "count": 1,
+            "total_footage": "100'",
+            "callouts": ["Storage - 144Ct - 100'"],
+        },
+    ]
 
 
 def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:

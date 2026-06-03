@@ -283,6 +283,11 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
             "unresolved_callouts": [str(callout) for callout in body.get("unresolved_callouts") or []],
             "unresolved_callout_details": diagnostics.get("unresolved_callout_details") or [],
+            "unresolved_callout_summary": (
+                body.get("unresolved_callout_summary")
+                or diagnostics.get("unresolved_callout_summary")
+                or []
+            ),
             "verifier_model": body.get("verifier_model") or "",
             "verifier_used": bool(body.get("verifier_used")),
             "diagnostics": diagnostics,

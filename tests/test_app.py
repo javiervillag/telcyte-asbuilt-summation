@@ -107,6 +107,15 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
                 "quantity_line_count": 1,
                 "code_total_count": 1,
                 "unresolved_callout_count": 1,
+                "unresolved_callout_summary": [
+                    {
+                        "callout_type": "EOL",
+                        "cable_count": "48Ct",
+                        "count": 1,
+                        "total_footage": "66'",
+                        "callouts": ["EOL - 48Ct - 66'"],
+                    }
+                ],
                 "review_required": True,
             },
         )
@@ -123,6 +132,15 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     assert body["warnings"]
     assert body["supported_totals"] == ["UG-06 - 13"]
     assert body["unresolved_callouts"] == ["EOL - 48Ct - 66'"]
+    assert body["unresolved_callout_summary"] == [
+        {
+            "callout_type": "EOL",
+            "cable_count": "48Ct",
+            "count": 1,
+            "total_footage": "66'",
+            "callouts": ["EOL - 48Ct - 66'"],
+        }
+    ]
     assert body["verifier_model"] == "anthropic/claude-sonnet-4"
     assert body["verifier_used"] is True
     assert body["diagnostics"] == {
@@ -131,6 +149,15 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
         "quantity_line_count": 1,
         "code_total_count": 1,
         "unresolved_callout_count": 1,
+        "unresolved_callout_summary": [
+            {
+                "callout_type": "EOL",
+                "cable_count": "48Ct",
+                "count": 1,
+                "total_footage": "66'",
+                "callouts": ["EOL - 48Ct - 66'"],
+            }
+        ],
         "review_required": True,
     }
 
@@ -150,5 +177,6 @@ def test_sample_manual_review_response_includes_supported_evidence(monkeypatch: 
     assert body["diagnostics"]["review_required"] is True
     assert body["diagnostics"]["code_total_count"] == len(body["supported_totals"])
     assert body["diagnostics"]["unresolved_callout_count"] >= 1
+    assert body["unresolved_callout_summary"]
     assert body["verifier_model"]
     assert body["verifier_used"] is True

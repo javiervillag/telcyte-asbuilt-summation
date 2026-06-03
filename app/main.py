@@ -64,6 +64,7 @@ async def summarize_pdf(file: UploadFile = File(...)) -> Response:
                 "warnings": exc.warnings,
                 "supported_totals": exc.supported_totals,
                 "unresolved_callouts": exc.unresolved_callouts,
+                "unresolved_callout_summary": exc.diagnostics.get("unresolved_callout_summary") or [],
                 "verifier_model": exc.verifier_model,
                 "verifier_used": exc.verifier_used,
                 "diagnostics": exc.diagnostics,

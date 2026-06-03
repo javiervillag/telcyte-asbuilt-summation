@@ -32,16 +32,25 @@ form.addEventListener("submit", async (event) => {
       let warnings = [];
       let supportedTotals = [];
       let unresolvedCallouts = [];
+      let unresolvedCalloutSummary = [];
       try {
         const json = await response.json();
         warnings = Array.isArray(json.warnings) ? json.warnings.filter(Boolean) : [];
         supportedTotals = Array.isArray(json.supported_totals) ? json.supported_totals.filter(Boolean) : [];
         unresolvedCallouts = Array.isArray(json.unresolved_callouts) ? json.unresolved_callouts.filter(Boolean) : [];
+        unresolvedCalloutSummary = Array.isArray(json.unresolved_callout_summary)
+          ? json.unresolved_callout_summary.map(formatCalloutSummary).filter(Boolean)
+          : [];
         message = json.detail || message;
       } catch {
         // Keep default message.
       }
-      throw Object.assign(new Error(message), { warnings, supportedTotals, unresolvedCallouts });
+      throw Object.assign(new Error(message), {
+        warnings,
+        supportedTotals,
+        unresolvedCallouts,
+        unresolvedCalloutSummary,
+      });
     }
     const warnings = readWarnings(response);
     const blob = await response.blob();
@@ -61,6 +70,7 @@ form.addEventListener("submit", async (event) => {
     setStatus("Manual review", error.message, "error", {
       warnings: error.warnings || [],
       supportedTotals: error.supportedTotals || [],
+      unresolvedCalloutSummary: error.unresolvedCalloutSummary || [],
       unresolvedCallouts: error.unresolvedCallouts || [],
     });
   } finally {
@@ -92,6 +102,7 @@ function setStatus(title, message, kind, details = []) {
   statusBox.appendChild(summary);
   appendList("Warnings", groups.warnings || []);
   appendList("Supported totals found", groups.supportedTotals || []);
+  appendList("Callout groups", groups.unresolvedCalloutSummary || []);
   appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
   statusBox.className = kind ? `status ${kind}` : "status";
 }
@@ -130,4 +141,13 @@ function readWarnings(response) {
   } catch {
     return [];
   }
+}
+
+function formatCalloutSummary(summary) {
+  if (!summary || typeof summary !== "object") return "";
+  const count = Number(summary.count || 0);
+  const type = summary.callout_type || "Callout";
+  const cable = summary.cable_count ? ` - ${summary.cable_count}` : "";
+  const footage = summary.total_footage ? ` - ${summary.total_footage}` : "";
+  return `${type}${cable}: ${count}${footage}`;
 }

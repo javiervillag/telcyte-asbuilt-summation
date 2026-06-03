@@ -55,6 +55,15 @@ class _FakeManualReviewResponse:
                         "footage": "30'",
                     }
                 ],
+                "unresolved_callout_summary": [
+                    {
+                        "callout_type": "EOL",
+                        "cable_count": "48Ct",
+                        "count": 1,
+                        "total_footage": "30'",
+                        "callouts": ["EOL - 48Ct - 30'"],
+                    }
+                ],
             },
         }
 
@@ -179,6 +188,15 @@ def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> Non
             "descriptor": "48Ct - 30'",
             "cable_count": "48Ct",
             "footage": "30'",
+        }
+    ]
+    assert result["unresolved_callout_summary"] == [
+        {
+            "callout_type": "EOL",
+            "cable_count": "48Ct",
+            "count": 1,
+            "total_footage": "30'",
+            "callouts": ["EOL - 48Ct - 30'"],
         }
     ]
 
