@@ -338,10 +338,9 @@ input[type="file"] {
 .manual-extra {
   display: grid;
   gap: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8fbfc;
-  padding: 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
 }
 
 .manual-extra.is-hidden {
@@ -411,11 +410,8 @@ input[type="file"] {
 .selected-extras {
   display: grid;
   gap: 10px;
-  margin: 14px 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  padding: 12px;
+  margin: 16px 0 18px;
+  padding: 0;
 }
 
 .selected-header {
@@ -455,7 +451,8 @@ input[type="file"] {
 
 .selected-table {
   display: grid;
-  gap: 8px;
+  gap: 0;
+  border-top: 1px solid var(--line);
 }
 
 .selected-table-head,
@@ -475,10 +472,8 @@ input[type="file"] {
 }
 
 .selected-row {
-  border: 1px solid rgba(240, 90, 66, 0.32);
-  border-radius: 7px;
-  background: #fff;
-  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
   color: var(--muted);
   font-size: 13px;
 }
@@ -541,6 +536,10 @@ input[type="file"] {
 
 .selected-extras.is-empty .selected-table,
 .selected-extras.is-empty .text-button {
+  display: none;
+}
+
+.selected-extras:not(.is-empty) .selected-empty {
   display: none;
 }
 
@@ -643,9 +642,8 @@ input[type="file"] {
   display: grid;
   justify-items: center;
   gap: 12px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 8px;
-  padding: 24px 18px;
+  border-top: 1px solid var(--line);
+  padding: 18px 0 2px;
   color: var(--muted);
   font-size: 13px;
   text-align: center;
