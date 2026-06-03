@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +10,46 @@ from app.openrouter_client import ManualReviewRequired
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
+
+
+class _FakeOpenRouterResponse:
+    status_code = 200
+    text = "ok"
+
+    def json(self) -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "title": "MKR Job Totals",
+                                "job_totals": [],
+                                "materials": [],
+                                "warnings": ["Model verifier kept construction callouts in manual review."],
+                                "confidence": 0.5,
+                                "remaining_unresolved_callouts": ["EOL - 48Ct - 30'"],
+                                "resolved_callouts": [],
+                            }
+                        ),
+                    }
+                }
+            ]
+        }
+
+
+class _FakeAsyncClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers, json):
+        return _FakeOpenRouterResponse()
 
 
 def test_health_endpoint() -> None:
@@ -74,7 +115,8 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     assert body["unresolved_callouts"] == ["EOL - 48Ct - 66'"]
 
 
-def test_sample_manual_review_response_includes_supported_evidence() -> None:
+def test_sample_manual_review_response_includes_supported_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", _FakeAsyncClient)
     client = TestClient(app)
     response = client.post(
         "/api/summarize",
