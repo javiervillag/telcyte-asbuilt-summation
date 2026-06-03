@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-CODE_PATTERN = re.compile(r"\b(UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?(\d{1,3})(?!\.\d)\b", re.I)
-ZERO_PAD_EQUIVALENT_PREFIXES = {"UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"}
+KNOWN_COMPACT_PREFIXES = "UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC|SME|DP"
+CODE_TEXT_PATTERN = rf"(?:{KNOWN_COMPACT_PREFIXES})-?\d{{1,3}}|[A-Z]{{2,5}}-\d{{1,3}}"
+CODE_PATTERN = re.compile(rf"\b({CODE_TEXT_PATTERN})(?!\.\d)\b", re.I)
 CodeKey = tuple[str, str]
 TotalKey = tuple[CodeKey, str, str]
 
@@ -13,9 +14,14 @@ def code_key(code: str) -> CodeKey | None:
     match = CODE_PATTERN.search(code)
     if not match:
         return None
-    prefix = match.group(1).upper()
-    number = match.group(2)
-    if prefix in ZERO_PAD_EQUIVALENT_PREFIXES:
+    parsed = re.match(r"([A-Za-z]+)-?(\d{1,3})$", match.group(1), re.I)
+    if not parsed:
+        return None
+    prefix = parsed.group(1).upper()
+    if prefix == "ELI":
+        return None
+    number = parsed.group(2)
+    if prefix != "COMP":
         number = str(int(number))
     return (prefix, number)
 
@@ -28,7 +34,7 @@ def extract_codes_from_text(text: str) -> list[str]:
         key = code_key(raw)
         if key and key not in seen:
             seen.add(key)
-            codes.append(_format_code(match.group(1), match.group(2), raw))
+            codes.append(_format_code(key, raw))
     return codes
 
 
@@ -102,10 +108,11 @@ def _codes_from_path(path: Path) -> list[str]:
     return extract_codes_from_text(path.read_text(errors="ignore"))
 
 
-def _format_code(prefix: str, number: str, raw: str) -> str:
+def _format_code(key: CodeKey, raw: str) -> str:
     raw = raw.strip()
     if "-" in raw:
         return raw
+    prefix, number = key
     return f"{prefix}-{number}"
 
 

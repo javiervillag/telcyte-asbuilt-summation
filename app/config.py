@@ -12,13 +12,13 @@ class Settings(BaseSettings):
 
     openrouter_api_key: Optional[str] = Field(default=None, alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
-        default="anthropic/claude-sonnet-4",
+        default="anthropic/claude-sonnet-4.6",
         alias="OPENROUTER_MODEL",
     )
     openrouter_model_candidates: str = Field(
         default=(
-            "anthropic/claude-sonnet-4,"
-            "openai/gpt-4.1"
+            "anthropic/claude-sonnet-4.6,"
+            "anthropic/claude-sonnet-4"
         ),
         alias="OPENROUTER_MODEL_CANDIDATES",
     )
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     include_page_images: bool = Field(default=False, alias="INCLUDE_PAGE_IMAGES")
     include_materials: bool = Field(default=False, alias="INCLUDE_MATERIALS")
     allow_llm_inferred_totals: bool = Field(default=False, alias="ALLOW_LLM_INFERRED_TOTALS")
+    enable_model_review_on_warnings: bool = Field(default=True, alias="ENABLE_MODEL_REVIEW_ON_WARNINGS")
     rate_card_codes: str = Field(default="", alias="RATE_CARD_CODES")
     rate_card_paths: str = Field(default="", alias="RATE_CARD_PATHS")
 

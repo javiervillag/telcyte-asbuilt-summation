@@ -8,8 +8,18 @@ def test_code_key_treats_zero_padded_variants_as_same_code() -> None:
 
 
 def test_code_key_treats_two_digit_variants_as_same_for_supported_prefixes() -> None:
-    for prefix in ["UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC"]:
+    for prefix in ["UG", "CD", "MDU", "FB", "FX", "PC", "TL", "CX", "PT", "SMC", "SME", "DP"]:
         assert code_key(f"{prefix}-7") == code_key(f"{prefix}-07")
+
+
+def test_hyphenated_future_code_prefixes_are_detected_generically() -> None:
+    assert code_key("DP-11") == ("DP", "11")
+    assert code_key("SME-1") == ("SME", "1")
+    assert extract_codes_from_text("DP-11 - 156' SME-01 - 1 ZZ-7 - 2") == ["DP-11", "SME-01", "ZZ-7"]
+
+
+def test_unhyphenated_unknown_words_are_not_codes() -> None:
+    assert extract_codes_from_text("MCA_RateCard_AM2 CX-05") == ["CX-05"]
 
 
 def test_composite_codes_do_not_gain_zero_padding_equivalence() -> None:

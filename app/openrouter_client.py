@@ -44,29 +44,54 @@ class ModelAttempt:
     error: str | None = None
 
 
-SYSTEM_PROMPT = """You are helping Telcyte review parsed as-built construction drawings.
-Use the parsed PDF text layer, positioned blocks, and deterministic aggregate candidates to review the MKR Job Totals box.
-Return only JSON. Do not invent unreadable or uncertain details.
-Use concise construction quantity lines like "UG-56 - 168'".
-If a value is unclear, omit it or put a short warning in warnings."""
+SYSTEM_PROMPT = """You are Telcyte's evidence-first as-built billing review assistant.
+
+<role>
+Review extracted PDF text, positioned annotation blocks, deterministic parser totals, and suspicious quantity lines for MKR Job Totals.
+</role>
+
+<rules>
+- Return only valid JSON matching the requested schema.
+- Treat the extracted PDF context as evidence. Do not invent totals, quantities, materials, or implied business-rule codes.
+- Prefer parser totals when the positioned text supports them.
+- Add or correct a visible billing-code total only when the code and quantity are both present in extracted evidence.
+- Surface uncertainty as warnings instead of silently guessing.
+- Unknown or new billing-code prefixes may be valid if the label is visible, for example "DP-11 - 156'" or "SME-01 - 1".
+- Do not auto-add implied extras such as PC-02 unless visible evidence contains that code and quantity.
+</rules>
+
+<format>
+Use concise construction lines like "UG-56 - 168'".
+</format>"""
 
 
-USER_PROMPT = """Analyze this parsed as-built PDF context and produce the green-box contents.
-Expected JSON shape:
+USER_PROMPT = """Analyze the parsed as-built PDF context.
+
+<task>
+Produce the MKR Job Totals review using only supported evidence. Compare deterministic totals against positioned text blocks and likely quantity lines. Look for missed visible billing-code labels, including combined labels in one box and labels with nearby descriptive words such as Asphalt or Concrete.
+</task>
+
+<json_schema>
 {
   "title": "MKR Job Totals",
   "job_totals": ["CODE - quantity", "..."],
   "materials": ["material - quantity", "..."],
-  "warnings": ["short warning if needed"],
+  "warnings": ["short warning if something needs human review"],
   "confidence": 0.0
 }
-Prefer the deterministic code totals when they are supported by the positioned text blocks.
-Focus on billing-code totals visible or inferable from drawing labels, callouts, notes, and quantity markings.
-Materials are phase-two unless the request explicitly enables them.
-Never add a detail unless the parsed PDF context supports it.
+</json_schema>
 
-Parsed context:
-{context}"""
+<decision_rules>
+- Include high-confidence visible billing-code totals.
+- If parser and evidence disagree, include the evidence-supported total and add a warning.
+- If a possible code is visible but the quantity is unclear, omit it from job_totals and add a warning.
+- Materials are phase-two unless explicitly enabled in context.
+- Keep warnings short and actionable.
+</decision_rules>
+
+<parsed_context>
+{context}
+</parsed_context>"""
 
 
 def render_pdf_images(pdf_bytes: bytes, max_pages: int = 2) -> list[str]:
@@ -121,7 +146,7 @@ def _merge_parser_and_model(
     settings: Settings,
 ) -> SummaryResult:
     totals = list(parser_totals)
-    omitted_model_totals = 0
+    omitted_model_lines: list[str] = []
     if settings.allow_llm_inferred_totals:
         seen = {_line_code_key(line) for line in totals}
         for line in model_summary.job_totals:
@@ -131,16 +156,19 @@ def _merge_parser_and_model(
                 seen.add(key)
     else:
         parser_keys = {_line_code_key(line) for line in totals}
-        omitted_model_totals = sum(
-            1
+        omitted_model_lines = [
+            line
             for line in model_summary.job_totals
             if (_line_code_key(line) not in parser_keys)
-        )
+        ]
 
     warnings = list(model_summary.warnings)
-    if omitted_model_totals:
+    if omitted_model_lines:
+        preview = "; ".join(omitted_model_lines[:6])
+        if len(omitted_model_lines) > 6:
+            preview += f"; plus {len(omitted_model_lines) - 6} more"
         warnings.append(
-            "Possible extra totals were not added because the parsed PDF text did not support them."
+            f"Model review suggested possible extra totals not auto-added without parser support: {preview}."
         )
 
     return SummaryResult(
@@ -164,7 +192,9 @@ async def summarize_with_model(
     blocks = extract_text_blocks(pdf_bytes)
     parser_totals = derive_code_totals(blocks, code_catalog=code_catalog)
     diagnostics = diagnose_extraction(blocks, parser_totals)
-    if diagnostics.review_required:
+    if diagnostics.review_required and (
+        not settings.enable_model_review_on_warnings or not settings.openrouter_api_key
+    ):
         raise ManualReviewRequired(
             diagnostics.warnings,
             supported_totals=parser_totals,
@@ -207,17 +237,30 @@ async def summarize_with_model(
         "max_tokens": 2200,
         "response_format": {"type": "json_object"},
     }
+    if "4.6" in selected_model:
+        payload["reasoning"] = {"enabled": True}
+        payload["verbosity"] = "max"
 
     logger.info("requesting_summary model=%s image_pages=%s parsed_chars=%s", selected_model, image_count, len(parsed_context))
-    async with httpx.AsyncClient(timeout=settings.openrouter_timeout_seconds) as client:
-        response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-    if response.status_code >= 400:
-        logger.warning("openrouter_error status=%s body=%s", response.status_code, response.text[:500])
-        raise OpenRouterError(f"OpenRouter returned {response.status_code}.")
+    try:
+        async with httpx.AsyncClient(timeout=settings.openrouter_timeout_seconds) as client:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        if response.status_code >= 400:
+            logger.warning("openrouter_error status=%s body=%s", response.status_code, response.text[:500])
+            raise OpenRouterError(f"OpenRouter returned {response.status_code}.")
 
-    data = response.json()
-    text = data["choices"][0]["message"]["content"]
-    model_summary = _normalize_summary(_extract_json(text), selected_model)
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        model_summary = _normalize_summary(_extract_json(text), selected_model)
+    except Exception as exc:
+        if diagnostics.review_required:
+            logger.warning("model_review_failed_using_parser_review model=%s error=%s", selected_model, exc)
+            raise ManualReviewRequired(
+                diagnostics.warnings,
+                supported_totals=parser_totals,
+                unresolved_callouts=diagnostics.unresolved_callouts,
+            ) from exc
+        raise
     summary = _merge_parser_and_model(parser_totals, model_summary, settings)
     for warning in diagnostics.warnings:
         if warning not in summary.warnings:

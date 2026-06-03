@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import fitz
 
-from app.rate_cards import CODE_PATTERN, CodeKey, code_key
+from app.rate_cards import CODE_PATTERN, CODE_TEXT_PATTERN, CodeKey, code_key
 
 
 @dataclass(frozen=True)
@@ -142,11 +142,11 @@ def derive_code_totals(
     code_catalog: dict[CodeKey, str] | None = None,
 ) -> list[str]:
     direct_pattern = re.compile(
-        r"\b((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
+        rf"\b({CODE_TEXT_PATTERN})\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        r"\b([0-9]+(?:\.[0-9]+)?)\s*x\s*((?:UG|CD|MDU|COMP|Comp|FB|FX|PC|TL|CX|PT|SMC)-?\d+)\b",
+        rf"\b([0-9]+(?:\.[0-9]+)?)\s*x\s*({CODE_TEXT_PATTERN})\b",
         re.I,
     )
     catalog = code_catalog or {}
@@ -217,7 +217,7 @@ def _is_non_billing_context(line: str, match_start: int) -> bool:
     full = line.lower()
     if "bore@" in full or "trench@" in full:
         return True
-    if re.search(r"\b(?:dirt|concrete|asphalt|pwr|wtr|swr|irr|cox|stl)\s*-\s*$", prefix):
+    if re.search(r"\b(?:dirt|pwr|wtr|swr|irr|cox|stl)\s*-\s*$", prefix):
         return True
     return False
 
@@ -306,11 +306,11 @@ def diagnose_extraction(
 
 def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     total_pattern = re.compile(
-        r"\b(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\b",
+        rf"\b(?:{CODE_TEXT_PATTERN})\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\b",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        r"\b[0-9]+(?:\.[0-9]+)?\s*x\s*(?:UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC)-?\d+\b",
+        rf"\b[0-9]+(?:\.[0-9]+)?\s*x\s*(?:{CODE_TEXT_PATTERN})\b",
         re.I,
     )
     count = 0

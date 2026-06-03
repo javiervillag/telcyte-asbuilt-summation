@@ -117,6 +117,33 @@ def test_derive_code_totals_ignores_bore_context_notes() -> None:
     assert "UG-06 - 13" in totals
 
 
+def test_derive_code_totals_reads_future_code_prefixes_and_surface_labels() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "SME-1 - 1")
+    page.insert_text((72, 96), "DP-11 - 156'")
+    page.insert_text((72, 120), "Asphalt - UG-06 - 2")
+    page.insert_text((72, 144), "Concrete - UG-06 - 2")
+    page.insert_text((72, 168), "UG-85 - 1 - UG-06 - 1")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+
+    assert totals == ["SME-01 - 1", "DP-11 - 156'", "UG-06 - 5", "UG-85 - 1"]
+
+
+def test_derive_code_totals_still_ignores_dirt_utility_context_notes() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Dirt - UG-6 - 1")
+    page.insert_text((72, 96), "UG-06 - 2")
+    content = doc.tobytes()
+    doc.close()
+
+    assert derive_code_totals(extract_text_blocks(content)) == ["UG-06 - 2"]
+
+
 def test_diagnose_extraction_requires_review_for_blank_pdf() -> None:
     doc = fitz.open()
     doc.new_page(width=612, height=792)
