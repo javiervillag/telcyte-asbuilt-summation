@@ -15,7 +15,7 @@ from PIL import Image
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
-from app.rate_cards import load_code_catalog, total_line_key
+from app.rate_cards import CodeKey, TotalKey, load_code_catalog, total_line_key
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,7 @@ def _merge_parser_and_model(
     parser_total_codes = {key[0] for key in parser_total_keys}
     model_total_keys = [(line, key) for line in model_summary.job_totals if (key := total_line_key(line))]
     malformed_model_totals = len(model_summary.job_totals) - len(model_total_keys)
+    conflicting_model_codes = _conflicting_model_total_codes(model_total_keys)
     model_disagreed_total_count = sum(
         1
         for _, model_key in model_total_keys
@@ -215,6 +216,8 @@ def _merge_parser_and_model(
         seen = {key[0] for key in parser_total_keys}
         for line, model_key in model_total_keys:
             key = model_key[0]
+            if key in conflicting_model_codes:
+                continue
             if key and key not in seen:
                 totals.append(line)
                 seen.add(key)
@@ -229,6 +232,10 @@ def _merge_parser_and_model(
     warnings = list(model_summary.warnings)
     if malformed_model_totals:
         warnings.append("Verifier returned lines that were not valid billing totals; they were ignored.")
+    if conflicting_model_codes:
+        warnings.append(
+            "Verifier returned conflicting quantities for the same billing code; those model totals were ignored."
+        )
     if omitted_model_totals:
         warnings.append(
             "Possible extra totals were not added because the parsed PDF text did not support them."
@@ -246,6 +253,13 @@ def _merge_parser_and_model(
         confidence=model_summary.confidence,
         model=f"parser+{model_summary.model}" if totals else model_summary.model,
     )
+
+
+def _conflicting_model_total_codes(model_total_keys: list[tuple[str, TotalKey]]) -> set[CodeKey]:
+    totals_by_code: dict[CodeKey, set[TotalKey]] = {}
+    for _, key in model_total_keys:
+        totals_by_code.setdefault(key[0], set()).add(key)
+    return {code for code, totals in totals_by_code.items() if len(totals) > 1}
 
 
 def _requires_manual_review_before_model(diagnostics) -> bool:
