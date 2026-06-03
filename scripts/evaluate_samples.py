@@ -240,6 +240,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "response_json": str(response_path),
             "detail": str(body.get("detail") or "")[:300],
             "warning_count": len(body.get("warnings") or []),
+            "warnings": [str(warning) for warning in body.get("warnings") or []],
             "supported_total_count": len(body.get("supported_totals") or []),
             "unresolved_callout_count": len(body.get("unresolved_callouts") or []),
             "verifier_model": body.get("verifier_model") or "",

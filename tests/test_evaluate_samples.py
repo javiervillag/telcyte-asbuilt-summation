@@ -26,6 +26,32 @@ class _FakeHealthClient:
         return _FakeHealthResponse()
 
 
+class _FakeManualReviewResponse:
+    status_code = 422
+    headers = {"content-type": "application/json"}
+    text = ""
+
+    def json(self) -> dict:
+        return {
+            "detail": "Manual review required.",
+            "warnings": [
+                "OpenRouter verifier reviewed unresolved callouts but could not clear them from parsed evidence.",
+                "Manual review is required; the app did not add unsupported totals.",
+            ],
+            "supported_totals": ["UG-56 - 170'"],
+            "unresolved_callouts": ["EOL - 48Ct - 30'"],
+            "verifier_model": "anthropic/claude-sonnet-4",
+            "verifier_used": True,
+            "diagnostics": {"review_required": True, "code_total_count": 1},
+        }
+
+
+class _FakeManualReviewClient:
+    def post(self, path: str, files: dict):
+        assert path == "/api/summarize"
+        return _FakeManualReviewResponse()
+
+
 def _text_pdf(path: Path, lines: list[str]) -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
@@ -90,6 +116,22 @@ def test_health_status_records_endpoint_health() -> None:
         "status_code": 200,
         "body": {"ok": True, "model": "anthropic/claude-sonnet-4"},
     }
+
+
+def test_evaluate_pair_records_manual_review_warning_text(tmp_path: Path) -> None:
+    before = tmp_path / "sample-Totals Removed.pdf"
+    after = tmp_path / "sample.pdf"
+    _text_pdf(before, ["Existing note", "UG-56 - 170'"])
+    _text_pdf(after, ["Existing note", "UG-56 - 170'", "MKR Job Totals", "UG-56 - 170'"])
+
+    result = evaluate_samples.evaluate_pair(_FakeManualReviewClient(), before, after, tmp_path / "out")
+
+    assert result["result"] == "manual_review"
+    assert result["warning_count"] == 2
+    assert result["warnings"] == [
+        "OpenRouter verifier reviewed unresolved callouts but could not clear them from parsed evidence.",
+        "Manual review is required; the app did not add unsupported totals.",
+    ]
 
 
 def test_find_pairs_matches_totals_removed_to_team_output(tmp_path: Path) -> None:
