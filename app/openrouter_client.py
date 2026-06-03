@@ -344,9 +344,29 @@ def _review_prompt_context(
         "Unresolved construction callouts needing verifier review:",
         *(diagnostics.unresolved_callouts or ["None"]),
         "",
+        "Unresolved callout groups from deterministic parser diagnostics:",
+        *_callout_summary_lines(diagnostics.unresolved_callout_summary),
+        "",
         parsed_context,
     ]
     return "\n".join(context_parts)
+
+
+def _callout_summary_lines(callout_summary: list[dict[str, Any]]) -> list[str]:
+    if not callout_summary:
+        return ["None"]
+    lines: list[str] = []
+    for item in callout_summary:
+        callout_type = str(item.get("callout_type") or "Unknown")
+        cable_count = str(item.get("cable_count") or "unspecified")
+        count = int(item.get("count") or 0)
+        total_footage = str(item.get("total_footage") or "unknown")
+        callouts = "; ".join(str(callout) for callout in item.get("callouts") or [] if str(callout).strip())
+        line = f"{callout_type} | {cable_count} | count={count} | total_footage={total_footage}"
+        if callouts:
+            line += f" | callouts={callouts}"
+        lines.append(line)
+    return lines
 
 
 def _manual_review_warnings(
