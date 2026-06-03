@@ -9,7 +9,9 @@ const codeSearch = document.querySelector("#code-search");
 const selectedCount = document.querySelector("#selected-count");
 const categoryTabs = document.querySelector("#category-tabs");
 const toggleAll = document.querySelector("#toggle-all");
+const toggleManual = document.querySelector("#toggle-manual");
 const processingOverlay = document.querySelector("#processing-overlay");
+const manualExtra = document.querySelector("#manual-extra");
 const manualCode = document.querySelector("#manual-code");
 const manualQuantity = document.querySelector("#manual-quantity");
 const manualNote = document.querySelector("#manual-note");
@@ -23,9 +25,11 @@ let extraCodeCategories = [];
 let activeCategory = "All";
 let codeState = {};
 let showAllCodes = false;
+let showManualEntry = false;
 let manualExtras = [];
 
 hideResult();
+updateManualControls();
 
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
@@ -51,6 +55,14 @@ toggleAll.addEventListener("click", () => {
   }
   updateCatalogControls();
   renderExtraCodes();
+});
+
+toggleManual.addEventListener("click", () => {
+  showManualEntry = !showManualEntry;
+  updateManualControls();
+  if (showManualEntry) {
+    manualCode.focus();
+  }
 });
 
 manualAdd.addEventListener("click", () => {
@@ -440,6 +452,16 @@ function updateCatalogControls() {
   toggleAll.textContent = showAllCodes ? "Hide full catalog" : "Show all codes";
   categoryTabs.classList.toggle("is-hidden", !showAllCodes);
   renderCategoryTabs();
+}
+
+function updateManualControls() {
+  manualExtra.classList.toggle("is-hidden", !showManualEntry);
+  toggleManual.textContent = showManualEntry ? "Hide manual" : "Manual code";
+  toggleManual.classList.toggle("active", showManualEntry);
+  toggleManual.setAttribute("aria-expanded", showManualEntry ? "true" : "false");
+  if (!showManualEntry) {
+    setManualMessage("", "");
+  }
 }
 
 function _categoryHasSelectedCode(category) {

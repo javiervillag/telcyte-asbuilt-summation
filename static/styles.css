@@ -256,7 +256,7 @@ input[type="file"] {
 
 .extras-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 12px;
   padding: 16px 0;
   align-items: center;
@@ -328,7 +328,8 @@ input[type="file"] {
 }
 
 .ghost-button:hover,
-.show-all-inline:hover {
+.show-all-inline:hover,
+.ghost-button.active {
   border-color: rgba(240, 90, 66, 0.5);
   color: var(--accent-dark);
   background: #fff3ef;
@@ -341,6 +342,10 @@ input[type="file"] {
   border-radius: 8px;
   background: #f8fbfc;
   padding: 12px;
+}
+
+.manual-extra.is-hidden {
+  display: none;
 }
 
 .manual-extra-copy {
