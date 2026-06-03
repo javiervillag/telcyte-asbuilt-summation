@@ -15,7 +15,7 @@ from PIL import Image
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
-from app.rate_cards import CodeKey, code_key, load_code_catalog
+from app.rate_cards import CodeKey, code_key, load_code_catalog, total_line_key
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,17 @@ def _merge_parser_and_model(
 ) -> SummaryResult:
     totals = list(parser_totals)
     omitted_model_totals = 0
+    parser_total_keys = {key for line in parser_totals if (key := total_line_key(line))}
+    parser_total_codes = {key[0] for key in parser_total_keys}
+    model_disagreed_total_count = sum(
+        1
+        for line in model_summary.job_totals
+        if (
+            (model_key := total_line_key(line))
+            and model_key[0] in parser_total_codes
+            and model_key not in parser_total_keys
+        )
+    )
     if settings.allow_llm_inferred_totals:
         seen = {_line_code_key(line) for line in totals}
         for line in model_summary.job_totals:
@@ -198,6 +209,10 @@ def _merge_parser_and_model(
     if omitted_model_totals:
         warnings.append(
             "Possible extra totals were not added because the parsed PDF text did not support them."
+        )
+    if model_disagreed_total_count:
+        warnings.append(
+            "Verifier returned a different quantity for a parser-supported code; the parser total was kept."
         )
 
     return SummaryResult(

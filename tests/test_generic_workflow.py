@@ -6,7 +6,8 @@ import fitz
 import pytest
 
 from app.config import Settings
-from app.openrouter_client import ManualReviewRequired, summarize_with_model
+from app.models import SummaryResult
+from app.openrouter_client import ManualReviewRequired, _merge_parser_and_model, summarize_with_model
 from app.pdf_parser import diagnose_extraction, derive_code_totals, extract_text_blocks
 from app.rate_cards import total_line_key
 from tests.fixtures.expected_samples import summary_for_source
@@ -106,6 +107,23 @@ def test_samples_are_regression_inputs_not_filename_answers(sample_name: str) ->
     assert missing_expected_totals
     assert diagnostics.review_required is True
     assert diagnostics.unresolved_callout_count or diagnostics.ambiguous_code_line_count
+
+
+def test_model_quantity_disagreement_is_reported_without_replacing_parser_total() -> None:
+    settings = Settings(OPENROUTER_API_KEY="test-key")
+    model_summary = SummaryResult(
+        model=settings.openrouter_model,
+        job_totals=["UG-56 - 200'", "PC-01 - 1"],
+        materials=[],
+        warnings=[],
+        confidence=0.88,
+    )
+
+    merged = _merge_parser_and_model(["UG-56 - 170'"], model_summary, settings)
+
+    assert merged.job_totals == ["UG-56 - 170'"]
+    assert "Possible extra totals were not added because the parsed PDF text did not support them." in merged.warnings
+    assert any("different quantity" in warning.lower() for warning in merged.warnings)
 
 
 def test_known_sample_requires_manual_review_without_page_image_verification(monkeypatch: pytest.MonkeyPatch) -> None:
