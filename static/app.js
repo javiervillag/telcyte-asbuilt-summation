@@ -300,7 +300,7 @@ function renderExtraCodes() {
     .map((category) => {
       const codes = (category.codes || []).filter((item) => {
         const haystack = `${item.code} ${item.name} ${item.description} ${item.when_to_consider}`.toLowerCase();
-        if (codeState[item.code]?.checked) return true;
+        if (codeState[item.code]?.checked) return false;
         if (filter) return haystack.includes(filter);
         return showAllCodes;
       });
