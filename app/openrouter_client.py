@@ -261,15 +261,13 @@ def _resolved_callout_has_grounded_evidence(
     callout_key = _norm_evidence_text(callout)
     if not evidence_key.replace(callout_key, "").strip():
         return False
+    parser_total_keys = [_norm_evidence_text(total) for total in parser_totals]
+    if any(evidence_key == total_key for total_key in parser_total_keys):
+        return False
     context_key = _norm_evidence_text(parsed_context)
     if evidence_key in context_key:
         return True
-    return any(
-        (total_key := _norm_evidence_text(total))
-        and total_key in evidence_key
-        and total_key in context_key
-        for total in parser_totals
-    )
+    return False
 
 
 def _remaining_callouts_after_model_review(

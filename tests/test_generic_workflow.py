@@ -259,6 +259,41 @@ def test_openrouter_cannot_clear_unresolved_callout_with_ungrounded_evidence(
     assert any("not found in parsed PDF evidence" in warning for warning in exc.value.warnings)
 
 
+def test_openrouter_cannot_clear_unresolved_callout_with_only_parser_total_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.status_code = 200
+    _FakeAsyncClient.payload = {
+        "title": "MKR Job Totals",
+        "job_totals": ["UG-06 - 13"],
+        "materials": [],
+        "warnings": ["Model claimed a supported total covered the EOL callout."],
+        "confidence": 0.88,
+        "remaining_unresolved_callouts": [],
+        "resolved_callouts": [
+            {
+                "callout": "EOL - 48Ct - 66'",
+                "resolution": "UG-06 covers the EOL work.",
+                "evidence": "UG-06 - 13",
+            }
+        ],
+    }
+    monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", _FakeAsyncClient)
+    settings = Settings(
+        OPENROUTER_API_KEY="test-key",
+        INCLUDE_PAGE_IMAGES=False,
+    )
+
+    with pytest.raises(ManualReviewRequired) as exc:
+        asyncio.run(summarize_with_model(_reviewable_unresolved_pdf(), settings))
+
+    assert _FakeAsyncClient.calls
+    assert exc.value.supported_totals == ["UG-06 - 13"]
+    assert exc.value.unresolved_callouts == ["EOL - 48Ct - 66'"]
+    assert any("not found in parsed PDF evidence" in warning for warning in exc.value.warnings)
+
+
 def test_openrouter_error_falls_back_to_manual_review_for_unresolved_callouts(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeAsyncClient.calls = []
     _FakeAsyncClient.status_code = 401
