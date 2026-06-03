@@ -246,7 +246,7 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     async def fake_summarize(content, settings, source_name=None):
         raise ManualReviewRequired(
             ["This PDF does not have enough readable text for automatic summation."],
-            supported_totals=["UG-06 - 13"],
+            supported_totals=[],
             unresolved_callouts=["EOL - 48Ct - 66'"],
         )
 
@@ -260,16 +260,52 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     body = response.json()
     assert "manual review" in body["detail"].lower()
     assert body["warnings"]
-    assert body["supported_totals"] == ["UG-06 - 13"]
+    assert body["supported_totals"] == []
     assert body["unresolved_callouts"] == ["EOL - 48Ct - 66'"]
     assert body["result_summary"]["output_name"] == ""
-    assert body["result_summary"]["detected_totals"] == ["UG-06 - 13"]
+    assert body["result_summary"]["detected_totals"] == []
     assert body["result_summary"]["extra_billing_codes"] == []
     assert body["result_summary"]["result_lines"] == [
         "MKR Job Totals",
-        "UG-06 - 13",
         "Review",
         "This PDF does not have enough readable text for automatic summation.",
+    ]
+
+
+def test_manual_review_with_supported_totals_returns_review_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, SummaryResult] = {}
+
+    async def fake_summarize(content, settings, source_name=None):
+        raise ManualReviewRequired(
+            ["Unresolved callouts require review."],
+            supported_totals=["UG-06 - 13"],
+            unresolved_callouts=["EOL - 48Ct - 66'"],
+        )
+
+    def fake_annotate(content, summary, source_name=None):
+        captured["summary"] = summary
+        return b"%PDF-1.4 fake"
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", fake_annotate)
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("review.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert captured["summary"].job_totals == ["UG-06 - 13"]
+    assert captured["summary"].warnings == ["Unresolved callouts require review."]
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert result_summary["output_name"] == "review-telcyte-summary.pdf"
+    assert result_summary["detected_totals"] == ["UG-06 - 13"]
+    assert result_summary["result_lines"] == [
+        "MKR Job Totals",
+        "UG-06 - 13",
+        "Review",
+        "Unresolved callouts require review.",
     ]
 
 
@@ -280,7 +316,7 @@ def test_sample_manual_review_response_includes_supported_evidence() -> None:
         files={"file": (SAMPLE.name, SAMPLE.read_bytes(), "application/pdf")},
     )
 
-    body = response.json()
-    assert response.status_code == 422
-    assert "UG-56 - 170'" in body["supported_totals"]
-    assert "EOL - 48Ct - 30'" in body["unresolved_callouts"]
+    assert response.status_code == 200
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert "UG-56 - 170'" in result_summary["detected_totals"]
+    assert any("EOL - 48Ct - 30'" in line for line in result_summary["result_lines"])

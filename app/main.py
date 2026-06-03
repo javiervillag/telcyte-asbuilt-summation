@@ -98,23 +98,42 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     },
                 )
         else:
-            review_summary = SummaryResult(
+            if not exc.supported_totals:
+                review_summary = SummaryResult(
+                    title="MKR Job Totals",
+                    job_totals=[],
+                    warnings=exc.warnings,
+                    confidence=0.0,
+                    model=f"parser+{settings.openrouter_model}",
+                )
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "detail": "This PDF needs manual review because the parsed evidence did not fully support automatic totals.",
+                        "warnings": exc.warnings,
+                        "supported_totals": exc.supported_totals,
+                        "unresolved_callouts": exc.unresolved_callouts,
+                        "result_summary": _result_summary_payload(review_summary, None),
+                    },
+                )
+            summary = SummaryResult(
                 title="MKR Job Totals",
                 job_totals=exc.supported_totals,
                 warnings=exc.warnings,
                 confidence=0.0,
                 model=f"parser+{settings.openrouter_model}",
             )
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "detail": "This PDF needs manual review because the parsed evidence did not fully support automatic totals.",
-                    "warnings": exc.warnings,
-                    "supported_totals": exc.supported_totals,
-                    "unresolved_callouts": exc.unresolved_callouts,
-                    "result_summary": _result_summary_payload(review_summary, None),
-                },
-            )
+            try:
+                output = annotate_pdf(content, summary, source_name=file.filename)
+            except PlacementReviewRequired as placement_exc:
+                logger.warning("placement_review_required filename=%s error=%s", file.filename, placement_exc)
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "detail": "This PDF needs manual review because there is no clear open area for the summary box.",
+                        "warnings": ["The app could not place the summary box without risking existing annotations."],
+                    },
+                )
     except PlacementReviewRequired as exc:
         logger.warning("placement_review_required filename=%s error=%s", file.filename, exc)
         return JSONResponse(
