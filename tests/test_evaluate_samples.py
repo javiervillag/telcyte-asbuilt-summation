@@ -13,6 +13,19 @@ assert spec and spec.loader
 spec.loader.exec_module(evaluate_samples)
 
 
+class _FakeHealthResponse:
+    status_code = 200
+
+    def json(self) -> dict:
+        return {"ok": True, "model": "anthropic/claude-sonnet-4"}
+
+
+class _FakeHealthClient:
+    def get(self, path: str):
+        assert path == "/health"
+        return _FakeHealthResponse()
+
+
 def _text_pdf(path: Path, lines: list[str]) -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
@@ -67,6 +80,16 @@ def test_missing_total_evidence_ignores_tiny_unitless_quantities() -> None:
     )
 
     assert all(item["quantity_present"] is False for item in evidence)
+
+
+def test_health_status_records_endpoint_health() -> None:
+    status = evaluate_samples.health_status(_FakeHealthClient())
+
+    assert status == {
+        "ok": True,
+        "status_code": 200,
+        "body": {"ok": True, "model": "anthropic/claude-sonnet-4"},
+    }
 
 
 def test_find_pairs_matches_totals_removed_to_team_output(tmp_path: Path) -> None:

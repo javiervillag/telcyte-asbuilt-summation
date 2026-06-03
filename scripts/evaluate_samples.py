@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import fitz
+import httpx
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -165,7 +166,26 @@ def find_pairs(folder: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-def evaluate_pair(client: TestClient, before: Path, team_output: Path, out_dir: Path) -> dict[str, Any]:
+def health_status(client: Any) -> dict[str, Any]:
+    try:
+        response = client.get("/health")
+        try:
+            body = response.json()
+        except Exception:
+            body = {"text": response.text[:1000]}
+        return {
+            "ok": response.status_code < 400,
+            "status_code": response.status_code,
+            "body": body,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc)[:500],
+        }
+
+
+def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -> dict[str, Any]:
     before_text = pdf_text(before)
     team_text = pdf_text(team_output)
     team_added = added_text(before_text, team_text)
@@ -247,6 +267,12 @@ def main() -> None:
         default="/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation",
     )
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--base-url",
+        default="",
+        help="Optional deployed app base URL. When omitted, the local FastAPI app is used through TestClient.",
+    )
+    parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
 
     sample_dir = Path(args.samples)
@@ -258,12 +284,21 @@ def main() -> None:
     if not pairs:
         raise SystemExit(f"No sample pairs found in {sample_dir}")
 
-    client = TestClient(app)
-    report = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "workflow": "FastAPI TestClient POST /api/summarize, then deterministic PDF text extraction comparison",
-        "samples": [evaluate_pair(client, before, team_output, out_dir) for before, team_output in pairs],
-    }
+    base_url = args.base_url.rstrip("/")
+    if base_url:
+        client_context = httpx.Client(base_url=base_url, timeout=args.timeout)
+        workflow = f"HTTP POST {base_url}/api/summarize, then deterministic PDF text extraction comparison"
+    else:
+        client_context = TestClient(app)
+        workflow = "FastAPI TestClient POST /api/summarize, then deterministic PDF text extraction comparison"
+
+    with client_context as client:
+        report = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "workflow": workflow,
+            "endpoint_health": health_status(client),
+            "samples": [evaluate_pair(client, before, team_output, out_dir) for before, team_output in pairs],
+        }
     report_path = out_dir / "endpoint-validation.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(f"Wrote {report_path}")
