@@ -751,6 +751,27 @@ input[type="file"] {
   white-space: pre-wrap;
 }
 
+.status-actions {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.start-over-button {
+  min-height: 42px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--navy);
+  color: #fff;
+  cursor: pointer;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.start-over-button:hover {
+  background: var(--navy-soft);
+}
+
 .status-group strong {
   display: block;
   color: var(--ink);

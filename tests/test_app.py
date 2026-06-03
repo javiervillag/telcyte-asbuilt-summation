@@ -138,6 +138,8 @@ def test_summarize_endpoint_adds_selected_extras_separately(monkeypatch: pytest.
         "UG-56 - 170'",
         "User-selected extra totals",
         "PC-02 - 1",
+        "Extra notes",
+        "PC-02: White lining confirmed by field note.",
     ]
     assert captured["summary"].display_lines() == [
         "MKR Job Totals",
@@ -179,6 +181,19 @@ def test_selected_extras_allow_supported_totals_pdf_after_manual_review(monkeypa
     assert captured["summary"].extra_totals == ["FB-04 - 6"]
     assert captured["summary"].extra_notes == ["FB-04: Confirmed 48-count splice group."]
     assert captured["summary"].warnings == ["Unresolved callouts remain."]
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert result_summary["detected_totals"] == ["UG-56 - 170'"]
+    assert result_summary["extra_billing_codes"] == ["FB-04 - 6"]
+    assert result_summary["result_lines"] == [
+        "MKR Job Totals",
+        "UG-56 - 170'",
+        "User-selected extra totals",
+        "FB-04 - 6",
+        "Extra notes",
+        "FB-04: Confirmed 48-count splice group.",
+        "Review",
+        "Unresolved callouts remain.",
+    ]
 
 
 def test_summarize_endpoint_accepts_manual_extra_code(monkeypatch: pytest.MonkeyPatch) -> None:

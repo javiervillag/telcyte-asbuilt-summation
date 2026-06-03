@@ -18,6 +18,7 @@ const manualMessage = document.querySelector("#manual-message");
 const selectedExtras = document.querySelector("#selected-extras");
 const selectedRows = document.querySelector("#selected-rows");
 const clearSelected = document.querySelector("#clear-selected");
+const uploadCard = document.querySelector(".upload-card");
 
 let extraCodeCategories = [];
 let activeCategory = "All";
@@ -101,15 +102,7 @@ selectedRows.addEventListener("input", (event) => {
 });
 
 clearSelected.addEventListener("click", () => {
-  for (const [code, state] of Object.entries(codeState)) {
-    state.checked = false;
-    syncVisibleCatalogRow(code);
-  }
-  manualExtras = [];
-  renderExtraCodes();
-  renderSelectedExtras();
-  updateSelectedCount();
-  setManualMessage("", "");
+  clearSelectedExtras();
 });
 
 form.addEventListener("submit", async (event) => {
@@ -172,6 +165,7 @@ form.addEventListener("submit", async (event) => {
     setStatus("PDF ready", "Download started.", warnings.length ? "warn" : "done", {
       warnings,
       resultSummary,
+      canStartOver: true,
     });
   } catch (error) {
     setStatus("Manual review", error.message, "error", {
@@ -189,6 +183,37 @@ form.addEventListener("submit", async (event) => {
 function hideResult() {
   resultCard.classList.add("is-hidden");
   statusBox.textContent = "";
+}
+
+function resetForAnotherPdf() {
+  fileInput.value = "";
+  fileName.textContent = "No file selected";
+  codeSearch.value = "";
+  activeCategory = "All";
+  showAllCodes = false;
+  showManualEntry = false;
+  manualCode.value = "";
+  clearSelectedExtras();
+  hideResult();
+  updateCatalogControls();
+  updateManualControls();
+  uploadCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function clearSelectedExtras() {
+  for (const state of Object.values(codeState)) {
+    state.checked = false;
+    state.quantity = state.quantity || "1";
+    state.note = state.note || "";
+  }
+  document.querySelectorAll(".code-toggle").forEach((checkbox) => {
+    checkbox.checked = false;
+  });
+  manualExtras = [];
+  renderExtraCodes();
+  renderSelectedExtras();
+  updateSelectedCount();
+  setManualMessage("", "");
 }
 
 function setStatus(title, message, kind, details = []) {
@@ -215,6 +240,9 @@ function setStatus(title, message, kind, details = []) {
   appendList("Warnings", groups.warnings || []);
   appendList("Supported totals found", groups.supportedTotals || []);
   appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
+  if (groups.canStartOver) {
+    appendStartAnotherAction();
+  }
   statusBox.className = kind ? `status ${kind}` : "status";
 }
 
@@ -261,21 +289,35 @@ function appendResultSummary(summary) {
     row.appendChild(rowValue);
     block.appendChild(row);
   }
-  appendResultDetails(block, summary.result_lines);
+  appendDetailSection(block, "Detected totals details", summary.detected_totals);
+  appendDetailSection(block, "Extra billing codes details", summary.extra_billing_codes);
+  appendDetailSection(block, "MKR Job Totals details", summary.result_lines);
   statusBox.appendChild(block);
 }
 
-function appendResultDetails(block, lines) {
+function appendDetailSection(block, title, lines) {
   if (!Array.isArray(lines) || !lines.length) return;
   const details = document.createElement("details");
   details.className = "included-details";
   const summary = document.createElement("summary");
-  summary.textContent = "MKR Job Totals details";
+  summary.textContent = title;
   const pre = document.createElement("pre");
   pre.textContent = lines.filter(Boolean).join("\n");
   details.appendChild(summary);
   details.appendChild(pre);
   block.appendChild(details);
+}
+
+function appendStartAnotherAction() {
+  const block = document.createElement("div");
+  block.className = "status-actions";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "start-over-button";
+  button.textContent = "Start another PDF";
+  button.addEventListener("click", resetForAnotherPdf);
+  block.appendChild(button);
+  statusBox.appendChild(block);
 }
 
 function statusLabel(kind) {
