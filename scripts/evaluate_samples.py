@@ -73,21 +73,28 @@ def compare_total_text(actual_text: str, expected_text: str) -> dict[str, Any]:
     }
 
 
-def classify_missing_total_evidence(input_text: str, missing_totals: list[str]) -> list[dict[str, Any]]:
+def classify_missing_total_evidence(
+    input_text: str,
+    missing_totals: list[str],
+    unresolved_callouts: list[str] | None = None,
+) -> list[dict[str, Any]]:
     return [
-        _missing_total_evidence(input_text, total)
+        _missing_total_evidence(input_text, total, unresolved_callouts or [])
         for total in missing_totals
     ]
 
 
-def _missing_total_evidence(input_text: str, total: str) -> dict[str, Any]:
+def _missing_total_evidence(input_text: str, total: str, unresolved_callouts: list[str]) -> dict[str, Any]:
     key = total_line_key(total)
     if not key:
         return {
             "total": total,
+            "evidence_class": "unparseable_total",
             "exact_total_present": False,
             "code_present": False,
             "quantity_present": False,
+            "unresolved_callout_context": bool(unresolved_callouts),
+            "related_unresolved_callouts": unresolved_callouts,
             "matching_lines": [],
         }
 
@@ -106,13 +113,42 @@ def _missing_total_evidence(input_text: str, total: str) -> dict[str, Any]:
         or any(pattern.search(line) for pattern in code_patterns)
         or quantity_pattern.search(line)
     ][:8]
+    exact_total_present = any(pattern.search(input_text) for pattern in exact_patterns)
+    code_present = any(pattern.search(input_text) for pattern in code_patterns)
+    quantity_present = bool(quantity_pattern.search(input_text))
+    unresolved_callout_context = bool(unresolved_callouts)
     return {
         "total": total,
-        "exact_total_present": any(pattern.search(input_text) for pattern in exact_patterns),
-        "code_present": any(pattern.search(input_text) for pattern in code_patterns),
-        "quantity_present": bool(quantity_pattern.search(input_text)),
+        "evidence_class": _missing_total_evidence_class(
+            exact_total_present,
+            code_present,
+            quantity_present,
+            unresolved_callout_context,
+        ),
+        "exact_total_present": exact_total_present,
+        "code_present": code_present,
+        "quantity_present": quantity_present,
+        "unresolved_callout_context": unresolved_callout_context,
+        "related_unresolved_callouts": unresolved_callouts if unresolved_callout_context else [],
         "matching_lines": matching_lines,
     }
+
+
+def _missing_total_evidence_class(
+    exact_total_present: bool,
+    code_present: bool,
+    quantity_present: bool,
+    unresolved_callout_context: bool,
+) -> str:
+    if exact_total_present:
+        return "direct_total_text"
+    if code_present:
+        return "billing_code_text_without_matching_total"
+    if quantity_present:
+        return "quantity_text_without_billing_code"
+    if unresolved_callout_context:
+        return "unresolved_construction_callout_context"
+    return "no_direct_input_evidence"
 
 
 def _code_number_variants(prefix: str, number: str) -> list[str]:
@@ -252,6 +288,7 @@ def evaluate_pair(client: Any, before: Path, team_output: Path, out_dir: Path) -
             "missing_total_input_evidence": classify_missing_total_evidence(
                 before_text,
                 supported_comparison["missing_totals"],
+                [str(callout) for callout in body.get("unresolved_callouts") or []],
             ),
         }
     )

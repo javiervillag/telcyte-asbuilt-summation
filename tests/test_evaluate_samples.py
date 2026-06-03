@@ -93,10 +93,13 @@ def test_missing_total_evidence_classifies_input_support() -> None:
 
     by_total = {item["total"]: item for item in evidence}
     assert by_total["FB-04 - 6"]["code_present"] is True
+    assert by_total["FB-04 - 6"]["evidence_class"] == "billing_code_text_without_matching_total"
     assert by_total["FB-04 - 6"]["exact_total_present"] is False
     assert by_total["COMP-13 - 13"]["code_present"] is False
     assert by_total["COMP-13 - 13"]["quantity_present"] is True
+    assert by_total["COMP-13 - 13"]["evidence_class"] == "quantity_text_without_billing_code"
     assert by_total["UG-56 - 170'"]["exact_total_present"] is True
+    assert by_total["UG-56 - 170'"]["evidence_class"] == "direct_total_text"
 
 
 def test_missing_total_evidence_ignores_tiny_unitless_quantities() -> None:
@@ -106,6 +109,27 @@ def test_missing_total_evidence_ignores_tiny_unitless_quantities() -> None:
     )
 
     assert all(item["quantity_present"] is False for item in evidence)
+
+
+def test_missing_total_evidence_marks_unresolved_callout_context() -> None:
+    evidence = evaluate_samples.classify_missing_total_evidence(
+        "EOL - 48Ct - 30'\nStorage - 48Ct - 50'",
+        ["FB-04 - 6"],
+        ["EOL - 48Ct - 30'", "Storage - 48Ct - 50'"],
+    )
+
+    assert evidence == [
+        {
+            "total": "FB-04 - 6",
+            "evidence_class": "unresolved_construction_callout_context",
+            "exact_total_present": False,
+            "code_present": False,
+            "quantity_present": False,
+            "unresolved_callout_context": True,
+            "related_unresolved_callouts": ["EOL - 48Ct - 30'", "Storage - 48Ct - 50'"],
+            "matching_lines": [],
+        }
+    ]
 
 
 def test_health_status_records_endpoint_health() -> None:
