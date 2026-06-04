@@ -85,7 +85,6 @@ class RunHistoryStore:
             rows = self._fetch_recent_sqlite(bounded_limit)
             summary = self._summary_sqlite()
         return {
-            "assumptions": self.assumptions,
             "summary": summary,
             "nick_review": self._nick_review(summary),
             "runs": [self._public_row(row) for row in rows],
@@ -110,8 +109,6 @@ class RunHistoryStore:
                 "warnings_count",
                 "error_type",
                 "error_message",
-                "estimated_minutes_saved",
-                "estimated_dollars_saved",
             ],
         )
         writer.writeheader()
@@ -199,8 +196,6 @@ class RunHistoryStore:
             "completed_runs": int(row.get("completed_runs") or 0),
             "review_needed_runs": int(row.get("review_needed_runs") or 0),
             "failed_runs": int(row.get("failed_runs") or 0),
-            "estimated_minutes_saved": round(float(row.get("estimated_minutes_saved") or 0.0), 2),
-            "estimated_dollars_saved": round(float(row.get("estimated_dollars_saved") or 0.0), 2),
         }
 
     def _nick_review(self, summary: dict[str, Any]) -> dict[str, Any]:
@@ -208,9 +203,7 @@ class RunHistoryStore:
             "completed_runs": summary["completed_runs"],
             "review_needed_runs": summary["review_needed_runs"],
             "failed_runs": summary["failed_runs"],
-            "estimated_minutes_saved": summary["estimated_minutes_saved"],
-            "estimated_dollars_saved": summary["estimated_dollars_saved"],
-            "assumption_note": self.assumptions["label"],
+            "assumption_note": "Time and dollar savings are hidden until Nick confirms the estimate.",
         }
 
     def _public_row(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -237,8 +230,6 @@ class RunHistoryStore:
             "warnings_count": int(row.get("warnings_count") or 0),
             "error_type": row.get("error_type") or "",
             "error_message": row.get("error_message") or "",
-            "estimated_minutes_saved": round(float(row.get("estimated_minutes_saved") or 0.0), 2),
-            "estimated_dollars_saved": round(float(row.get("estimated_dollars_saved") or 0.0), 2),
         }
 
 

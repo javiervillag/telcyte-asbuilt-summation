@@ -842,20 +842,16 @@ function refreshRunHistoryIfLoaded() {
 
 function renderRunHistory(data) {
   const summary = data.summary || {};
-  const assumptions = data.assumptions || {};
   const runs = Array.isArray(data.runs) ? data.runs : [];
   historyExport.href = "/api/run-history.csv";
   historyCards.innerHTML = [
     metricCard("Completed PDFs", summary.completed_runs || 0),
     metricCard("Need review", summary.review_needed_runs || 0),
     metricCard("Failed", summary.failed_runs || 0),
-    metricCard("Est. time saved", formatMinutes(summary.estimated_minutes_saved || 0)),
-    metricCard("Est. money saved", formatMoney(summary.estimated_dollars_saved || 0)),
   ].join("");
   nickReviewCopy.textContent =
     `${summary.completed_runs || 0} completed PDF runs, ${summary.review_needed_runs || 0} review-needed runs, ` +
-    `${summary.failed_runs || 0} failed runs. Estimate uses ${assumptions.minutes_per_completed_pdf || 0} minutes ` +
-    `per completed PDF at ${formatMoney(assumptions.hourly_rate || 0)}/hour. Pending Nick confirmation.`;
+    `${summary.failed_runs || 0} failed runs. Time and dollar savings are hidden until Nick confirms the estimate.`;
 
   if (!runs.length) {
     historyList.innerHTML = `<div class="history-empty">No runs logged yet.</div>`;
@@ -895,7 +891,6 @@ function renderRunRow(run) {
         <span>Extra billing codes: ${escapeHtml(run.extra_billing_codes_count || 0)}</span>
         <span>Warnings: ${escapeHtml(run.warnings_count || 0)}</span>
         <span>Selected extras: ${escapeHtml(selectedExtras)}</span>
-        <span>Estimated saved: ${escapeHtml(formatMinutes(run.estimated_minutes_saved || 0))} / ${escapeHtml(formatMoney(run.estimated_dollars_saved || 0))}</span>
         ${error}
       </div>
     </details>
@@ -921,15 +916,4 @@ function formatDuration(seconds) {
   if (value < 1) return "<1 sec";
   if (value < 60) return `${value.toFixed(value < 10 ? 1 : 0)} sec`;
   return `${Math.round(value / 60)} min`;
-}
-
-function formatMinutes(value) {
-  const minutes = Number(value || 0);
-  if (minutes < 60) return `${Math.round(minutes)} min`;
-  const hours = minutes / 60;
-  return `${hours.toFixed(hours < 10 ? 1 : 0)} hr`;
-}
-
-function formatMoney(value) {
-  return `$${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }

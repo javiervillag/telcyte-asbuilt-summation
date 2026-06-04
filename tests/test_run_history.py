@@ -45,14 +45,16 @@ def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     data = client.get("/api/run-history").json()
     assert data["summary"]["completed_runs"] == 1
     assert data["summary"]["failed_runs"] == 0
-    assert data["summary"]["estimated_minutes_saved"] == 20.0
-    assert data["summary"]["estimated_dollars_saved"] == 25.0
+    assert "estimated_minutes_saved" not in data["summary"]
+    assert "estimated_dollars_saved" not in data["summary"]
     run = data["runs"][0]
     assert run["status"] == "success"
     assert run["source_filename"] == "success.pdf"
     assert run["output_filename"] == "success-telcyte-summary.pdf"
     assert run["detected_totals_count"] == 1
     assert run["pages_processed"] >= 1
+    assert "estimated_minutes_saved" not in run
+    assert "estimated_dollars_saved" not in run
 
 
 def test_failed_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
@@ -163,3 +165,5 @@ def test_run_history_csv_export(monkeypatch, tmp_path) -> None:
     assert "csv.pdf" in response.text
     assert "csv-telcyte-summary.pdf" in response.text
     assert "PC-02" not in response.text
+    assert "estimated_minutes_saved" not in response.text
+    assert "estimated_dollars_saved" not in response.text
