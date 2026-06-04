@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260603-ux15" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260604-history1" />
   </head>
   <body>
     <header class="masthead">
@@ -21,7 +21,12 @@
     </header>
 
     <main class="shell">
-      <section class="layout">
+      <nav class="app-tabs" aria-label="App sections">
+        <button class="app-tab active" type="button" data-tab="process" aria-selected="true">Process PDF</button>
+        <button class="app-tab" type="button" data-tab="history" aria-selected="false">Run History</button>
+      </nav>
+
+      <section id="process-panel" class="layout app-panel active">
         <article id="result-card" class="card result-card is-hidden">
           <div id="status" class="status empty" role="status" aria-live="polite"></div>
         </article>
@@ -98,6 +103,36 @@
           </div>
         </article>
       </section>
+
+      <section id="history-panel" class="layout app-panel" hidden>
+        <article class="card history-card">
+          <div class="history-header">
+            <div>
+              <span class="eyebrow">Usage</span>
+              <h2>Run History</h2>
+              <p>Recent PDF runs and preliminary savings estimates. Savings are placeholders until Nick confirms the time breakdown.</p>
+            </div>
+            <a id="history-export" class="ghost-button history-export" href="/api/run-history.csv">Export CSV</a>
+          </div>
+
+          <div id="history-cards" class="history-cards" aria-live="polite">
+            <div class="history-empty">Loading run history...</div>
+          </div>
+
+          <section class="nick-review">
+            <strong>Nick review summary</strong>
+            <p id="nick-review-copy">Savings assumptions are pending Nick confirmation.</p>
+          </section>
+
+          <div class="history-list-header">
+            <strong>Recent runs</strong>
+            <button id="history-refresh" class="text-button" type="button">Refresh</button>
+          </div>
+          <div id="history-list" class="history-list" aria-live="polite">
+            <div class="history-empty">No runs logged yet.</div>
+          </div>
+        </article>
+      </section>
     </main>
 
     <div id="processing-overlay" class="processing-overlay" aria-live="assertive" aria-hidden="true">
@@ -114,6 +149,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260603-ux15"></script>
+    <script src="/static/app.js?v=20260604-history1"></script>
   </body>
 </html>

@@ -32,10 +32,19 @@ class Settings(BaseSettings):
     enable_model_review_on_warnings: bool = Field(default=True, alias="ENABLE_MODEL_REVIEW_ON_WARNINGS")
     rate_card_codes: str = Field(default="", alias="RATE_CARD_CODES")
     rate_card_paths: str = Field(default="", alias="RATE_CARD_PATHS")
+    run_log_database_url: Optional[str] = Field(default=None, alias="RUN_LOG_DATABASE_URL")
+    database_url: Optional[str] = Field(default=None, alias="DATABASE_URL")
+    run_log_sqlite_path: str = Field(default="tmp/run-history.sqlite3", alias="RUN_LOG_SQLITE_PATH")
+    savings_minutes_per_completed_pdf: float = Field(default=20.0, alias="SAVINGS_MINUTES_PER_COMPLETED_PDF")
+    savings_hourly_rate: float = Field(default=75.0, alias="SAVINGS_HOURLY_RATE")
 
     @property
     def candidate_models(self) -> list[str]:
         return [m.strip() for m in self.openrouter_model_candidates.split(",") if m.strip()]
+
+    @property
+    def run_log_url(self) -> Optional[str]:
+        return self.run_log_database_url or self.database_url
 
 
 @lru_cache

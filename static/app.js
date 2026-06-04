@@ -24,6 +24,17 @@ const selectedExtras = document.querySelector("#selected-extras");
 const selectedRows = document.querySelector("#selected-rows");
 const clearSelected = document.querySelector("#clear-selected");
 const uploadCard = document.querySelector(".upload-card");
+const historyCards = document.querySelector("#history-cards");
+const historyList = document.querySelector("#history-list");
+const historyRefresh = document.querySelector("#history-refresh");
+const historyExport = document.querySelector("#history-export");
+const nickReviewCopy = document.querySelector("#nick-review-copy");
+const appTabs = document.querySelectorAll(".app-tab");
+const appPanels = {
+  process: document.querySelector("#process-panel"),
+  history: document.querySelector("#history-panel"),
+};
+let runHistoryLoaded = false;
 
 let extraCodeCategories = [];
 let activeCategory = "All";
@@ -123,6 +134,14 @@ clearSelected.addEventListener("click", () => {
   clearSelectedExtras();
 });
 
+historyRefresh.addEventListener("click", () => {
+  loadRunHistory();
+});
+
+appTabs.forEach((tab) => {
+  tab.addEventListener("click", () => switchAppTab(tab.dataset.tab || "process"));
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const file = fileInput.files[0];
@@ -184,6 +203,7 @@ form.addEventListener("submit", async (event) => {
       canStartOver: true,
       download: currentDownload,
     });
+    refreshRunHistoryIfLoaded();
   } catch (error) {
     setStatus("Manual review", error.message, "error", {
       warnings: error.warnings || [],
@@ -192,6 +212,7 @@ form.addEventListener("submit", async (event) => {
       resultSummary: error.resultSummary || null,
       canStartOver: true,
     });
+    refreshRunHistoryIfLoaded();
   } finally {
     stopProcessingProgress();
     submit.disabled = false;
@@ -219,6 +240,22 @@ function resetForAnotherPdf() {
   updateCatalogControls();
   updateManualControls();
   uploadCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function switchAppTab(name) {
+  const next = appPanels[name] ? name : "process";
+  appTabs.forEach((tab) => {
+    const active = tab.dataset.tab === next;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  for (const [key, panel] of Object.entries(appPanels)) {
+    panel.hidden = key !== next;
+    panel.classList.toggle("active", key === next);
+  }
+  if (next === "history") {
+    loadRunHistory();
+  }
 }
 
 function clearSelectedExtras() {
@@ -782,3 +819,117 @@ function escapeHtml(value) {
 }
 
 loadExtraCodes();
+
+async function loadRunHistory() {
+  runHistoryLoaded = true;
+  historyCards.innerHTML = `<div class="history-empty">Loading run history...</div>`;
+  try {
+    const response = await fetch("/api/run-history?limit=20");
+    if (!response.ok) throw new Error("Run history unavailable.");
+    const data = await response.json();
+    renderRunHistory(data);
+  } catch (error) {
+    historyCards.innerHTML = `<div class="history-empty">${escapeHtml(error.message)}</div>`;
+    historyList.innerHTML = `<div class="history-empty">Run history could not be loaded.</div>`;
+  }
+}
+
+function refreshRunHistoryIfLoaded() {
+  if (runHistoryLoaded) {
+    loadRunHistory();
+  }
+}
+
+function renderRunHistory(data) {
+  const summary = data.summary || {};
+  const assumptions = data.assumptions || {};
+  const runs = Array.isArray(data.runs) ? data.runs : [];
+  historyExport.href = "/api/run-history.csv";
+  historyCards.innerHTML = [
+    metricCard("Completed PDFs", summary.completed_runs || 0),
+    metricCard("Need review", summary.review_needed_runs || 0),
+    metricCard("Failed", summary.failed_runs || 0),
+    metricCard("Est. time saved", formatMinutes(summary.estimated_minutes_saved || 0)),
+    metricCard("Est. money saved", formatMoney(summary.estimated_dollars_saved || 0)),
+  ].join("");
+  nickReviewCopy.textContent =
+    `${summary.completed_runs || 0} completed PDF runs, ${summary.review_needed_runs || 0} review-needed runs, ` +
+    `${summary.failed_runs || 0} failed runs. Estimate uses ${assumptions.minutes_per_completed_pdf || 0} minutes ` +
+    `per completed PDF at ${formatMoney(assumptions.hourly_rate || 0)}/hour. Pending Nick confirmation.`;
+
+  if (!runs.length) {
+    historyList.innerHTML = `<div class="history-empty">No runs logged yet.</div>`;
+    return;
+  }
+  historyList.innerHTML = runs.map(renderRunRow).join("");
+}
+
+function metricCard(label, value) {
+  return `
+    <div class="history-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function renderRunRow(run) {
+  const status = run.status || "unknown";
+  const output = run.output_filename ? `<span>Output: ${escapeHtml(run.output_filename)}</span>` : "";
+  const error = run.error_message ? `<span>Error: ${escapeHtml(run.error_message)}</span>` : "";
+  const selectedExtras = Array.isArray(run.selected_extras) && run.selected_extras.length
+    ? run.selected_extras.map((item) => `${item.code} - ${item.quantity}`).join(", ")
+    : "None";
+  return `
+    <details class="history-row">
+      <summary>
+        <span class="run-status ${escapeHtml(status)}">${escapeHtml(statusLabelForRun(status))}</span>
+        <strong>${escapeHtml(run.source_filename || "Unknown PDF")}</strong>
+        <small>${escapeHtml(formatRunDate(run.created_at))} · ${escapeHtml(formatDuration(run.duration_seconds))}</small>
+      </summary>
+      <div class="history-detail-grid">
+        ${output}
+        <span>Model: ${escapeHtml(run.model || "n/a")}</span>
+        <span>Pages: ${escapeHtml(run.pages_processed || "n/a")}</span>
+        <span>Detected totals: ${escapeHtml(run.detected_totals_count || 0)}</span>
+        <span>Extra billing codes: ${escapeHtml(run.extra_billing_codes_count || 0)}</span>
+        <span>Warnings: ${escapeHtml(run.warnings_count || 0)}</span>
+        <span>Selected extras: ${escapeHtml(selectedExtras)}</span>
+        <span>Estimated saved: ${escapeHtml(formatMinutes(run.estimated_minutes_saved || 0))} / ${escapeHtml(formatMoney(run.estimated_dollars_saved || 0))}</span>
+        ${error}
+      </div>
+    </details>
+  `;
+}
+
+function statusLabelForRun(status) {
+  if (status === "success") return "Done";
+  if (status === "manual_review") return "Review";
+  if (status === "failed") return "Failed";
+  return "Run";
+}
+
+function formatRunDate(value) {
+  if (!value) return "Unknown time";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function formatDuration(seconds) {
+  const value = Number(seconds || 0);
+  if (value < 1) return "<1 sec";
+  if (value < 60) return `${value.toFixed(value < 10 ? 1 : 0)} sec`;
+  return `${Math.round(value / 60)} min`;
+}
+
+function formatMinutes(value) {
+  const minutes = Number(value || 0);
+  if (minutes < 60) return `${Math.round(minutes)} min`;
+  const hours = minutes / 60;
+  return `${hours.toFixed(hours < 10 ? 1 : 0)} hr`;
+}
+
+function formatMoney(value) {
+  return `$${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
