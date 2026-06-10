@@ -22,8 +22,10 @@ RIGHT_SIDE_PENALTY = 0.12
 # A candidate is "acceptable" when it passes all three checks below; the
 # left-corner candidates are tried first and the first acceptable one wins
 # (Nick, BI-945043 2026-06-10: box went upper-right although upper-left
-# had room - left must win unless it is actually blocked).
-MAX_ACCEPTABLE_DENSITY = 0.20
+# had room - left must win unless it is actually blocked). Base-map line
+# work (plat parcels, boundary lines) may be covered, so the density cap
+# tolerates moderate ink.
+MAX_ACCEPTABLE_DENSITY = 0.30
 MAX_TEXT_OVERLAP_RATIO = 0.18
 MAX_ANNOTATION_OVERLAP_RATIO = 0.01
 
@@ -211,20 +213,22 @@ def _page_annotation_rects(page: fitz.Page) -> list[fitz.Rect]:
             continue
         area_ratio = _rect_area(rect) / page_area
         fill = drawing.get("fill")
-        stroke = drawing.get("color")
-        if fill and _is_colored_markup(fill):
-            # Filled colored shapes genuinely cover their rect.
-            if area_ratio <= 0.35:
-                rects.append(rect)
-        elif stroke and _is_colored_markup(stroke):
-            # Stroke-only drawings (e.g. the green plat-boundary polyline)
-            # are outlines: their bounding rect is mostly empty space, so a
-            # large one must not block placement (Nick, BI-945043
-            # 2026-06-10: box went upper-right although upper-left was
-            # clear). Only small outlines (callout boxes, stamps) count.
-            if area_ratio <= 0.04:
-                rects.append(rect)
+        # Only FILLED shapes in Telcyte markup colors (red stamps, green
+        # callout boxes) block placement. Stroke-only drawings are route /
+        # plat-boundary lines whose bounding rect is mostly empty space, and
+        # blue-dominant fills are Cox base-design labels - Nick's team
+        # covers both freely (BI-945043 snips, 2026-06-10).
+        if fill and _is_markup_fill(fill) and area_ratio <= 0.35:
+            rects.append(rect)
     return rects
+
+
+def _is_markup_fill(color: tuple[float, ...]) -> bool:
+    if len(color) < 3 or not _is_colored_markup(color):
+        return False
+    r, g, b = color[:3]
+    # Blue-dominant fills are base-design (Cox) text/labels, not markup.
+    return not (b > r + 0.1 and b > g + 0.1)
 
 
 def _is_colored_markup(color: tuple[float, ...]) -> bool:
