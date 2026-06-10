@@ -255,8 +255,13 @@ class RunHistoryStore:
             "completed_runs": int(row.get("completed_runs") or 0),
             "review_needed_runs": int(row.get("review_needed_runs") or 0),
             "failed_runs": int(row.get("failed_runs") or 0),
-            # Minutes confirmed by Nick (2026-06-08 email); dollars stay hidden.
-            "estimated_minutes_saved": round(float(row.get("estimated_minutes_saved") or 0.0), 1),
+            # Computed from the CURRENT confirmed estimate (Nick 2026-06-08,
+            # ~8 min per completed as-built) so historical runs logged under
+            # the old 20-min placeholder don't inflate the total. Per-run
+            # stored values are kept for audit. Dollars stay hidden.
+            "estimated_minutes_saved": round(
+                int(row.get("completed_runs") or 0) * max(0.0, float(self.savings_minutes_per_completed_pdf)), 1
+            ),
         }
 
     def _nick_review(self, summary: dict[str, Any]) -> dict[str, Any]:
