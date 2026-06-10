@@ -363,13 +363,11 @@ def _set_editor_text_style(page: fitz.Page, annot: fitz.Annot, lines: list[str],
     """Keep the text red when a PDF editor regenerates the appearance.
 
     Editors (Nitro, Bluebeam, Adobe) rebuild a FreeText appearance from /DA,
-    /DS and /RC when the box is moved or edited. PyMuPDF writes /DA with a
+    /DS (and /RC if present) when the box is moved or edited. PyMuPDF writes /DA with a
     nonstandard lowercase font name and no /DS or /RC, so some editors fell
     back to black text on move (Nick, BI-945043, 2026-06-10). Write all three
     in standard form with the red color.
     """
-    import html as _html
-
     doc = page.parent
     size = round(float(font_size), 2)
     doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(f"/Helv {size} Tf 1 0 0 rg"))
@@ -378,14 +376,13 @@ def _set_editor_text_style(page: fitz.Page, annot: fitz.Annot, lines: list[str],
         "DS",
         fitz.get_pdf_str(f"font: {size}pt Helvetica, sans-serif; color:#FF0000"),
     )
-    paragraphs = "".join(f"<p dir=\"ltr\">{_html.escape(line)}</p>" for line in lines)
-    rich_content = (
-        '<?xml version="1.0"?><body xmlns="http://www.w3.org/1999/xhtml" '
-        'xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:APIVersion="Acrobat:11.0.0" '
-        f'style="font-size:{size}pt;font-family:Helvetica,sans-serif;color:#FF0000">'
-        f"{paragraphs}</body>"
-    )
-    doc.xref_set_key(annot.xref, "RC", fitz.get_pdf_str(rich_content))
+    # Deliberately NO /RC: editors prefer rich content over the plain
+    # Contents when regenerating a moved box, and they join its paragraphs
+    # into one run-on line (Javier drag test, 2026-06-10). With only the
+    # standard-form red /DA and /DS, editors rebuild from Contents and the
+    # line breaks survive the move.
+    if (doc.xref_get_key(annot.xref, "RC")[1] or "null") != "null":
+        doc.xref_set_key(annot.xref, "RC", "null")
 
 
 def _summary_rendering(
