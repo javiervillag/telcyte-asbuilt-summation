@@ -119,7 +119,10 @@ def _extract_json(text: str) -> dict:
         if not match:
             raise OpenRouterError("Model did not return JSON.")
         cleaned = match.group(0)
-    return json.loads(cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise OpenRouterError("Model returned invalid or truncated JSON.") from exc
 
 
 def _normalize_summary(data: dict, model: str) -> SummaryResult:
@@ -239,12 +242,15 @@ async def summarize_with_model(
             {"role": "user", "content": content},
         ],
         "temperature": 0.1,
-        "max_tokens": 2200,
+        # Reasoning tokens count toward max_tokens on Anthropic models: the
+        # old 2200 cap + max verbosity left no room for the JSON answer on
+        # large multi-page drawings, truncating it mid-object (NR-702749
+        # processing_error, 2026-06-10).
+        "max_tokens": 6000,
         "response_format": {"type": "json_object"},
     }
     if "4.6" in selected_model:
         payload["reasoning"] = {"enabled": True}
-        payload["verbosity"] = "max"
 
     logger.info("requesting_summary model=%s image_pages=%s parsed_chars=%s", selected_model, image_count, len(parsed_context))
     try:
@@ -255,7 +261,10 @@ async def summarize_with_model(
             raise OpenRouterError(f"OpenRouter returned {response.status_code}.")
 
         data = response.json()
-        text = data["choices"][0]["message"]["content"]
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise OpenRouterError(f"OpenRouter response had no completion: {str(data)[:200]}") from exc
         model_summary = _normalize_summary(_extract_json(text), selected_model)
     except Exception as exc:
         if diagnostics.review_required:
@@ -265,7 +274,26 @@ async def summarize_with_model(
                 supported_totals=parser_totals,
                 unresolved_callouts=diagnostics.unresolved_callouts,
             ) from exc
-        raise
+        if parser_totals:
+            # The deterministic parser is the source of truth (its totals
+            # always win and, in production, model-only totals are dropped
+            # anyway). A reviewer failure must never sink a run that has
+            # parser-backed totals - fall back to parser-only output with a
+            # visible warning (NR-702749 3x processing_error, 2026-06-10).
+            logger.warning(
+                "model_review_failed_using_parser_totals model=%s error=%s", selected_model, exc
+            )
+            model_summary = SummaryResult(
+                title="MKR Job Totals",
+                job_totals=[],
+                warnings=[
+                    "Model review was unavailable for this run; totals are parser-only."
+                ],
+                confidence=0.5,
+                model=selected_model,
+            )
+        else:
+            raise
     summary = _merge_parser_and_model(parser_totals, model_summary, settings)
     for warning in diagnostics.warnings:
         if warning not in summary.warnings:

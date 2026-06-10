@@ -7,6 +7,7 @@ None of these tests require local sample PDFs.
 from __future__ import annotations
 
 import fitz
+import pytest
 
 from app.models import SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
@@ -137,3 +138,61 @@ def test_font_scales_with_sheet_size() -> None:
         raise AssertionError("summary annotation not found")
 
     assert _fontsize(large) > _fontsize(small) >= 10.0
+
+
+# --- NR-702749 PRJ52 Segment 12 (2026-06-10): multi-page permit drawings ---
+
+def test_codes_on_later_pages_are_totaled() -> None:
+    # Permit drawings put billing callouts on pages past the old 3-page cap.
+    doc = fitz.open()
+    for page_codes in (["UG-06 - 1"], [], ["UG-06 - 2"], ["UG-84 - 38"], ["UG-85 - 9"]):
+        page = doc.new_page(width=1224, height=792)
+        for i, line in enumerate(page_codes):
+            page.insert_text((700, 400 + i * 24), line)
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-06 - 3" in totals      # pages 1 + 3
+    assert "UG-84 - 38" in totals     # page 4
+    assert "UG-85 - 9" in totals      # page 5
+
+
+def test_extract_json_truncated_payload_is_model_error() -> None:
+    from app.openrouter_client import OpenRouterError, _extract_json
+
+    with pytest.raises(OpenRouterError):
+        _extract_json('{"title": "MKR Job Totals", "job_totals": ["UG-06 - 3"')
+
+
+def test_model_review_failure_falls_back_to_parser_totals(monkeypatch) -> None:
+    # A reviewer crash must never sink a run that has parser-backed totals.
+    import asyncio
+
+    import app.openrouter_client as oc
+    from app.config import Settings
+
+    class _BoomClient:
+        def __init__(self, *a, **k): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(oc.httpx, "AsyncClient", _BoomClient)
+    settings = Settings(OPENROUTER_API_KEY="test-key")
+    # Rich enough that diagnostics do NOT require review (the review path
+    # has its own fallback); spread blocks so the text layer looks healthy.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    for i, line in enumerate(["UG-06 - 2", "UG-06 - 1", "UG-44 - 10", "UG-56 - 170", "DP-11 - 20"]):
+        page.insert_text((100 + (i % 2) * 500, 150 + i * 110), line)
+    page.insert_text((100, 700), "General as-built notes with plenty of readable text for parsing.")
+    page.insert_text((700, 700), "Crew completed restoration per plan and verified quantities.")
+    pdf = doc.tobytes()
+    doc.close()
+
+    summary = asyncio.run(oc.summarize_with_model(pdf, settings))
+
+    assert "UG-06 - 3" in summary.job_totals
+    assert "UG-44 - 10" in summary.job_totals
+    assert any("parser-only" in w for w in summary.warnings)

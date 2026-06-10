@@ -32,6 +32,11 @@ class ExtractionDiagnostics:
     warnings: list[str]
 
 
+# Permit drawings span many sheets with billing callouts on later pages
+# (NR-702749 PRJ52: pages 4-5 held ~90% of the codes, 2026-06-10). Parse
+# every page, bounded only as a safety cap for pathological files.
+DEFAULT_MAX_PARSE_PAGES = 12
+
 MIN_READABLE_BLOCKS = 5
 MIN_READABLE_CHARS = 120
 MIN_QUANTITY_LINES = 2
@@ -57,7 +62,7 @@ def _is_noise(text: str) -> bool:
     return False
 
 
-def extract_text_blocks(pdf_bytes: bytes, max_pages: int = 3) -> list[TextBlock]:
+def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAGES) -> list[TextBlock]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     blocks: list[TextBlock] = []
     seen: set[tuple[int, tuple[float, float, float, float], str]] = set()
@@ -377,7 +382,7 @@ def build_pdf_context(
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page_summaries: list[str] = []
     try:
-        for idx, page in enumerate(doc[:3], start=1):
+        for idx, page in enumerate(doc[:DEFAULT_MAX_PARSE_PAGES], start=1):
             page_summaries.append(
                 f"Page {idx}: width={page.rect.width:.0f}, height={page.rect.height:.0f}, rotation={page.rotation}"
             )
