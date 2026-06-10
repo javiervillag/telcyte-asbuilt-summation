@@ -868,12 +868,13 @@ function renderRunHistory(data) {
     metricCard("Completed PDFs", summary.completed_runs || 0),
     metricCard("Need review", summary.review_needed_runs || 0),
     metricCard("Failed", summary.failed_runs || 0),
-    metricCard("Time saved", formatMinutesSaved(summary.estimated_minutes_saved)),
+    metricCard(`Time saved (from ${summary.savings_since || "Jun 10"})`, formatMinutesSaved(summary.estimated_minutes_saved)),
   ].join("");
   nickReviewCopy.textContent =
     `${summary.completed_runs || 0} completed PDF runs, ${summary.review_needed_runs || 0} review-needed runs, ` +
     `${summary.failed_runs || 0} failed runs. Estimated ${formatMinutesSaved(summary.estimated_minutes_saved)} saved ` +
-    `(~8 min per completed as-built, Nick's 2026-06-08 estimate). Dollar savings stay hidden until the rate is confirmed.`;
+    `since ${summary.savings_since || "Jun 10"} (~8 min per completed as-built, Nick's 2026-06-08 estimate). ` +
+    `Dollar savings stay hidden until the rate is confirmed.`;
 
   if (!runs.length) {
     historyList.innerHTML = data.query

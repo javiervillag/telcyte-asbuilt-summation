@@ -13,6 +13,11 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Production launch of the verified pipeline: time-saved totals count runs
+# from this date forward (Javier, 2026-06-10).
+SAVINGS_START_DATE = "2026-06-10"
+SAVINGS_START_LABEL = "Jun 10"
+
 
 @dataclass
 class RunLogRecord:
@@ -262,8 +267,11 @@ class RunHistoryStore:
             # the old 20-min placeholder don't inflate the total. Per-run
             # stored values are kept for audit. Dollars stay hidden.
             "estimated_minutes_saved": round(
-                int(row.get("completed_runs") or 0) * max(0.0, float(self.savings_minutes_per_completed_pdf)), 1
+                int(row.get("savings_eligible_runs") or 0)
+                * max(0.0, float(self.savings_minutes_per_completed_pdf)),
+                1,
             ),
+            "savings_since": SAVINGS_START_LABEL,
         }
 
     def _nick_review(self, summary: dict[str, Any]) -> dict[str, Any]:
@@ -272,8 +280,10 @@ class RunHistoryStore:
             "review_needed_runs": summary["review_needed_runs"],
             "failed_runs": summary["failed_runs"],
             "estimated_minutes_saved": summary["estimated_minutes_saved"],
+            "savings_since": SAVINGS_START_LABEL,
             "assumption_note": (
-                "Time saved uses Nick's 2026-06-08 estimate (~8 min per completed as-built). "
+                f"Time saved counts completed runs from {SAVINGS_START_LABEL} (production launch) "
+                "at ~8 min each (Nick's 2026-06-08 estimate). "
                 "Dollar savings stay hidden until the hourly rate is confirmed."
             ),
         }
@@ -445,10 +455,12 @@ insert into asbuilt_run_history (
 
 _SQLITE_INSERT_SQL = _POSTGRES_INSERT_SQL.replace("%(", ":").replace(")s", "")
 
-_SUMMARY_SQL = """
+_SUMMARY_SQL = f"""
 select
   count(*) as total_runs,
   sum(case when status in ('success', 'manual_review') and output_filename <> '' then 1 else 0 end) as completed_runs,
+  sum(case when status in ('success', 'manual_review') and output_filename <> ''
+        and created_at >= '{SAVINGS_START_DATE}' then 1 else 0 end) as savings_eligible_runs,
   sum(case when status = 'manual_review' then 1 else 0 end) as review_needed_runs,
   sum(case when status = 'failed' then 1 else 0 end) as failed_runs,
   sum(estimated_minutes_saved) as estimated_minutes_saved,
