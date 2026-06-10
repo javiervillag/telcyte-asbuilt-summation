@@ -57,13 +57,18 @@ def test_annotate_pdf_keeps_selected_extras_separate() -> None:
 def test_choose_box_rect_avoids_existing_annotation() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
-    page.add_rect_annot(fitz.Rect(14, 18, 170, 70))
+    blocker = fitz.Rect(14, 18, 170, 70)
+    page.add_rect_annot(blocker)
 
     rect = choose_box_rect(page, ["MKR Job Totals", "UG-56 - 170'"])
 
     doc.close()
-    assert rect.x0 > 300
-    assert rect.y0 < 120
+    # Left side is preferred (Nick, BI-945043 2026-06-10): the box slides
+    # down the left column past the blocking annotation instead of jumping
+    # to the right corner.
+    assert rect.x0 < 300
+    assert (rect & blocker).is_empty
+    assert rect.y0 <= 792 * 0.3
 
 
 def test_choose_box_rect_stays_top_side_even_when_candidates_touch_annotations() -> None:

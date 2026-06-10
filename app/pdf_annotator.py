@@ -19,6 +19,11 @@ MAX_SAFE_PLACEMENT_SCORE = 1.35
 BORDER_WIDTH = 2.0
 FONT_SCALE_DIVISOR = 80.0
 RIGHT_SIDE_PENALTY = 0.12
+# A candidate is "acceptable" when it passes all three checks below; the
+# left-corner candidates are tried first and the first acceptable one wins
+# (Nick, BI-945043 2026-06-10: box went upper-right although upper-left
+# had room - left must win unless it is actually blocked).
+MAX_ACCEPTABLE_DENSITY = 0.20
 MAX_TEXT_OVERLAP_RATIO = 0.18
 MAX_ANNOTATION_OVERLAP_RATIO = 0.01
 
@@ -130,6 +135,17 @@ def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
         )
         for candidate in candidates
     ]
+    # Preference order: all left-column candidates (top to bottom), then the
+    # right column. First acceptable candidate wins; density scoring is only
+    # the tie-breaking fallback when every corner is genuinely busy.
+    for row in scored:
+        if (
+            page.rect.contains(row.rect)
+            and row.density <= MAX_ACCEPTABLE_DENSITY
+            and row.text_overlap_ratio <= MAX_TEXT_OVERLAP_RATIO
+            and row.annotation_overlap_ratio <= MAX_ANNOTATION_OVERLAP_RATIO
+        ):
+            return row.rect
     scored.sort(key=lambda row: row.total)
     return scored[0].rect
 
@@ -143,10 +159,12 @@ def _candidate_rects(
 ) -> list[fitz.Rect]:
     max_x = max(margin_x, page.rect.width - margin_x - width)
     y_rows = _top_section_y_rows(page, height, margin_y)
+    # x-major order: the whole left column is preferred before any right
+    # candidate (see choose_box_rect acceptance loop).
     return [
         fitz.Rect(x, y, x + width, y + height)
-        for y in y_rows
         for x in (margin_x, max_x)
+        for y in y_rows
     ]
 
 
@@ -191,11 +209,21 @@ def _page_annotation_rects(page: fitz.Page) -> list[fitz.Rect]:
         rect = fitz.Rect(drawing.get("rect") or fitz.Rect())
         if rect.is_empty:
             continue
-        if _rect_area(rect) / page_area > 0.35:
-            continue
-        color = drawing.get("fill") or drawing.get("color")
-        if color and _is_colored_markup(color):
-            rects.append(rect)
+        area_ratio = _rect_area(rect) / page_area
+        fill = drawing.get("fill")
+        stroke = drawing.get("color")
+        if fill and _is_colored_markup(fill):
+            # Filled colored shapes genuinely cover their rect.
+            if area_ratio <= 0.35:
+                rects.append(rect)
+        elif stroke and _is_colored_markup(stroke):
+            # Stroke-only drawings (e.g. the green plat-boundary polyline)
+            # are outlines: their bounding rect is mostly empty space, so a
+            # large one must not block placement (Nick, BI-945043
+            # 2026-06-10: box went upper-right although upper-left was
+            # clear). Only small outlines (callout boxes, stamps) count.
+            if area_ratio <= 0.04:
+                rects.append(rect)
     return rects
 
 
@@ -324,6 +352,36 @@ def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) 
         border_color=TEXT_RED,
     )
     _repair_freetext_appearance(page, annot, rect)
+    _set_editor_text_style(page, annot, rendered_lines, font_size)
+
+
+def _set_editor_text_style(page: fitz.Page, annot: fitz.Annot, lines: list[str], font_size: float) -> None:
+    """Keep the text red when a PDF editor regenerates the appearance.
+
+    Editors (Nitro, Bluebeam, Adobe) rebuild a FreeText appearance from /DA,
+    /DS and /RC when the box is moved or edited. PyMuPDF writes /DA with a
+    nonstandard lowercase font name and no /DS or /RC, so some editors fell
+    back to black text on move (Nick, BI-945043, 2026-06-10). Write all three
+    in standard form with the red color.
+    """
+    import html as _html
+
+    doc = page.parent
+    size = round(float(font_size), 2)
+    doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(f"/Helv {size} Tf 1 0 0 rg"))
+    doc.xref_set_key(
+        annot.xref,
+        "DS",
+        fitz.get_pdf_str(f"font: {size}pt Helvetica, sans-serif; color:#FF0000"),
+    )
+    paragraphs = "".join(f"<p dir=\"ltr\">{_html.escape(line)}</p>" for line in lines)
+    rich_content = (
+        '<?xml version="1.0"?><body xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:APIVersion="Acrobat:11.0.0" '
+        f'style="font-size:{size}pt;font-family:Helvetica,sans-serif;color:#FF0000">'
+        f"{paragraphs}</body>"
+    )
+    doc.xref_set_key(annot.xref, "RC", fitz.get_pdf_str(rich_content))
 
 
 def _summary_rendering(
