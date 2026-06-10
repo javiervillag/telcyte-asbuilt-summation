@@ -6,7 +6,15 @@ from dataclasses import dataclass
 
 import fitz
 
-from app.rate_cards import CODE_PATTERN, CODE_TEXT_PATTERN, NON_BILLING_PREFIXES, CodeKey, code_key
+from app.rate_cards import (
+    CODE_PATTERN,
+    CODE_TEXT_PATTERN,
+    KNOWN_PREFIX_SET,
+    NON_BILLING_PREFIXES,
+    QTY_TEXT_PATTERN,
+    CodeKey,
+    code_key,
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +56,10 @@ UNRESOLVED_CALLOUT_PATTERN = re.compile(
 
 def _clean_text(text: str) -> str:
     text = text.replace("\x00", " ")
+    # Normalize typographic characters so authored maps match the patterns:
+    # en/em/minus dashes -> hyphen, multiplication sign -> x.
+    text = text.replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+    text = text.replace("\u00d7", "x")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -146,6 +158,7 @@ def derive_code_totals(
     blocks: list[TextBlock],
     code_catalog: dict[CodeKey, str] | None = None,
     excluded_lines: list[str] | None = None,
+    notes: list[str] | None = None,
 ) -> list[str]:
     """Aggregate billing-code totals from text blocks.
 
@@ -156,11 +169,11 @@ def derive_code_totals(
     (when provided) so exclusions are never silent.
     """
     direct_pattern = re.compile(
-        rf"\b({CODE_TEXT_PATTERN})\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
+        rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        rf"\b([0-9]+(?:\.[0-9]+)?)\s*x\s*({CODE_TEXT_PATTERN})\b",
+        rf"\b({QTY_TEXT_PATTERN})\s*x\s*({CODE_TEXT_PATTERN})\b",
         re.I,
     )
     catalog = code_catalog or {}
@@ -173,6 +186,13 @@ def derive_code_totals(
         if excluded_lines is not None and cleaned and cleaned not in excluded_lines:
             excluded_lines.append(cleaned)
 
+    catalog_misses: list[str] = []
+
+    def _record_catalog_miss(line: str) -> None:
+        cleaned = line.strip()
+        if cleaned and cleaned not in catalog_misses:
+            catalog_misses.append(cleaned)
+
     for block in blocks:
         for line in block.text.splitlines():
             for match in direct_pattern.finditer(line):
@@ -181,6 +201,7 @@ def derive_code_totals(
                 if not normalized_key:
                     continue
                 if catalog and normalized_key not in catalog:
+                    _record_catalog_miss(line)
                     continue
                 if _is_non_billing_context(line, match.start()):
                     _record_exclusion(line)
@@ -189,7 +210,7 @@ def derive_code_totals(
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
-                totals[key] += float(raw_qty)
+                totals[key] += float(raw_qty.replace(",", ""))
 
     direct_keys = set(totals)
     for block in blocks:
@@ -202,6 +223,7 @@ def derive_code_totals(
                 if not normalized_key:
                     continue
                 if catalog and normalized_key not in catalog:
+                    _record_catalog_miss(line)
                     continue
                 key = normalized_key
                 if key in direct_keys:
@@ -209,11 +231,29 @@ def derive_code_totals(
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
-                totals[key] += float(raw_qty)
+                totals[key] += float(raw_qty.replace(",", ""))
 
     rows: list[str] = []
     for key in order:
         rows.append(f"{display[key]} - {_format_number(totals[key])}")
+
+    if notes is not None:
+        if catalog_misses:
+            preview = "; ".join(catalog_misses[:6])
+            if len(catalog_misses) > 6:
+                preview += f"; plus {len(catalog_misses) - 6} more"
+            notes.append(
+                f"Codes visible on the drawing but NOT in the loaded rate card (not totaled): {preview}."
+            )
+        # New code prefixes totaled via the generic pattern deserve a flag:
+        # they may be brand-new Cox codes (fine) or a new non-billing marker
+        # (not fine) - a human should confirm the first time one appears.
+        novel = sorted({key[0] for key in order if key[0] not in KNOWN_PREFIX_SET})
+        if novel and not catalog:
+            notes.append(
+                "Unrecognized code prefixes totaled via the generic pattern - verify: "
+                + ", ".join(novel) + "."
+            )
     return rows
 
 
@@ -280,6 +320,8 @@ def diagnose_extraction(
     material_candidates: list[str] | None = None,
     quantity_lines: list[str] | None = None,
     excluded_context_lines: list[str] | None = None,
+    parser_notes: list[str] | None = None,
+    total_pages: int | None = None,
 ) -> ExtractionDiagnostics:
     quantity_lines = quantity_lines if quantity_lines is not None else extract_likely_quantity_lines(blocks)
     material_candidates = (
@@ -305,6 +347,14 @@ def diagnose_extraction(
         warnings.append("No supported billing-code totals were found in the parsed text.")
     if ambiguous_code_line_count:
         warnings.append("Some billing-code text was readable but not complete enough to total automatically.")
+    pages_beyond_cap = bool(total_pages and total_pages > DEFAULT_MAX_PARSE_PAGES)
+    if pages_beyond_cap:
+        warnings.append(
+            f"PDF has {total_pages} pages; only the first {DEFAULT_MAX_PARSE_PAGES} were parsed - "
+            "verify callouts on the later sheets manually."
+        )
+    for note in parser_notes or []:
+        warnings.append(note)
     if excluded_context_lines:
         preview = "; ".join(excluded_context_lines[:6])
         if len(excluded_context_lines) > 6:
@@ -326,6 +376,7 @@ def diagnose_extraction(
         or not code_totals
         or bool(ambiguous_code_line_count)
         or bool(unresolved_callout_count)
+        or pages_beyond_cap
     )
     if review_required:
         warnings.append("Manual review is required; the app did not add unsupported totals.")
@@ -347,11 +398,11 @@ def diagnose_extraction(
 
 def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     total_pattern = re.compile(
-        rf"\b(?:{CODE_TEXT_PATTERN})\s*-\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:'|sqft))?\b",
+        rf"\b(?:{CODE_TEXT_PATTERN})\s*-\s*(?:{QTY_TEXT_PATTERN})(?:\s*(?:'|sqft))?\b",
         re.I,
     )
     quantity_first_pattern = re.compile(
-        rf"\b[0-9]+(?:\.[0-9]+)?\s*x\s*(?:{CODE_TEXT_PATTERN})\b",
+        rf"\b(?:{QTY_TEXT_PATTERN})\s*x\s*(?:{CODE_TEXT_PATTERN})\b",
         re.I,
     )
     count = 0

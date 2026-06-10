@@ -4,6 +4,10 @@ import re
 from pathlib import Path
 
 KNOWN_COMPACT_PREFIXES = "UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC|SME|DP"
+KNOWN_PREFIX_SET = set(KNOWN_COMPACT_PREFIXES.split("|"))
+# Quantities may use thousands separators ("UG-03 - 1,904"); matching only
+# the leading digits would silently total 1 instead of 1904.
+QTY_TEXT_PATTERN = r"[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?"
 CODE_TEXT_PATTERN = rf"(?:{KNOWN_COMPACT_PREFIXES})-?\d{{1,3}}|[A-Z]{{2,5}}-\d{{1,3}}"
 CODE_PATTERN = re.compile(rf"\b({CODE_TEXT_PATTERN})(?!\.\d)\b", re.I)
 
@@ -53,7 +57,7 @@ def total_line_key(line: str) -> TotalKey | None:
     if not key:
         return None
     remainder = line[code_match.end() :]
-    qty_match = re.match(r"\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?", remainder, re.I)
+    qty_match = re.match(rf"\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?", remainder, re.I)
     if not qty_match:
         return None
     qty = _normalize_quantity(qty_match.group(1))
@@ -126,7 +130,7 @@ def _format_code(key: CodeKey, raw: str) -> str:
 
 
 def _normalize_quantity(value: str) -> str:
-    number = float(value)
+    number = float(value.replace(",", ""))
     return str(int(number)) if number.is_integer() else f"{number:g}"
 
 

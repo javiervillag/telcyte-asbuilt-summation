@@ -218,3 +218,89 @@ def test_pdf_context_represents_every_page_within_budget() -> None:
     # Every page's code line made it in despite the tight budget.
     for page_num in range(6):
         assert f"UG-0{page_num + 1} - {page_num + 1}" in ctx
+
+
+# --- 6-month robustness pass (2026-06-10) ---
+
+def test_comma_grouped_quantities_total_correctly() -> None:
+    content = _pdf_with_lines(["UG-03 - 1,904'", "UG-03 - 96", "Comp-9 - 2,756'"])
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-03 - 2000" in totals
+    assert "Comp-9 - 2756" in totals
+
+
+def test_total_line_key_handles_comma_quantities() -> None:
+    assert total_line_key("UG-03 - 1,904'") == total_line_key("UG-03 - 1904")
+
+
+def test_unicode_dashes_and_multiplication_sign_normalize() -> None:
+    # Page text with base-14 fonts cannot encode an en-dash, but FreeText
+    # callout annotations can - which is exactly where field crews type them.
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(fitz.Rect(72, 72, 260, 130), "UG\u201306 \u2013 2", fontsize=10)
+    page.insert_text((72, 200), "13 x UG-44")
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-06 - 2" in totals
+    assert "UG-44 - 13" in totals
+
+
+def test_clean_text_normalizes_typographic_characters() -> None:
+    from app.pdf_parser import _clean_text
+
+    assert _clean_text("UG\u201306 \u2014 2 \u00d7 UG-44 \u2212 1") == "UG-06 - 2 x UG-44 - 1"
+
+
+def test_rate_card_misses_are_flagged_not_silent() -> None:
+    content = _pdf_with_lines(["UG-06 - 2", "FX-11 - 3"])
+    notes: list[str] = []
+    totals = derive_code_totals(
+        extract_text_blocks(content),
+        code_catalog={("UG", "6"): "UG-06"},
+        notes=notes,
+    )
+    assert totals == ["UG-06 - 2"]
+    assert any("NOT in the loaded rate card" in n and "FX-11" in n for n in notes)
+
+
+def test_novel_code_prefixes_are_flagged() -> None:
+    content = _pdf_with_lines(["ZZQ-5 - 3", "UG-06 - 1"])
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "ZZQ-05 - 3" in totals
+    assert any("Unrecognized code prefixes" in n and "ZZQ" in n for n in notes)
+
+
+def test_many_pages_beyond_parse_cap_warns_and_requires_review() -> None:
+    doc = fitz.open()
+    for _ in range(14):
+        page = doc.new_page(width=1224, height=792)
+        page.insert_text((600, 400), "UG-06 - 1")
+        page.insert_text((100, 100), "Readable note line for the text layer check.")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    totals = derive_code_totals(blocks)
+    diagnostics = diagnose_extraction(blocks, totals, total_pages=14)
+    assert any("only the first 12" in w for w in diagnostics.warnings)
+    assert diagnostics.review_required is True
+
+
+def test_long_total_lists_shrink_font_instead_of_dropping_lines() -> None:
+    summary = SummaryResult(
+        model="t", confidence=1.0,
+        job_totals=[f"UG-{i:02d} - {i}" for i in range(1, 61)],
+    )
+    output = annotate_pdf(_pdf_with_lines(["UG-06 - 1"]), summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        a = [x for x in page.annots() or [] if "MKR" in str((x.info or {}).get("content", ""))][0]
+        content_lines = a.info["content"].splitlines()
+    finally:
+        doc.close()
+    assert len(content_lines) == 61  # title + all 60 codes, nothing dropped

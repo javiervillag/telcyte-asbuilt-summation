@@ -92,6 +92,13 @@ def _box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float
     # without a fixed point size (Nick Evans, 2026-06-09: "font size 20 might
     # be gigantic on one map and tiny on another"). Roughly 2x the old size.
     font_size = max(10.0, min(40.0, page.rect.width / FONT_SCALE_DIVISOR))
+    # Shrink-to-fit: long line lists (totals + future materials box) must
+    # never silently drop lines from the stamp. Reduce the font until every
+    # line fits within the height cap (floor 8pt).
+    max_height = page.rect.height * 0.82
+    if lines:
+        fitting = (max_height - font_size) / (len(lines) * 1.18 + 1.0)
+        font_size = max(8.0, min(font_size, fitting))
     line_height = font_size * 1.18
     padding = font_size * 0.5
     longest = max(
@@ -115,7 +122,7 @@ def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
     width, height, _, _ = _placement_box_metrics(page, lines)
     margin_x = max(14.0, page.rect.width * 0.014)
     margin_y = max(18.0, page.rect.height * 0.018)
-    if page.rotation == 90:
+    if page.rotation in {90, 270}:
         # Rotated PDFs report page coordinates differently from the viewer. Keep
         # candidates in visible corners and let density scoring choose the least
         # disruptive one.
@@ -172,7 +179,7 @@ def _candidate_rects(
 
 def _top_section_y_rows(page: fitz.Page, height: float, margin_y: float) -> list[float]:
     max_y = max(margin_y, page.rect.height - margin_y - height)
-    if page.rotation in {90, 180}:
+    if page.rotation in {90, 180, 270}:
         band_start = max(margin_y, page.rect.height * 0.7 - height)
         top_edge = max_y
         mid = band_start + max(0.0, (top_edge - band_start) / 2)
