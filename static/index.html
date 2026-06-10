@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260604-history1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260610-history2" />
   </head>
   <body>
     <header class="masthead">
@@ -110,7 +110,7 @@
             <div>
               <span class="eyebrow">Usage</span>
               <h2>Run History</h2>
-              <p>Recent PDF runs, review cases, and failures. Savings will stay hidden until Nick confirms the estimate.</p>
+              <p>Every run is kept with its input and output PDF. Time saved uses Nick's confirmed estimate (~8 min per completed as-built).</p>
             </div>
             <a id="history-export" class="ghost-button history-export" href="/api/run-history.csv">Export CSV</a>
           </div>
@@ -126,7 +126,16 @@
 
           <div class="history-list-header">
             <strong>Recent runs</strong>
-            <button id="history-refresh" class="text-button" type="button">Refresh</button>
+            <div class="history-tools">
+              <input
+                id="history-search"
+                class="history-search"
+                type="search"
+                placeholder="Search by file name, status, or run id"
+                autocomplete="off"
+              />
+              <button id="history-refresh" class="text-button" type="button">Refresh</button>
+            </div>
           </div>
           <div id="history-list" class="history-list" aria-live="polite">
             <div class="history-empty">No runs logged yet.</div>
@@ -149,6 +158,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260604-history1"></script>
+    <script src="/static/app.js?v=20260610-history2"></script>
   </body>
 </html>

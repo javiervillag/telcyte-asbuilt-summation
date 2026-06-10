@@ -66,8 +66,24 @@ async def extra_billing_codes() -> dict:
 
 
 @app.get("/api/run-history")
-async def run_history(limit: int = 20) -> dict:
-    return run_history_store.dashboard(limit=limit)
+async def run_history(limit: int = 20, q: str = "") -> dict:
+    return run_history_store.dashboard(limit=limit, query=q)
+
+
+@app.get("/api/run-history/{run_id}/pdf")
+async def run_history_pdf(run_id: str, kind: str = "output") -> Response:
+    if kind not in {"input", "output"}:
+        raise HTTPException(status_code=400, detail="kind must be 'input' or 'output'.")
+    stored = run_history_store.get_pdf(run_id, kind)
+    if not stored:
+        raise HTTPException(status_code=404, detail="No stored PDF for this run.")
+    name, data = stored
+    safe_name = name.replace('"', "")
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
 
 
 @app.get("/api/run-history.csv")
@@ -139,6 +155,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             selected_extras=selected_extras,
             error_type="invalid_pdf",
             error_message=str(exc.detail),
+            input_pdf=content,
         )
         raise
 
@@ -170,6 +187,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     started_at=started_at,
                     selected_extras=selected_extras,
                     pages_processed=page_count,
+                    input_pdf=content,
                     warnings_count=1,
                     error_type="placement_review",
                     error_message="No clear open area for the summary box.",
@@ -196,6 +214,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     started_at=started_at,
                     selected_extras=selected_extras,
                     pages_processed=page_count,
+                    input_pdf=content,
                     summary=review_summary,
                     warnings_count=len(exc.warnings),
                     error_type="manual_review",
@@ -228,6 +247,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     started_at=started_at,
                     selected_extras=selected_extras,
                     pages_processed=page_count,
+                    input_pdf=content,
                     summary=summary,
                     warnings_count=len(summary.warnings),
                     error_type="placement_review",
@@ -248,6 +268,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             started_at=started_at,
             selected_extras=selected_extras,
             pages_processed=page_count,
+            input_pdf=content,
             warnings_count=1,
             error_type="placement_review",
             error_message="No clear open area for the summary box.",
@@ -267,6 +288,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             started_at=started_at,
             selected_extras=selected_extras,
             pages_processed=page_count,
+            input_pdf=content,
             error_type="model_error",
             error_message=str(exc),
         )
@@ -279,6 +301,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             started_at=started_at,
             selected_extras=selected_extras,
             pages_processed=page_count,
+            input_pdf=content,
             error_type="processing_error",
             error_message="The PDF could not be processed.",
         )
@@ -293,6 +316,8 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
         started_at=started_at,
         selected_extras=selected_extras,
         pages_processed=page_count,
+        input_pdf=content,
+        output_pdf=output,
         output_filename=output_name,
         summary=summary,
         warnings_count=len(summary.warnings),
@@ -359,6 +384,8 @@ def _log_run_attempt(
     warnings_count: int = 0,
     error_type: str = "",
     error_message: str = "",
+    input_pdf: bytes | None = None,
+    output_pdf: bytes | None = None,
 ) -> None:
     minutes_saved, dollars_saved = run_history_store.estimate_savings(status, bool(output_filename))
     record = RunLogRecord(
@@ -380,6 +407,8 @@ def _log_run_attempt(
         error_message=error_message[:240],
         estimated_minutes_saved=minutes_saved,
         estimated_dollars_saved=dollars_saved,
+        input_pdf=input_pdf,
+        output_pdf=output_pdf,
     )
     try:
         run_history_store.log_run(record)

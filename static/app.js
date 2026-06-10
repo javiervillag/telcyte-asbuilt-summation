@@ -28,6 +28,7 @@ const historyCards = document.querySelector("#history-cards");
 const historyList = document.querySelector("#history-list");
 const historyRefresh = document.querySelector("#history-refresh");
 const historyExport = document.querySelector("#history-export");
+const historySearch = document.querySelector("#history-search");
 const nickReviewCopy = document.querySelector("#nick-review-copy");
 const appTabs = document.querySelectorAll(".app-tab");
 const appPanels = {
@@ -820,11 +821,20 @@ function escapeHtml(value) {
 
 loadExtraCodes();
 
+let historySearchTimer = null;
+if (historySearch) {
+  historySearch.addEventListener("input", () => {
+    clearTimeout(historySearchTimer);
+    historySearchTimer = setTimeout(() => loadRunHistory(), 250);
+  });
+}
+
 async function loadRunHistory() {
   runHistoryLoaded = true;
   historyCards.innerHTML = `<div class="history-empty">Loading run history...</div>`;
   try {
-    const response = await fetch("/api/run-history?limit=20");
+    const query = historySearch ? historySearch.value.trim() : "";
+    const response = await fetch(`/api/run-history?limit=50&q=${encodeURIComponent(query)}`);
     if (!response.ok) throw new Error("Run history unavailable.");
     const data = await response.json();
     renderRunHistory(data);
@@ -848,13 +858,17 @@ function renderRunHistory(data) {
     metricCard("Completed PDFs", summary.completed_runs || 0),
     metricCard("Need review", summary.review_needed_runs || 0),
     metricCard("Failed", summary.failed_runs || 0),
+    metricCard("Time saved", formatMinutesSaved(summary.estimated_minutes_saved)),
   ].join("");
   nickReviewCopy.textContent =
     `${summary.completed_runs || 0} completed PDF runs, ${summary.review_needed_runs || 0} review-needed runs, ` +
-    `${summary.failed_runs || 0} failed runs. Time and dollar savings are hidden until Nick confirms the estimate.`;
+    `${summary.failed_runs || 0} failed runs. Estimated ${formatMinutesSaved(summary.estimated_minutes_saved)} saved ` +
+    `(~8 min per completed as-built, Nick's 2026-06-08 estimate). Dollar savings stay hidden until the rate is confirmed.`;
 
   if (!runs.length) {
-    historyList.innerHTML = `<div class="history-empty">No runs logged yet.</div>`;
+    historyList.innerHTML = data.query
+      ? `<div class="history-empty">No runs match "${escapeHtml(data.query)}".</div>`
+      : `<div class="history-empty">No runs logged yet.</div>`;
     return;
   }
   historyList.innerHTML = runs.map(renderRunRow).join("");
@@ -876,6 +890,14 @@ function renderRunRow(run) {
   const selectedExtras = Array.isArray(run.selected_extras) && run.selected_extras.length
     ? run.selected_extras.map((item) => `${item.code} - ${item.quantity}`).join(", ")
     : "None";
+  const downloads = [
+    run.has_input
+      ? `<a class="text-button" href="/api/run-history/${encodeURIComponent(run.id)}/pdf?kind=input">Download input</a>`
+      : "",
+    run.has_output
+      ? `<a class="text-button" href="/api/run-history/${encodeURIComponent(run.id)}/pdf?kind=output">Download output</a>`
+      : "",
+  ].filter(Boolean).join(" ");
   return `
     <details class="history-row">
       <summary>
@@ -892,6 +914,7 @@ function renderRunRow(run) {
         <span>Warnings: ${escapeHtml(run.warnings_count || 0)}</span>
         <span>Selected extras: ${escapeHtml(selectedExtras)}</span>
         ${error}
+        ${downloads ? `<span class="history-downloads">${downloads}</span>` : ""}
       </div>
     </details>
   `;
@@ -909,6 +932,15 @@ function formatRunDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function formatMinutesSaved(minutes) {
+  const value = Number(minutes || 0);
+  if (value <= 0) return "0 min";
+  if (value < 60) return `${Math.round(value)} min`;
+  const hours = Math.floor(value / 60);
+  const rest = Math.round(value % 60);
+  return rest ? `${hours} hr ${rest} min` : `${hours} hr`;
 }
 
 function formatDuration(seconds) {

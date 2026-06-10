@@ -1199,3 +1199,23 @@ input[type="file"] {
     gap: 3px;
   }
 }
+
+.history-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-search {
+  min-width: 240px;
+  padding: 7px 12px;
+  border: 1px solid var(--line, #d8d4cb);
+  border-radius: 8px;
+  font: inherit;
+  background: #fff;
+}
+
+.history-downloads {
+  display: flex;
+  gap: 14px;
+}

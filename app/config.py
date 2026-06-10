@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     run_log_database_url: Optional[str] = Field(default=None, alias="RUN_LOG_DATABASE_URL")
     database_url: Optional[str] = Field(default=None, alias="DATABASE_URL")
     run_log_sqlite_path: str = Field(default="tmp/run-history.sqlite3", alias="RUN_LOG_SQLITE_PATH")
-    savings_minutes_per_completed_pdf: float = Field(default=20.0, alias="SAVINGS_MINUTES_PER_COMPLETED_PDF")
+    # Nick's confirmed estimate (email 2026-06-08): 5-10 min per as-built,
+    # itemized table sums to 8 min. Dollar rate still unconfirmed.
+    savings_minutes_per_completed_pdf: float = Field(default=8.0, alias="SAVINGS_MINUTES_PER_COMPLETED_PDF")
     savings_hourly_rate: float = Field(default=75.0, alias="SAVINGS_HOURLY_RATE")
 
     @property

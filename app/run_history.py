@@ -31,6 +31,8 @@ class RunLogRecord:
     error_message: str = ""
     estimated_minutes_saved: float = 0.0
     estimated_dollars_saved: float = 0.0
+    input_pdf: bytes | None = None
+    output_pdf: bytes | None = None
 
 
 class RunHistoryStore:
@@ -54,7 +56,7 @@ class RunHistoryStore:
         return {
             "minutes_per_completed_pdf": self.savings_minutes_per_completed_pdf,
             "hourly_rate": self.savings_hourly_rate,
-            "label": "Preliminary estimate pending Nick confirmation",
+            "label": "Minutes confirmed by Nick 2026-06-08 (5-10 min/as-built, itemized ~8); dollar rate pending",
         }
 
     def estimate_savings(self, status: str, has_output: bool) -> tuple[float, float]:
@@ -75,20 +77,50 @@ class RunHistoryStore:
         except Exception as exc:  # noqa: BLE001 - logging must not break PDF processing
             logger.warning("run_history_log_failed error=%s", exc)
 
-    def dashboard(self, limit: int = 20) -> dict[str, Any]:
+    def dashboard(self, limit: int = 20, query: str = "") -> dict[str, Any]:
         self._ensure_schema()
-        bounded_limit = max(1, min(int(limit or 20), 100))
+        bounded_limit = max(1, min(int(limit or 20), 500))
+        needle = (query or "").strip().lower()
         if self._backend == "postgres":
-            rows = self._fetch_recent_postgres(bounded_limit)
+            rows = self._fetch_recent_postgres(bounded_limit, needle)
             summary = self._summary_postgres()
         else:
-            rows = self._fetch_recent_sqlite(bounded_limit)
+            rows = self._fetch_recent_sqlite(bounded_limit, needle)
             summary = self._summary_sqlite()
         return {
             "summary": summary,
             "nick_review": self._nick_review(summary),
+            "query": query or "",
             "runs": [self._public_row(row) for row in rows],
         }
+
+    def get_pdf(self, run_id: str, kind: str) -> tuple[str, bytes] | None:
+        """Return (download_filename, pdf_bytes) for a stored run PDF, or None."""
+        if kind not in {"input", "output"}:
+            return None
+        self._ensure_schema()
+        column = "input_pdf" if kind == "input" else "output_pdf"
+        name_column = "source_filename" if kind == "input" else "output_filename"
+        if self._backend == "postgres":
+            import psycopg
+
+            with psycopg.connect(self.database_url) as conn:
+                row = conn.execute(
+                    f"select {name_column}, {column} from asbuilt_run_history where id = %s",
+                    (run_id,),
+                ).fetchone()
+        else:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                row = conn.execute(
+                    f"select {name_column}, {column} from asbuilt_run_history where id = ?",
+                    (run_id,),
+                ).fetchone()
+        if not row or not row[1]:
+            return None
+        name = row[0] or f"run-{run_id}-{kind}.pdf"
+        if not name.lower().endswith(".pdf"):
+            name = f"{name}.pdf"
+        return name, bytes(row[1])
 
     def csv_export(self, limit: int = 500) -> str:
         data = self.dashboard(limit=max(1, min(int(limit or 500), 2000)))
@@ -109,6 +141,7 @@ class RunHistoryStore:
                 "warnings_count",
                 "error_type",
                 "error_message",
+                "estimated_minutes_saved",
             ],
         )
         writer.writeheader()
@@ -136,6 +169,10 @@ class RunHistoryStore:
         Path(self.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.sqlite_path) as conn:
             conn.executescript(_SQLITE_SCHEMA)
+            existing = {row[1] for row in conn.execute("pragma table_info(asbuilt_run_history)")}
+            for column, ddl in _SQLITE_MIGRATIONS:
+                if column not in existing:
+                    conn.execute(ddl)
 
     def _ensure_postgres_schema(self) -> None:
         import psycopg
@@ -144,6 +181,10 @@ class RunHistoryStore:
             for statement in _POSTGRES_SCHEMA.split(";"):
                 if statement.strip():
                     conn.execute(statement)
+            # Idempotent column migrations: CREATE TABLE IF NOT EXISTS does not
+            # add new columns to an existing table.
+            for statement in _POSTGRES_MIGRATIONS:
+                conn.execute(statement)
 
     def _insert_sqlite(self, row: dict[str, Any]) -> None:
         with sqlite3.connect(self.sqlite_path) as conn:
@@ -155,25 +196,43 @@ class RunHistoryStore:
         with psycopg.connect(self.database_url, autocommit=True) as conn:
             conn.execute(_POSTGRES_INSERT_SQL, row)
 
-    def _fetch_recent_sqlite(self, limit: int) -> list[dict[str, Any]]:
+    def _fetch_recent_sqlite(self, limit: int, needle: str = "") -> list[dict[str, Any]]:
         with sqlite3.connect(self.sqlite_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "select * from asbuilt_run_history order by created_at desc limit ?",
-                (limit,),
-            ).fetchall()
+            if needle:
+                rows = conn.execute(
+                    f"select {_LIST_COLUMNS} from asbuilt_run_history"
+                    " where lower(source_filename) like ? or lower(output_filename) like ?"
+                    "   or lower(status) like ? or id = ?"
+                    " order by created_at desc limit ?",
+                    (f"%{needle}%", f"%{needle}%", f"%{needle}%", needle, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"select {_LIST_COLUMNS} from asbuilt_run_history order by created_at desc limit ?",
+                    (limit,),
+                ).fetchall()
         return [dict(row) for row in rows]
 
-    def _fetch_recent_postgres(self, limit: int) -> list[dict[str, Any]]:
+    def _fetch_recent_postgres(self, limit: int, needle: str = "") -> list[dict[str, Any]]:
         import psycopg
         from psycopg.rows import dict_row
 
         with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "select * from asbuilt_run_history order by created_at desc limit %s",
-                    (limit,),
-                )
+                if needle:
+                    cur.execute(
+                        f"select {_LIST_COLUMNS} from asbuilt_run_history"
+                        " where lower(source_filename) like %s or lower(output_filename) like %s"
+                        "   or lower(status) like %s or id = %s"
+                        " order by created_at desc limit %s",
+                        (f"%{needle}%", f"%{needle}%", f"%{needle}%", needle, limit),
+                    )
+                else:
+                    cur.execute(
+                        f"select {_LIST_COLUMNS} from asbuilt_run_history order by created_at desc limit %s",
+                        (limit,),
+                    )
                 return list(cur.fetchall())
 
     def _summary_sqlite(self) -> dict[str, Any]:
@@ -196,6 +255,8 @@ class RunHistoryStore:
             "completed_runs": int(row.get("completed_runs") or 0),
             "review_needed_runs": int(row.get("review_needed_runs") or 0),
             "failed_runs": int(row.get("failed_runs") or 0),
+            # Minutes confirmed by Nick (2026-06-08 email); dollars stay hidden.
+            "estimated_minutes_saved": round(float(row.get("estimated_minutes_saved") or 0.0), 1),
         }
 
     def _nick_review(self, summary: dict[str, Any]) -> dict[str, Any]:
@@ -203,7 +264,11 @@ class RunHistoryStore:
             "completed_runs": summary["completed_runs"],
             "review_needed_runs": summary["review_needed_runs"],
             "failed_runs": summary["failed_runs"],
-            "assumption_note": "Time and dollar savings are hidden until Nick confirms the estimate.",
+            "estimated_minutes_saved": summary["estimated_minutes_saved"],
+            "assumption_note": (
+                "Time saved uses Nick's 2026-06-08 estimate (~8 min per completed as-built). "
+                "Dollar savings stay hidden until the hourly rate is confirmed."
+            ),
         }
 
     def _public_row(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +295,9 @@ class RunHistoryStore:
             "warnings_count": int(row.get("warnings_count") or 0),
             "error_type": row.get("error_type") or "",
             "error_message": row.get("error_message") or "",
+            "estimated_minutes_saved": round(float(row.get("estimated_minutes_saved") or 0.0), 1),
+            "has_input": bool(row.get("has_input")),
+            "has_output": bool(row.get("has_output")),
         }
 
 
@@ -261,11 +329,18 @@ create table if not exists asbuilt_run_history (
   error_type text not null default '',
   error_message text not null default '',
   estimated_minutes_saved double precision not null default 0,
-  estimated_dollars_saved double precision not null default 0
+  estimated_dollars_saved double precision not null default 0,
+  input_pdf bytea,
+  output_pdf bytea
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
 """
+
+_POSTGRES_MIGRATIONS = [
+    "alter table asbuilt_run_history add column if not exists input_pdf bytea",
+    "alter table asbuilt_run_history add column if not exists output_pdf bytea",
+]
 
 _SQLITE_SCHEMA = """
 create table if not exists asbuilt_run_history (
@@ -285,11 +360,26 @@ create table if not exists asbuilt_run_history (
   error_type text not null default '',
   error_message text not null default '',
   estimated_minutes_saved real not null default 0,
-  estimated_dollars_saved real not null default 0
+  estimated_dollars_saved real not null default 0,
+  input_pdf blob,
+  output_pdf blob
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
 """
+
+_SQLITE_MIGRATIONS = [
+    ("input_pdf", "alter table asbuilt_run_history add column input_pdf blob"),
+    ("output_pdf", "alter table asbuilt_run_history add column output_pdf blob"),
+]
+
+_LIST_COLUMNS = (
+    "id, created_at, source_filename, output_filename, status, duration_ms,"
+    " pages_processed, model, confidence, detected_totals_count,"
+    " extra_billing_codes_count, selected_extras_json, warnings_count,"
+    " error_type, error_message, estimated_minutes_saved,"
+    " (input_pdf is not null) as has_input, (output_pdf is not null) as has_output"
+)
 
 _POSTGRES_INSERT_SQL = """
 insert into asbuilt_run_history (
@@ -309,7 +399,9 @@ insert into asbuilt_run_history (
   error_type,
   error_message,
   estimated_minutes_saved,
-  estimated_dollars_saved
+  estimated_dollars_saved,
+  input_pdf,
+  output_pdf
 ) values (
   %(id)s,
   %(created_at)s,
@@ -327,7 +419,9 @@ insert into asbuilt_run_history (
   %(error_type)s,
   %(error_message)s,
   %(estimated_minutes_saved)s,
-  %(estimated_dollars_saved)s
+  %(estimated_dollars_saved)s,
+  %(input_pdf)s,
+  %(output_pdf)s
 )
 """
 

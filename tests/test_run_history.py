@@ -16,7 +16,7 @@ def _temp_store(tmp_path) -> RunHistoryStore:
     return RunHistoryStore(
         database_url=None,
         sqlite_path=str(tmp_path / "runs.sqlite3"),
-        savings_minutes_per_completed_pdf=20.0,
+        savings_minutes_per_completed_pdf=8.0,
         savings_hourly_rate=75.0,
     )
 
@@ -45,7 +45,9 @@ def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     data = client.get("/api/run-history").json()
     assert data["summary"]["completed_runs"] == 1
     assert data["summary"]["failed_runs"] == 0
-    assert "estimated_minutes_saved" not in data["summary"]
+    # Minutes are shown (Nick confirmed ~8 min/as-built on 2026-06-08);
+    # dollar figures stay hidden until the hourly rate is confirmed.
+    assert data["summary"]["estimated_minutes_saved"] == 8.0
     assert "estimated_dollars_saved" not in data["summary"]
     run = data["runs"][0]
     assert run["status"] == "success"
@@ -53,8 +55,10 @@ def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     assert run["output_filename"] == "success-telcyte-summary.pdf"
     assert run["detected_totals_count"] == 1
     assert run["pages_processed"] >= 1
-    assert "estimated_minutes_saved" not in run
+    assert run["estimated_minutes_saved"] == 8.0
     assert "estimated_dollars_saved" not in run
+    assert run["has_input"] is True
+    assert run["has_output"] is True
 
 
 def test_failed_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
@@ -165,5 +169,5 @@ def test_run_history_csv_export(monkeypatch, tmp_path) -> None:
     assert "csv.pdf" in response.text
     assert "csv-telcyte-summary.pdf" in response.text
     assert "PC-02" not in response.text
-    assert "estimated_minutes_saved" not in response.text
+    assert "estimated_minutes_saved" in response.text
     assert "estimated_dollars_saved" not in response.text
