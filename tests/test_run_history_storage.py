@@ -49,6 +49,8 @@ def test_input_and_output_pdfs_are_stored_and_downloadable(client) -> None:
 
     run = client.get("/api/run-history").json()["runs"][0]
     assert run["has_input"] and run["has_output"]
+    # Full stamped result is kept per run (Javier feedback 2026-06-10).
+    assert run["result_lines"] == ["MKR Job Totals", "UG-06 - 2"]
 
     got_input = client.get(f"/api/run-history/{run['id']}/pdf?kind=input")
     assert got_input.status_code == 200

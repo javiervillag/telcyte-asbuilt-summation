@@ -33,6 +33,7 @@ class RunLogRecord:
     estimated_dollars_saved: float = 0.0
     input_pdf: bytes | None = None
     output_pdf: bytes | None = None
+    result_lines: list[str] | None = None
 
 
 class RunHistoryStore:
@@ -154,6 +155,7 @@ class RunHistoryStore:
         data["id"] = uuid.uuid4().hex
         data["created_at"] = datetime.now(timezone.utc).isoformat()
         data["selected_extras_json"] = json.dumps(data.pop("selected_extras") or [], ensure_ascii=True)
+        data["result_lines_json"] = json.dumps(data.pop("result_lines") or [], ensure_ascii=True)
         return data
 
     def _ensure_schema(self) -> None:
@@ -282,6 +284,10 @@ class RunHistoryStore:
             selected = json.loads(selected_extras)
         except json.JSONDecodeError:
             selected = []
+        try:
+            result_lines = json.loads(row.get("result_lines_json") or "[]")
+        except json.JSONDecodeError:
+            result_lines = []
         duration_seconds = round(float(row.get("duration_ms") or 0) / 1000.0, 2)
         return {
             "id": row.get("id") or "",
@@ -303,6 +309,7 @@ class RunHistoryStore:
             "estimated_minutes_saved": round(float(row.get("estimated_minutes_saved") or 0.0), 1),
             "has_input": bool(row.get("has_input")),
             "has_output": bool(row.get("has_output")),
+            "result_lines": result_lines if isinstance(result_lines, list) else [],
         }
 
 
@@ -336,7 +343,8 @@ create table if not exists asbuilt_run_history (
   estimated_minutes_saved double precision not null default 0,
   estimated_dollars_saved double precision not null default 0,
   input_pdf bytea,
-  output_pdf bytea
+  output_pdf bytea,
+  result_lines_json text not null default '[]'
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
@@ -345,6 +353,7 @@ create index if not exists idx_asbuilt_run_history_created_at
 _POSTGRES_MIGRATIONS = [
     "alter table asbuilt_run_history add column if not exists input_pdf bytea",
     "alter table asbuilt_run_history add column if not exists output_pdf bytea",
+    "alter table asbuilt_run_history add column if not exists result_lines_json text not null default '[]'",
 ]
 
 _SQLITE_SCHEMA = """
@@ -367,7 +376,8 @@ create table if not exists asbuilt_run_history (
   estimated_minutes_saved real not null default 0,
   estimated_dollars_saved real not null default 0,
   input_pdf blob,
-  output_pdf blob
+  output_pdf blob,
+  result_lines_json text not null default '[]'
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
@@ -376,13 +386,14 @@ create index if not exists idx_asbuilt_run_history_created_at
 _SQLITE_MIGRATIONS = [
     ("input_pdf", "alter table asbuilt_run_history add column input_pdf blob"),
     ("output_pdf", "alter table asbuilt_run_history add column output_pdf blob"),
+    ("result_lines_json", "alter table asbuilt_run_history add column result_lines_json text not null default '[]'"),
 ]
 
 _LIST_COLUMNS = (
     "id, created_at, source_filename, output_filename, status, duration_ms,"
     " pages_processed, model, confidence, detected_totals_count,"
     " extra_billing_codes_count, selected_extras_json, warnings_count,"
-    " error_type, error_message, estimated_minutes_saved,"
+    " error_type, error_message, estimated_minutes_saved, result_lines_json,"
     " (input_pdf is not null) as has_input, (output_pdf is not null) as has_output"
 )
 
@@ -406,7 +417,8 @@ insert into asbuilt_run_history (
   estimated_minutes_saved,
   estimated_dollars_saved,
   input_pdf,
-  output_pdf
+  output_pdf,
+  result_lines_json
 ) values (
   %(id)s,
   %(created_at)s,
@@ -426,7 +438,8 @@ insert into asbuilt_run_history (
   %(estimated_minutes_saved)s,
   %(estimated_dollars_saved)s,
   %(input_pdf)s,
-  %(output_pdf)s
+  %(output_pdf)s,
+  %(result_lines_json)s
 )
 """
 

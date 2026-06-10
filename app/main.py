@@ -409,6 +409,7 @@ def _log_run_attempt(
         estimated_dollars_saved=dollars_saved,
         input_pdf=input_pdf,
         output_pdf=output_pdf,
+        result_lines=summary.display_lines() if summary else [],
     )
     try:
         run_history_store.log_run(record)

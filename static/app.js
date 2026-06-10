@@ -954,6 +954,14 @@ function renderRunRow(run) {
       ? `<a class="text-button" href="/api/run-history/${encodeURIComponent(run.id)}/pdf?kind=output">Download output</a>`
       : "",
   ].filter(Boolean).join(" ");
+  const storageNote = !run.has_input && !run.has_output
+    ? `<span class="history-storage-note">PDFs not stored (run predates PDF storage)</span>`
+    : "";
+  const resultLines = Array.isArray(run.result_lines) && run.result_lines.length
+    ? `<div class="history-result-lines"><strong>Result</strong>${run.result_lines
+        .map((line) => `<span>${escapeHtml(line)}</span>`)
+        .join("")}</div>`
+    : "";
   return `
     <details class="history-row">
       <summary>
@@ -970,8 +978,9 @@ function renderRunRow(run) {
         <span>Warnings: ${escapeHtml(run.warnings_count || 0)}</span>
         <span>Selected extras: ${escapeHtml(selectedExtras)}</span>
         ${error}
-        ${downloads ? `<span class="history-downloads">${downloads}</span>` : ""}
+        ${downloads ? `<span class="history-downloads">${downloads}</span>` : storageNote}
       </div>
+      ${resultLines}
     </details>
   `;
 }

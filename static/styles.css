@@ -1272,3 +1272,24 @@ input[type="file"] {
   overflow-y: auto;
   flex: 1;
 }
+
+.history-result-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 14px 12px;
+  padding: 10px 12px;
+  background: #f3f7ee;
+  border: 1px solid #cfe3c2;
+  border-radius: 8px;
+  font-size: 0.92em;
+}
+
+.history-result-lines strong {
+  margin-bottom: 4px;
+}
+
+.history-storage-note {
+  color: #999;
+  font-style: italic;
+}
