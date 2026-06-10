@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import fitz
 
-from app.rate_cards import CODE_PATTERN, CODE_TEXT_PATTERN, CodeKey, code_key
+from app.rate_cards import CODE_PATTERN, CODE_TEXT_PATTERN, NON_BILLING_PREFIXES, CodeKey, code_key
 
 
 @dataclass(frozen=True)
@@ -140,7 +140,16 @@ def _format_number(value: float) -> str:
 def derive_code_totals(
     blocks: list[TextBlock],
     code_catalog: dict[CodeKey, str] | None = None,
+    excluded_lines: list[str] | None = None,
 ) -> list[str]:
+    """Aggregate billing-code totals from text blocks.
+
+    Unit markers (' and sqft) are consumed but ignored: per Nick Evans
+    (email 2026-06-09, BI-304069) quantities for the same code always total
+    together and the output rows carry no unit suffix ("UG-80 - 258").
+    Lines skipped as non-billing context are appended to ``excluded_lines``
+    (when provided) so exclusions are never silent.
+    """
     direct_pattern = re.compile(
         rf"\b({CODE_TEXT_PATTERN})\s*-\s*([0-9]+(?:\.[0-9]+)?)(\s*(?:'|sqft))?",
         re.I,
@@ -150,22 +159,28 @@ def derive_code_totals(
         re.I,
     )
     catalog = code_catalog or {}
-    totals: dict[tuple[CodeKey, str], float] = defaultdict(float)
-    display: dict[tuple[CodeKey, str], str] = {}
-    order: list[tuple[CodeKey, str]] = []
+    totals: dict[CodeKey, float] = defaultdict(float)
+    display: dict[CodeKey, str] = {}
+    order: list[CodeKey] = []
+
+    def _record_exclusion(line: str) -> None:
+        cleaned = line.strip()
+        if excluded_lines is not None and cleaned and cleaned not in excluded_lines:
+            excluded_lines.append(cleaned)
+
     for block in blocks:
         for line in block.text.splitlines():
             for match in direct_pattern.finditer(line):
-                if _is_non_billing_context(line, match.start()):
-                    continue
-                raw_code, raw_qty, raw_unit = match.groups()
+                raw_code, raw_qty, _raw_unit = match.groups()
                 normalized_key = code_key(raw_code)
                 if not normalized_key:
                     continue
                 if catalog and normalized_key not in catalog:
                     continue
-                unit = (raw_unit or "").strip()
-                key = (normalized_key, unit)
+                if _is_non_billing_context(line, match.start()):
+                    _record_exclusion(line)
+                    continue
+                key = normalized_key
                 if key not in totals:
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
@@ -183,7 +198,7 @@ def derive_code_totals(
                     continue
                 if catalog and normalized_key not in catalog:
                     continue
-                key = (normalized_key, "")
+                key = normalized_key
                 if key in direct_keys:
                     continue
                 if key not in totals:
@@ -193,9 +208,7 @@ def derive_code_totals(
 
     rows: list[str] = []
     for key in order:
-        code = display[key]
-        unit = key[1]
-        rows.append(f"{code} - {_format_number(totals[key])}{unit}")
+        rows.append(f"{display[key]} - {_format_number(totals[key])}")
     return rows
 
 
@@ -212,14 +225,29 @@ def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
     return raw_code
 
 
+_UTILITY_CONTEXT_RE = re.compile(
+    rf"\b(?:{'|'.join(sorted(p.lower() for p in NON_BILLING_PREFIXES if p != 'ELI'))})\s*[-@]\s*$"
+)
+
+
 def _is_non_billing_context(line: str, match_start: int) -> bool:
-    prefix = line[:match_start].strip().lower()
+    """Structural (not lexical) non-billing detection.
+
+    Only two things disqualify a matched billing code:
+    1. bore/trench measurement callouts anywhere in the line, and
+    2. a utility-crossing marker (NON_BILLING_PREFIXES) immediately before it.
+
+    Surface descriptors such as DIRT-, CONCRETE-, ASPHALT- are display context
+    in front of real codes and DO count: "DIRT-UG6-2" totals UG-06 by 2
+    (Nick Evans, 2026-06-09 sync, Segment 7 PRJ17 missed-code bug).
+    Callers surface every exclusion via derive_code_totals(excluded_lines=...)
+    so nothing is dropped silently.
+    """
     full = line.lower()
     if "bore@" in full or "trench@" in full:
         return True
-    if re.search(r"\b(?:dirt|pwr|wtr|swr|irr|cox|stl)\s*-\s*$", prefix):
-        return True
-    return False
+    prefix = line[:match_start].strip().lower()
+    return bool(_UTILITY_CONTEXT_RE.search(prefix))
 
 
 def extract_material_candidates(blocks: list[TextBlock]) -> list[str]:
@@ -246,6 +274,7 @@ def diagnose_extraction(
     code_totals: list[str],
     material_candidates: list[str] | None = None,
     quantity_lines: list[str] | None = None,
+    excluded_context_lines: list[str] | None = None,
 ) -> ExtractionDiagnostics:
     quantity_lines = quantity_lines if quantity_lines is not None else extract_likely_quantity_lines(blocks)
     material_candidates = (
@@ -271,6 +300,13 @@ def diagnose_extraction(
         warnings.append("No supported billing-code totals were found in the parsed text.")
     if ambiguous_code_line_count:
         warnings.append("Some billing-code text was readable but not complete enough to total automatically.")
+    if excluded_context_lines:
+        preview = "; ".join(excluded_context_lines[:6])
+        if len(excluded_context_lines) > 6:
+            preview += f"; plus {len(excluded_context_lines) - 6} more"
+        warnings.append(
+            f"Lines skipped as non-billing context (bore/trench or utility markers): {preview}."
+        )
     if unresolved_callout_count:
         preview = "; ".join(unresolved_callouts[:6])
         if len(unresolved_callouts) > 6:

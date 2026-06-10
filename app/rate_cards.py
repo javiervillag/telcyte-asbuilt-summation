@@ -6,6 +6,13 @@ from pathlib import Path
 KNOWN_COMPACT_PREFIXES = "UG|CD|MDU|COMP|FB|FX|PC|TL|CX|PT|SMC|SME|DP"
 CODE_TEXT_PATTERN = rf"(?:{KNOWN_COMPACT_PREFIXES})-?\d{{1,3}}|[A-Z]{{2,5}}-\d{{1,3}}"
 CODE_PATTERN = re.compile(rf"\b({CODE_TEXT_PATTERN})(?!\.\d)\b", re.I)
+
+# Utility/context markers that can look like billing codes when followed by a
+# dash-number (e.g. "PWR-36" = power crossing at 36"), but are never billable.
+# Surface descriptors (DIRT, CONCRETE, ASPHALT, ...) are NOT in this set: they
+# are display context in front of real codes (e.g. "DIRT-UG6-2") and must be
+# counted (Nick Evans, 2026-06-09 sync, Segment 7 PRJ17).
+NON_BILLING_PREFIXES = {"ELI", "PWR", "WTR", "SWR", "IRR", "COX", "STL", "GAS", "TEL"}
 CodeKey = tuple[str, str]
 TotalKey = tuple[CodeKey, str, str]
 
@@ -18,7 +25,7 @@ def code_key(code: str) -> CodeKey | None:
     if not parsed:
         return None
     prefix = parsed.group(1).upper()
-    if prefix == "ELI":
+    if prefix in NON_BILLING_PREFIXES:
         return None
     number = parsed.group(2)
     if prefix != "COMP":
@@ -50,7 +57,9 @@ def total_line_key(line: str) -> TotalKey | None:
     if not qty_match:
         return None
     qty = _normalize_quantity(qty_match.group(1))
-    unit = (qty_match.group(2) or "").strip().lower()
+    # Units (' / sqft) are intentionally ignored: quantities total by code only
+    # and the totals box shows no unit markers (Nick Evans email, 2026-06-09).
+    unit = ""
     return (key, qty, unit)
 
 

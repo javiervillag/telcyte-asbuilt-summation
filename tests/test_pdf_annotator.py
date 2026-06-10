@@ -20,13 +20,17 @@ def test_annotate_pdf_adds_totals_text() -> None:
     output = annotate_pdf(SAMPLE.read_bytes(), summary)
     doc = fitz.open(stream=output, filetype="pdf")
     try:
-        text = doc[0].get_text("text")
+        text = _page_text_with_annotations(doc[0])
+        baked_content = doc[0].read_contents()
     finally:
         doc.close()
     assert "MKR Job Totals" in text
     assert "UG-56 - 170'" in text
     assert "605-3277 48Ct - 750'" in text
     assert "\u00ad" not in text
+    # The box is annotation-only: no baked page-content duplicate underneath
+    # (drag-duplicate bug, Nick Evans email 2026-06-09, BI-304069).
+    assert b"MKR Job Totals" not in baked_content
 
 
 def test_annotate_pdf_keeps_selected_extras_separate() -> None:
@@ -40,7 +44,7 @@ def test_annotate_pdf_keeps_selected_extras_separate() -> None:
     output = annotate_pdf(SAMPLE.read_bytes(), summary)
     doc = fitz.open(stream=output, filetype="pdf")
     try:
-        text = doc[0].get_text("text")
+        text = _page_text_with_annotations(doc[0])
     finally:
         doc.close()
     assert "User-selected extra totals" in text
@@ -125,7 +129,7 @@ def test_rotated_pdf_summary_is_selectable_upright_annotation() -> None:
         assert summary_annot.type[1] == "FreeText"
         assert "UG-56 - 168'" in summary_annot.info["content"]
         assert "/Rotate 90" in doc.xref_object(summary_annot.xref, compressed=False)
-        assert _green_pixels_without_annotations(page) > 1000
+        assert _green_pixels_with_annotations(page) > 1000
     finally:
         doc.close()
 
@@ -187,7 +191,14 @@ def _summary_annotations(page: fitz.Page) -> list[str]:
     return rows
 
 
-def _green_pixels_without_annotations(page: fitz.Page) -> int:
-    pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5), annots=False, alpha=False)
+def _page_text_with_annotations(page: fitz.Page) -> str:
+    parts = [page.get_text("text")]
+    for annot in page.annots() or []:
+        parts.append(str((annot.info or {}).get("content") or ""))
+    return "\n".join(parts)
+
+
+def _green_pixels_with_annotations(page: fitz.Page) -> int:
+    pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5), annots=True, alpha=False)
     image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     return sum(1 for r, g, b in image.getdata() if g > 220 and 150 < r < 230 and 120 < b < 210)

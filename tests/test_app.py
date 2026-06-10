@@ -183,6 +183,7 @@ def test_selected_extras_allow_supported_totals_pdf_after_manual_review(monkeypa
     assert captured["summary"].warnings == ["Unresolved callouts remain."]
     result_summary = json.loads(response.headers["x-telcyte-result-summary"])
     assert result_summary["detected_totals"] == ["UG-56 - 170'"]
+    assert captured["summary"].warnings == ["Unresolved callouts remain."]
     assert result_summary["extra_billing_codes"] == ["FB-04 - 6"]
     assert result_summary["result_lines"] == [
         "MKR Job Totals",
@@ -191,8 +192,6 @@ def test_selected_extras_allow_supported_totals_pdf_after_manual_review(monkeypa
         "FB-04 - 6",
         "Extra notes",
         "FB-04: Confirmed 48-count splice group.",
-        "Review",
-        "Unresolved callouts remain.",
     ]
 
 
@@ -265,11 +264,8 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     assert body["result_summary"]["output_name"] == ""
     assert body["result_summary"]["detected_totals"] == []
     assert body["result_summary"]["extra_billing_codes"] == []
-    assert body["result_summary"]["result_lines"] == [
-        "MKR Job Totals",
-        "Review",
-        "This PDF does not have enough readable text for automatic summation.",
-    ]
+    assert body["result_summary"]["result_lines"] == ["MKR Job Totals"]
+    assert body["warnings"] == ["This PDF does not have enough readable text for automatic summation."]
 
 
 def test_manual_review_with_supported_totals_returns_review_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -304,8 +300,6 @@ def test_manual_review_with_supported_totals_returns_review_pdf(monkeypatch: pyt
     assert result_summary["result_lines"] == [
         "MKR Job Totals",
         "UG-06 - 13",
-        "Review",
-        "Unresolved callouts require review.",
     ]
 
 
@@ -318,5 +312,9 @@ def test_sample_manual_review_response_includes_supported_evidence() -> None:
 
     assert response.status_code == 200
     result_summary = json.loads(response.headers["x-telcyte-result-summary"])
-    assert "UG-56 - 170'" in result_summary["detected_totals"]
-    assert any("EOL - 48Ct - 30'" in line for line in result_summary["result_lines"])
+    assert "UG-56 - 170" in result_summary["detected_totals"]
+    # Unresolved callouts are no longer stamped in the box (Review section
+    # removed per Nick 2026-06-09); they surface via the warnings header.
+    warnings = json.loads(response.headers["x-telcyte-warnings"])
+    assert any("EOL - 48Ct - 30'" in w for w in warnings)
+    assert not any("EOL - 48Ct - 30'" in line for line in result_summary["result_lines"])

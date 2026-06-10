@@ -190,8 +190,13 @@ async def summarize_with_model(
     selected_model = model or settings.openrouter_model
     code_catalog = load_code_catalog(settings.rate_card_codes, settings.rate_card_paths)
     blocks = extract_text_blocks(pdf_bytes)
-    parser_totals = derive_code_totals(blocks, code_catalog=code_catalog)
-    diagnostics = diagnose_extraction(blocks, parser_totals)
+    excluded_context_lines: list[str] = []
+    parser_totals = derive_code_totals(
+        blocks, code_catalog=code_catalog, excluded_lines=excluded_context_lines
+    )
+    diagnostics = diagnose_extraction(
+        blocks, parser_totals, excluded_context_lines=excluded_context_lines
+    )
     if diagnostics.review_required and (
         not settings.enable_model_review_on_warnings or not settings.openrouter_api_key
     ):

@@ -16,6 +16,9 @@ MATERIAL_TEXT = (0.0, 0.0, 0.0)
 REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
 BOLD_NARROW_FONT_ENV = "TELCYTE_PDF_BOLD_NARROW_FONT_PATH"
 MAX_SAFE_PLACEMENT_SCORE = 1.35
+BORDER_WIDTH = 2.0
+FONT_SCALE_DIVISOR = 80.0
+RIGHT_SIDE_PENALTY = 0.12
 MAX_TEXT_OVERLAP_RATIO = 0.18
 MAX_ANNOTATION_OVERLAP_RATIO = 0.01
 
@@ -78,12 +81,19 @@ def _ink_density(img: Image.Image, page: fitz.Page, rect: fitz.Rect, scale: floa
 
 
 def _box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float, float]:
-    font_size = max(7.0, min(18.0, page.rect.width / 160))
-    line_height = font_size * 1.16
-    longest = max((len(line) for line in lines), default=18)
-    width = max(page.rect.width * 0.105, min(page.rect.width * 0.24, longest * font_size * 0.54 + font_size * 1.8))
-    height = min(page.rect.height * 0.82, len(lines) * line_height + font_size * 1.6)
-    padding = font_size * 0.55
+    # Font scales with sheet size so the box reads large on any map scale
+    # without a fixed point size (Nick Evans, 2026-06-09: "font size 20 might
+    # be gigantic on one map and tiny on another"). Roughly 2x the old size.
+    font_size = max(10.0, min(40.0, page.rect.width / FONT_SCALE_DIVISOR))
+    line_height = font_size * 1.18
+    padding = font_size * 0.5
+    longest = max(
+        (fitz.get_text_length(line, fontname="helv", fontsize=font_size) for line in lines),
+        default=font_size * 10,
+    )
+    # Tight fit around the measured text to minimize blank space in the box.
+    width = min(page.rect.width * 0.34, longest + padding * 2 + font_size * 0.8)
+    height = min(page.rect.height * 0.82, len(lines) * line_height + padding * 2 + font_size * 0.4)
     return width, height, font_size, padding
 
 
@@ -219,12 +229,14 @@ def _placement_score(
     annotation_overlap_ratio = min(1.0, annotation_overlap_area / rect_area)
     density = _ink_density(img, page, candidate, scale)
     off_page_penalty = 10.0 if not page.rect.contains(candidate) else 0.0
+    right_side_penalty = RIGHT_SIDE_PENALTY if candidate.x0 > page.rect.width / 2 else 0.0
     total = (
         off_page_penalty
         + density
         + overlap_ratio * 2.0
         + annotation_overlap_ratio * 4.0
         + _position_preference_penalty(page, candidate)
+        + right_side_penalty
     )
     return PlacementScore(
         total=total,
@@ -253,7 +265,10 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     try:
         page = doc[0]
         rect = choose_box_rect(page, lines)
-        _add_summary_page_content(page, rect, lines)
+        # The box is a single FreeText annotation: movable in PDF editors, with
+        # no baked page-content copy underneath. The previous dual rendering
+        # caused the "duplicate box when dragged" bug and the Adobe-red /
+        # Nitro-black mismatch (Nick Evans email, 2026-06-09, BI-304069).
         _add_summary_annotation(page, rect, lines)
 
         buffer = BytesIO()
@@ -261,6 +276,29 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
         return buffer.getvalue()
     finally:
         doc.close()
+
+
+def _repair_freetext_appearance(page: fitz.Page, annot: fitz.Annot, rect: fitz.Rect) -> None:
+    """Work around PyMuPDF 1.25.x FreeText appearance defects.
+
+    PyMuPDF writes the appearance-stream /BBox in page coordinates while the
+    stream content draws from the origin, so viewers that honor the /BBox clip
+    (including MuPDF itself) show an empty box; viewers that regenerate the
+    appearance from /DA show their own styling instead. This was the root
+    cause of the red-in-Adobe / black-in-Nitro mismatch (Nick Evans email,
+    2026-06-09). It also emits an unrequested /CL callout line. Rewriting the
+    /BBox to origin and dropping /CL makes the single authored appearance
+    render identically everywhere.
+    """
+    import re as _re
+
+    doc = page.parent
+    ap_ref = doc.xref_get_key(annot.xref, "AP")[1] or ""
+    match = _re.search(r"(\d+) 0 R", ap_ref)
+    if match:
+        doc.xref_set_key(int(match.group(1)), "BBox", f"[0 0 {rect.width} {rect.height}]")
+    if (doc.xref_get_key(annot.xref, "CL")[1] or "null") != "null":
+        doc.xref_set_key(annot.xref, "CL", "null")
 
 
 def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
@@ -274,28 +312,18 @@ def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) 
         fill_color=BOX_FILL,
         rotate=_annotation_rotation(page),
     )
-    annot.set_border(width=0)
-    annot.update(fontname="helv", fontsize=font_size, text_color=TEXT_RED, fill_color=BOX_FILL)
-
-
-def _add_summary_page_content(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
-    page.draw_rect(rect, color=None, fill=BOX_FILL, overlay=True)
-    _, _, base_font_size, _ = _box_metrics(page, lines)
-    font_size = base_font_size
-    for _ in range(8):
-        rendered_lines, fitted_font_size, padding = _summary_rendering(page, rect, lines, font_size=font_size)
-        remaining_space = page.insert_textbox(
-            rect + (padding, padding, -padding, -padding),
-            "\n".join(rendered_lines),
-            fontsize=fitted_font_size,
-            fontname="helv",
-            color=TEXT_RED,
-            rotate=_annotation_rotation(page),
-            overlay=True,
-        )
-        if remaining_space >= 0:
-            return
-        font_size *= 0.9
+    # Border = yes, size 2 (Nick Evans email, 2026-06-09). FreeText supports
+    # base-14 fonts only, so Helvetica (metrically identical to Arial) is used;
+    # text color lives in /DA so all viewers (Adobe, Nitro) render it red.
+    annot.set_border(width=BORDER_WIDTH)
+    annot.update(
+        fontname="helv",
+        fontsize=font_size,
+        text_color=TEXT_RED,
+        fill_color=BOX_FILL,
+        border_color=TEXT_RED,
+    )
+    _repair_freetext_appearance(page, annot, rect)
 
 
 def _summary_rendering(
@@ -306,17 +334,17 @@ def _summary_rendering(
 ) -> tuple[list[str], float, float]:
     _, _, default_font_size, _ = _box_metrics(page, lines)
     font_size = font_size or default_font_size
-    padding = font_size * 0.55
+    padding = font_size * 0.5
     text_width, text_height = _annotation_text_space(page, rect)
     line_height = font_size * 1.16
     max_lines = max(1, int((text_height - padding * 2) / line_height))
     rendered_lines: list[str] = []
     remaining = max_lines
-    max_chars = max(12, int((text_width - padding * 2) / (font_size * 0.54)))
+    max_width = max(font_size * 4, text_width - padding * 2)
     for line in lines:
         if remaining <= 0:
             break
-        wrapped = _wrap_line(line, max_chars)
+        wrapped = _wrap_line(line, max_width, font_size)
         rendered_lines.extend(wrapped[:remaining])
         remaining -= len(wrapped[:remaining])
     return rendered_lines, font_size, padding
@@ -332,15 +360,21 @@ def _annotation_text_space(page: fitz.Page, rect: fitz.Rect) -> tuple[float, flo
     return rect.width, rect.height
 
 
-def _wrap_line(line: str, max_chars: int) -> list[str]:
-    if len(line) <= max_chars:
+def _wrap_line(line: str, max_width: float, font_size: float) -> list[str]:
+    """Wrap by measured text width (same metrics as _box_metrics) so lines
+    that fit the computed box are never wrapped or truncated."""
+
+    def _fits(text: str) -> bool:
+        return fitz.get_text_length(text, fontname="helv", fontsize=font_size) <= max_width
+
+    if _fits(line):
         return [line]
     words = line.split()
     rows: list[str] = []
     current = ""
     for word in words:
         candidate = f"{current} {word}".strip()
-        if len(candidate) <= max_chars:
+        if _fits(candidate):
             current = candidate
         else:
             if current:

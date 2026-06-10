@@ -33,14 +33,14 @@ def test_build_pdf_context_includes_positions() -> None:
 def test_derive_code_totals_sums_repeated_labels() -> None:
     blocks = extract_text_blocks(SAMPLE.read_bytes())
     totals = derive_code_totals(blocks)
-    assert "UG-56 - 170'" in totals
-    assert "COMP-15 - 348'" in totals
+    assert "UG-56 - 170" in totals
+    assert "COMP-15 - 348" in totals
 
 
 def test_derive_code_totals_uses_rate_card_display_and_filter() -> None:
     blocks = extract_text_blocks(SAMPLE.read_bytes())
     totals = derive_code_totals(blocks, code_catalog={("UG", "56"): "UG-56", ("UG", "7"): "UG-07"})
-    assert totals == ["UG-56 - 170'", "UG-07 - 1"]
+    assert totals == ["UG-56 - 170", "UG-07 - 1"]
 
 
 def test_derive_code_totals_reads_pdf_annotation_text_boxes() -> None:
@@ -57,7 +57,7 @@ def test_derive_code_totals_reads_pdf_annotation_text_boxes() -> None:
     blocks = extract_text_blocks(content)
     assert any(block.source == "annotation" for block in blocks)
     assert derive_code_totals(blocks, code_catalog={("UG", "7"): "UG-07", ("COMP", "9"): "Comp-9"}) == [
-        "UG-07 - 10'",
+        "UG-07 - 10",
         "Comp-9 - 2",
     ]
 
@@ -109,12 +109,17 @@ def test_quantity_first_code_notes_do_not_duplicate_direct_totals() -> None:
     assert derive_code_totals(extract_text_blocks(content)) == ["UG-06 - 13"]
 
 
-def test_derive_code_totals_ignores_bore_context_notes() -> None:
+def test_derive_code_totals_counts_dirt_pothole_callouts_in_sample() -> None:
+    # BI-912047 has "Dirt - UG-6 - 1" (pothole callout) alongside a direct
+    # "UG-06 - 13" line. Per Nick's 2026-06-09 guidance (Segment 7 PRJ17),
+    # surface-descriptor callouts are billable and must be totaled -> 14.
+    # NOTE: pending Nick's confirmation whether a coexisting direct-total
+    # line should subsume descriptor callouts (manual box on this sample
+    # said 13). See tests/test_nick_jun9_feedback.py.
     sample = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-912047-Totals Removed.pdf")
     blocks = extract_text_blocks(sample.read_bytes())
     totals = derive_code_totals(blocks)
-    assert "UG-6 - 14" not in totals
-    assert "UG-06 - 13" in totals
+    assert "UG-06 - 14" in totals
 
 
 def test_derive_code_totals_reads_future_code_prefixes_and_surface_labels() -> None:
@@ -130,10 +135,12 @@ def test_derive_code_totals_reads_future_code_prefixes_and_surface_labels() -> N
 
     totals = derive_code_totals(extract_text_blocks(content))
 
-    assert totals == ["SME-01 - 1", "DP-11 - 156'", "UG-06 - 5", "UG-85 - 1"]
+    assert totals == ["SME-01 - 1", "DP-11 - 156", "UG-06 - 5", "UG-85 - 1"]
 
 
-def test_derive_code_totals_still_ignores_dirt_utility_context_notes() -> None:
+def test_derive_code_totals_counts_dirt_surface_descriptor_codes() -> None:
+    # Segment 7 PRJ17 regression (Nick Evans, 2026-06-09): DIRT- is a surface
+    # descriptor like CONCRETE-/ASPHALT-, not a non-billing marker.
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
     page.insert_text((72, 72), "Dirt - UG-6 - 1")
@@ -141,7 +148,7 @@ def test_derive_code_totals_still_ignores_dirt_utility_context_notes() -> None:
     content = doc.tobytes()
     doc.close()
 
-    assert derive_code_totals(extract_text_blocks(content)) == ["UG-06 - 2"]
+    assert derive_code_totals(extract_text_blocks(content)) == ["UG-06 - 3"]
 
 
 def test_diagnose_extraction_requires_review_for_blank_pdf() -> None:

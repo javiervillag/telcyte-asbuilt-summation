@@ -26,7 +26,7 @@ class SummaryResult(BaseModel):
         if self.materials:
             lines.append(material_heading)
             lines.extend(line.strip() for line in self.materials if line.strip())
-        if self.warnings:
-            lines.append("Review")
-            lines.extend(line.strip() for line in self.warnings if line.strip())
+        # Warnings are intentionally NOT stamped into the PDF box; they remain
+        # available in the API response and run history (Nick Evans, 2026-06-09
+        # sync: remove the Review section from the totals box).
         return lines
