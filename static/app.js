@@ -29,6 +29,13 @@ const historyList = document.querySelector("#history-list");
 const historyRefresh = document.querySelector("#history-refresh");
 const historyExport = document.querySelector("#history-export");
 const historySearch = document.querySelector("#history-search");
+const historyViewAll = document.querySelector("#history-view-all");
+const historyModal = document.querySelector("#history-modal");
+const historyModalBackdrop = document.querySelector("#history-modal-backdrop");
+const historyModalClose = document.querySelector("#history-modal-close");
+const historyModalSearch = document.querySelector("#history-modal-search");
+const historyModalList = document.querySelector("#history-modal-list");
+const historyModalCount = document.querySelector("#history-modal-count");
 const nickReviewCopy = document.querySelector("#nick-review-copy");
 const appTabs = document.querySelectorAll(".app-tab");
 const appPanels = {
@@ -834,7 +841,10 @@ async function loadRunHistory() {
   historyCards.innerHTML = `<div class="history-empty">Loading run history...</div>`;
   try {
     const query = historySearch ? historySearch.value.trim() : "";
-    const response = await fetch(`/api/run-history?limit=50&q=${encodeURIComponent(query)}`);
+    // Default view stays light: the 10 most recent runs. Searching widens
+    // the net; the full archive lives in the "View all" window.
+    const limit = query ? 50 : 10;
+    const response = await fetch(`/api/run-history?limit=${limit}&q=${encodeURIComponent(query)}`);
     if (!response.ok) throw new Error("Run history unavailable.");
     const data = await response.json();
     renderRunHistory(data);
@@ -872,6 +882,52 @@ function renderRunHistory(data) {
     return;
   }
   historyList.innerHTML = runs.map(renderRunRow).join("");
+}
+
+if (historyViewAll) {
+  historyViewAll.addEventListener("click", () => {
+    historyModal.hidden = false;
+    if (historyModalSearch) historyModalSearch.value = "";
+    loadAllRuns();
+    if (historyModalSearch) historyModalSearch.focus();
+  });
+}
+if (historyModalClose) historyModalClose.addEventListener("click", closeHistoryModal);
+if (historyModalBackdrop) historyModalBackdrop.addEventListener("click", closeHistoryModal);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && historyModal && !historyModal.hidden) closeHistoryModal();
+});
+let historyModalTimer = null;
+if (historyModalSearch) {
+  historyModalSearch.addEventListener("input", () => {
+    clearTimeout(historyModalTimer);
+    historyModalTimer = setTimeout(() => loadAllRuns(), 250);
+  });
+}
+
+function closeHistoryModal() {
+  if (historyModal) historyModal.hidden = true;
+}
+
+async function loadAllRuns() {
+  if (!historyModalList) return;
+  historyModalList.innerHTML = `<div class="history-empty">Loading all runs...</div>`;
+  try {
+    const query = historyModalSearch ? historyModalSearch.value.trim() : "";
+    const response = await fetch(`/api/run-history?limit=500&q=${encodeURIComponent(query)}`);
+    if (!response.ok) throw new Error("Run history unavailable.");
+    const data = await response.json();
+    const runs = Array.isArray(data.runs) ? data.runs : [];
+    const total = (data.summary && data.summary.total_runs) || 0;
+    historyModalCount.textContent = query
+      ? `${runs.length} match${runs.length === 1 ? "" : "es"}`
+      : `${runs.length} of ${total} runs`;
+    historyModalList.innerHTML = runs.length
+      ? runs.map(renderRunRow).join("")
+      : `<div class="history-empty">${query ? `No runs match "${escapeHtml(query)}".` : "No runs logged yet."}</div>`;
+  } catch (error) {
+    historyModalList.innerHTML = `<div class="history-empty">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function metricCard(label, value) {

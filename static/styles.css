@@ -1219,3 +1219,56 @@ input[type="file"] {
   display: flex;
   gap: 14px;
 }
+
+.history-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.history-modal[hidden] {
+  display: none;
+}
+
+.history-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 18, 14, 0.55);
+}
+
+.history-modal-card {
+  position: relative;
+  width: min(880px, 94vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--card, #fff);
+  border-radius: 14px;
+  padding: 20px 22px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+
+.history-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.history-modal-header .history-search {
+  flex: 1;
+}
+
+.history-modal-count {
+  color: #777;
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.history-modal-list {
+  overflow-y: auto;
+  flex: 1;
+}

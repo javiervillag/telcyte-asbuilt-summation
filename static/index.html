@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telcyte As-Built Summation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260610-history2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260610-history3" />
   </head>
   <body>
     <header class="masthead">
@@ -127,6 +127,7 @@
           <div class="history-list-header">
             <strong>Recent runs</strong>
             <div class="history-tools">
+              <button id="history-view-all" class="text-button" type="button">View all</button>
               <input
                 id="history-search"
                 class="history-search"
@@ -142,6 +143,27 @@
           </div>
         </article>
       </section>
+
+      <div id="history-modal" class="history-modal" hidden>
+        <div id="history-modal-backdrop" class="history-modal-backdrop"></div>
+        <div class="history-modal-card" role="dialog" aria-modal="true" aria-label="All runs">
+          <div class="history-modal-header">
+            <strong>All runs</strong>
+            <span id="history-modal-count" class="history-modal-count"></span>
+            <input
+              id="history-modal-search"
+              class="history-search"
+              type="search"
+              placeholder="Search all runs"
+              autocomplete="off"
+            />
+            <button id="history-modal-close" class="ghost-button" type="button">Close</button>
+          </div>
+          <div id="history-modal-list" class="history-list history-modal-list" aria-live="polite">
+            <div class="history-empty">Loading...</div>
+          </div>
+        </div>
+      </div>
     </main>
 
     <div id="processing-overlay" class="processing-overlay" aria-live="assertive" aria-hidden="true">
@@ -158,6 +180,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260610-history2"></script>
+    <script src="/static/app.js?v=20260610-history3"></script>
   </body>
 </html>
