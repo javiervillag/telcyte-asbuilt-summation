@@ -196,3 +196,25 @@ def test_model_review_failure_falls_back_to_parser_totals(monkeypatch) -> None:
     assert "UG-06 - 3" in summary.job_totals
     assert "UG-44 - 10" in summary.job_totals
     assert any("parser-only" in w for w in summary.warnings)
+
+
+def test_pdf_context_represents_every_page_within_budget() -> None:
+    # The LLM context must sample blocks from ALL pages (code-bearing blocks
+    # first) instead of blindly truncating the tail, which dropped the later
+    # pages of permit drawings (NR-702749, 2026-06-10).
+    from app.pdf_parser import build_pdf_context
+
+    doc = fitz.open()
+    for page_num in range(6):
+        page = doc.new_page(width=1224, height=792)
+        page.insert_text((600, 400), f"UG-0{page_num + 1} - {page_num + 1}")
+        for i in range(40):  # boilerplate filler
+            page.insert_text((60, 60 + i * 17), f"General permit note {page_num}-{i} with no billing data")
+    content = doc.tobytes()
+    doc.close()
+
+    ctx = build_pdf_context(content, max_chars=8000)
+    assert len(ctx) <= 8000 + 200
+    # Every page's code line made it in despite the tight budget.
+    for page_num in range(6):
+        assert f"UG-0{page_num + 1} - {page_num + 1}" in ctx

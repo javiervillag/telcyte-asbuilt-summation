@@ -394,13 +394,12 @@ def build_pdf_context(
     code_totals = derive_code_totals(blocks, code_catalog=code_catalog)
     material_candidates = extract_material_candidates(blocks)
 
-    block_rows = []
-    for block in blocks[:650]:
-        x0, y0, x1, y1 = block.bbox
-        text = block.text.replace("\n", " | ")
-        block_rows.append(f"p{block.page} [{x0},{y0},{x1},{y1}] {text}")
-
-    context = [
+    # High-signal sections are always included in full (they are already
+    # capped); the positioned-block section gets whatever budget remains,
+    # spread fairly across ALL pages. The old approach truncated the tail
+    # blindly, which silently dropped exactly the later pages where permit
+    # drawings keep their billing callouts (NR-702749, 2026-06-10).
+    head = [
         "PDF page metadata:",
         *page_summaries,
         "",
@@ -413,10 +412,51 @@ def build_pdf_context(
         "Material candidates extracted from part numbers and material words:",
         *material_candidates[:250],
         "",
-        "Positioned text blocks:",
-        *block_rows,
+        "Positioned text blocks (sampled evenly across pages; code-bearing blocks first):",
     ]
-    joined = "\n".join(context)
-    if len(joined) > max_chars:
-        joined = joined[:max_chars] + "\n[truncated]"
-    return joined
+    head_text = "\n".join(head)
+    remaining = max_chars - len(head_text) - 200  # reserve room for omission notes
+
+    def _block_row(block: TextBlock) -> str:
+        x0, y0, x1, y1 = block.bbox
+        return f"p{block.page} [{x0},{y0},{x1},{y1}] " + block.text.replace("\n", " | ")
+
+    def _signal(block: TextBlock) -> int:
+        # Code-bearing blocks first, then anything with digits, then prose.
+        if CODE_PATTERN.search(block.text):
+            return 0
+        if any(ch.isdigit() for ch in block.text):
+            return 1
+        return 2
+
+    by_page: dict[int, list[TextBlock]] = defaultdict(list)
+    for block in blocks:
+        by_page[block.page].append(block)
+    for page_blocks in by_page.values():
+        page_blocks.sort(key=_signal)
+
+    block_rows: list[str] = []
+    omitted: dict[int, int] = defaultdict(int)
+    queues = {page: list(page_blocks) for page, page_blocks in sorted(by_page.items())}
+    while remaining > 0 and any(queues.values()):
+        progressed = False
+        for page in sorted(queues):
+            if not queues[page]:
+                continue
+            row = _block_row(queues[page].pop(0))
+            if len(row) + 1 > remaining:
+                continue
+            block_rows.append(row)
+            remaining -= len(row) + 1
+            progressed = True
+        if not progressed:
+            break
+    for page, queue in queues.items():
+        if queue:
+            omitted[page] = len(queue)
+
+    notes = [
+        f"[page {page}: {count} lower-signal blocks omitted for budget]"
+        for page, count in sorted(omitted.items())
+    ]
+    return "\n".join([head_text, *block_rows, *notes])
