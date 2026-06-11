@@ -8,7 +8,12 @@ KNOWN_PREFIX_SET = set(KNOWN_COMPACT_PREFIXES.split("|"))
 # Quantities may use thousands separators ("UG-03 - 1,904"); matching only
 # the leading digits would silently total 1 instead of 1904.
 QTY_TEXT_PATTERN = r"[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?"
-CODE_TEXT_PATTERN = rf"(?:{KNOWN_COMPACT_PREFIXES})-?\d{{1,3}}|[A-Z]{{2,5}}-\d{{1,3}}"
+# Known prefixes tolerate flexible spacing around the dash ("UG- 6", "UG - 6",
+# "UG -6"): field crews type these by hand (NR-702749 Segment 12 missed
+# "UG- 6 - 1", Nick 2026-06-10). The generic forward-compat pattern for
+# UNKNOWN prefixes stays strict ("ABC-12" only) - with spacing allowed it
+# would match prose like "Tie Point - 144" or "EOL - 48" as codes.
+CODE_TEXT_PATTERN = rf"(?:{KNOWN_COMPACT_PREFIXES})(?:\s*-\s*|-)?\d{{1,3}}|[A-Z]{{2,5}}-\d{{1,3}}"
 CODE_PATTERN = re.compile(rf"\b({CODE_TEXT_PATTERN})(?!\.\d)\b", re.I)
 
 # Utility/context markers that can look like billing codes when followed by a
@@ -25,7 +30,7 @@ def code_key(code: str) -> CodeKey | None:
     match = CODE_PATTERN.search(code)
     if not match:
         return None
-    parsed = re.match(r"([A-Za-z]+)-?(\d{1,3})$", match.group(1), re.I)
+    parsed = re.match(r"([A-Za-z]+)\s*-?\s*(\d{1,3})$", match.group(1), re.I)
     if not parsed:
         return None
     prefix = parsed.group(1).upper()

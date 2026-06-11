@@ -304,3 +304,38 @@ def test_long_total_lists_shrink_font_instead_of_dropping_lines() -> None:
     finally:
         doc.close()
     assert len(content_lines) == 61  # title + all 60 codes, nothing dropped
+
+
+# --- NR-702749 Segment 12 round 2 (Nick, 2026-06-10): spaced callouts ---
+
+def test_spaced_code_callouts_are_counted() -> None:
+    # Field crews hand-type codes with stray spaces around the dash.
+    content = _pdf_with_lines([
+        "UG- 6 - 1",       # the exact missed callout
+        "UG- 6 - 3",
+        "UG - 6 - 2",
+        "UG -84 - 1",
+        "Comp - 9 - 480'",
+    ])
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-06 - 6" in totals
+    assert "UG-84 - 1" in totals
+    assert "Comp-9 - 480" in totals
+
+
+def test_spacing_tolerance_does_not_apply_to_unknown_prefixes() -> None:
+    # Generic (unknown-prefix) matching stays strict; otherwise prose like
+    # "Tie Point - 144" or "EOL - 48" would be totaled as codes.
+    content = _pdf_with_lines([
+        "Tie Point - 144 - 98",
+        "EOL - 48 - 30",
+        "UG-06 - 2",
+    ])
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert totals == ["UG-06 - 2"]
+
+
+def test_spaced_codes_normalize_in_display() -> None:
+    content = _pdf_with_lines(["UG- 6 - 1", "UG-06 - 1"])
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert totals == ["UG-06 - 2"]  # one merged row, clean display

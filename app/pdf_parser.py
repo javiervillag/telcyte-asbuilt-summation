@@ -258,16 +258,19 @@ def derive_code_totals(
 
 
 def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
-    raw_code = raw_code.strip()
+    # Rebuild the display form from the normalized key so spacing variants in
+    # the raw callout ("UG- 6", "UG - 84") never leak into the totals box.
     prefix, number = normalized_key
-    if prefix != "COMP" and number.isdigit() and int(number) < 10:
-        return f"{prefix}-{int(number):02d}"
-    if "-" in raw_code:
-        return raw_code.upper() if prefix != "COMP" else raw_code
-    match = re.match(r"([A-Za-z]+)(\d+)", raw_code)
+    if prefix != "COMP":
+        if number.isdigit() and int(number) < 10:
+            return f"{prefix}-{int(number):02d}"
+        return f"{prefix}-{number}"
+    # COMP keeps its original number shape (Comp-9 != Comp-09) and case.
+    compact = re.sub(r"\s+", "", raw_code.strip())
+    match = re.match(r"([A-Za-z]+)-?(\d{1,3})", compact)
     if match:
         return f"{match.group(1)}-{match.group(2)}"
-    return raw_code
+    return compact
 
 
 _UTILITY_CONTEXT_RE = re.compile(
