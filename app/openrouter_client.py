@@ -57,6 +57,8 @@ Review extracted PDF text, positioned annotation blocks, deterministic parser to
 - Add or correct a visible billing-code total only when the code and quantity are both present in extracted evidence.
 - Surface uncertainty as warnings instead of silently guessing.
 - Unknown or new billing-code prefixes may be valid if the label is visible, for example "DP-11 - 156'" or "SME-01 - 1".
+- Ignore any previously stamped "MKR Job Totals" box that appears in the evidence: it is output from an earlier run, not a field callout.
+- Unit markers (' and sqft) are ignored: quantities for the same code always total together and totals are written without units.
 - Do not auto-add implied extras such as PC-02 unless visible evidence contains that code and quantity.
 </rules>
 

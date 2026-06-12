@@ -339,3 +339,28 @@ def test_spaced_codes_normalize_in_display() -> None:
     content = _pdf_with_lines(["UG- 6 - 1", "UG-06 - 1"])
     totals = derive_code_totals(extract_text_blocks(content))
     assert totals == ["UG-06 - 2"]  # one merged row, clean display
+
+
+# --- BI-872022 re-run (2026-06-11): existing totals boxes must be ignored ---
+
+def test_existing_mkr_totals_box_is_not_counted() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    # Field callouts
+    page.insert_text((600, 300), "UG-06 - 4")
+    page.insert_text((600, 400), "UG-36 - 138'")
+    # A previously stamped totals box (e.g. from an earlier run)
+    page.add_freetext_annot(
+        fitz.Rect(20, 20, 280, 200),
+        "MKR Job Totals\nUG-06 - 4\nUG-36 - 138\nTL-20 - 2\nPC-02 - 1",
+        fontsize=12,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "UG-06 - 4" in totals          # not 8
+    assert "UG-36 - 138" in totals        # not 276
+    assert not any(t.startswith("TL-20") or t.startswith("PC-02") for t in totals)
+    assert any("re-run detected" in n for n in notes)

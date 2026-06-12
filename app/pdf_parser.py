@@ -92,8 +92,13 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
                 if key in seen:
                     continue
                 seen.add(key)
-                annotation_texts.add(cleaned)
-                annotation_lines.update(line for line in cleaned.splitlines() if line)
+                # A previously stamped totals box is kept as a block (so the
+                # reviewer sees it) but must NOT feed the page-text dedup
+                # sets: a genuine field callout that happens to equal one of
+                # its lines would otherwise be silently dropped.
+                if not _starts_with_totals_title(cleaned):
+                    annotation_texts.add(cleaned)
+                    annotation_lines.update(line for line in cleaned.splitlines() if line)
                 blocks.append(TextBlock(page=page_index, bbox=bbox, text=cleaned, source="annotation"))
             for raw in page.get_text("blocks", sort=True):
                 x0, y0, x1, y1, text, *_ = raw
@@ -121,6 +126,13 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
         doc.close()
     blocks.sort(key=lambda block: (block.page, block.bbox[1], block.bbox[0], block.source))
     return blocks
+
+
+def _starts_with_totals_title(text: str) -> bool:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip().lower().startswith("mkr job totals")
+    return False
 
 
 def _remove_duplicate_annotation_lines(text: str, annotation_lines: set[str]) -> str:
@@ -193,6 +205,31 @@ def derive_code_totals(
         if cleaned and cleaned not in catalog_misses:
             catalog_misses.append(cleaned)
 
+    # Re-run safety: a previously stamped "MKR Job Totals" box (ours or a
+    # manual one) must never be counted as field callouts - re-running an
+    # already-summarized PDF doubled every total and absorbed box-only lines
+    # like TL-20/PC-02 (BI-872022 re-run, 2026-06-11).
+    skipped_total_boxes = 0
+    box_rects: list[tuple[int, tuple[float, float, float, float]]] = []
+    billable_blocks: list[TextBlock] = []
+    for block in blocks:
+        if _starts_with_totals_title(block.text):
+            skipped_total_boxes += 1
+            box_rects.append((block.page, block.bbox))
+        else:
+            billable_blocks.append(block)
+
+    def _inside_box(block: TextBlock) -> bool:
+        cx = (block.bbox[0] + block.bbox[2]) / 2
+        cy = (block.bbox[1] + block.bbox[3]) / 2
+        for page, (x0, y0, x1, y1) in box_rects:
+            if block.page == page and x0 <= cx <= x1 and y0 <= cy <= y1 and (x1 - x0) > 1:
+                return True
+        return False
+
+    # Flattened remnants of a stamped box sit inside its rect on the page.
+    blocks = [b for b in billable_blocks if not (b.source == "page" and _inside_box(b))]
+
     for block in blocks:
         for line in block.text.splitlines():
             for match in direct_pattern.finditer(line):
@@ -238,6 +275,11 @@ def derive_code_totals(
         rows.append(f"{display[key]} - {_format_number(totals[key])}")
 
     if notes is not None:
+        if skipped_total_boxes:
+            notes.append(
+                f"Ignored {skipped_total_boxes} existing 'MKR Job Totals' box(es) already stamped "
+                "on the drawing (re-run detected); totals were recomputed from the field callouts only."
+            )
         if catalog_misses:
             preview = "; ".join(catalog_misses[:6])
             if len(catalog_misses) > 6:
