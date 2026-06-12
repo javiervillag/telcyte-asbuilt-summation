@@ -377,26 +377,3 @@ def test_box_has_norotate_flag_on_unrotated_pages() -> None:
         assert a.flags & fitz.PDF_ANNOT_IS_NO_ROTATE
     finally:
         doc.close()
-
-
-def test_rotated_pages_are_normalized_so_boxes_survive_editor_drags() -> None:
-    # NR-1138768 (2026-06-11): on /Rotate 90 permit sheets, Nitro regenerates
-    # a dragged FreeText box in page space and the text turns sideways. The
-    # output page is rewritten to native rotation-0 (visually identical).
-    doc = fitz.open()
-    page = doc.new_page(width=1728, height=2592)  # portrait mediabox
-    page.insert_text((600, 1200), "UG-06 - 2")
-    page.set_rotation(90)                          # displayed landscape
-    content = doc.tobytes()
-    doc.close()
-
-    output = annotate_pdf(content, _summary())
-    doc = fitz.open(stream=output, filetype="pdf")
-    try:
-        page = doc[0]
-        assert page.rotation == 0
-        a = [x for x in page.annots() or [] if "MKR" in str((x.info or {}).get("content", ""))][0]
-        assert (doc.xref_get_key(a.xref, "Rotate")[1] or "0") in {"0", "null"}
-        assert a.flags & fitz.PDF_ANNOT_IS_NO_ROTATE
-    finally:
-        doc.close()

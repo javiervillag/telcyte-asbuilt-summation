@@ -115,9 +115,7 @@ def test_generic_output_preserves_existing_green_annotations() -> None:
     assert summary_annotations == ["MKR Job Totals\nUG-83 - 140'"]
 
 
-def test_rotated_pdf_summary_page_is_normalized_and_upright() -> None:
-    # Rotated sheets are rewritten to native rotation-0 in the output so PDF
-    # editors never sideways-flip a dragged box (NR-1138768, 2026-06-11).
+def test_rotated_pdf_summary_is_selectable_upright_annotation() -> None:
     input_pdf = SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf")
     summary = SummaryResult(
         model="parser-test",
@@ -130,13 +128,12 @@ def test_rotated_pdf_summary_page_is_normalized_and_upright() -> None:
     doc = fitz.open(stream=output, filetype="pdf")
     try:
         page = doc[0]
-        assert page.rotation == 0
         summary_annots = [annot for annot in page.annots() or [] if (annot.info or {}).get("content", "").startswith("MKR Job Totals")]
         assert len(summary_annots) == 1
         summary_annot = summary_annots[0]
         assert summary_annot.type[1] == "FreeText"
         assert "UG-56 - 168'" in summary_annot.info["content"]
-        assert summary_annot.flags & fitz.PDF_ANNOT_IS_NO_ROTATE
+        assert "/Rotate 90" in doc.xref_object(summary_annot.xref, compressed=False)
         assert _green_pixels_with_annotations(page) > 1000
     finally:
         doc.close()

@@ -303,15 +303,6 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
-        if page.rotation:
-            # Rotated sheets (portrait permit drawings displayed landscape via
-            # /Rotate 90) break FreeText boxes in PDF editors: Nitro/Bluebeam
-            # regenerate a dragged box in page space and ignore the rotation,
-            # so the text turns sideways - Telcyte sees this with their OWN
-            # callouts too (Nick, NR-1138768, 2026-06-11). Rewriting the page
-            # to native rotation-0 (visually identical, annotations adjusted)
-            # makes every box on the sheet behave like a normal page.
-            page.remove_rotation()
         rect = choose_box_rect(page, lines)
         # The box is a single FreeText annotation: movable in PDF editors, with
         # no baked page-content copy underneath. The previous dual rendering
