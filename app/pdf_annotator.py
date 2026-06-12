@@ -304,11 +304,21 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     try:
         page = doc[0]
         rect = choose_box_rect(page, lines)
-        # The box is a single FreeText annotation: movable in PDF editors, with
-        # no baked page-content copy underneath. The previous dual rendering
-        # caused the "duplicate box when dragged" bug and the Adobe-red /
-        # Nitro-black mismatch (Nick Evans email, 2026-06-09, BI-304069).
-        _add_summary_annotation(page, rect, lines)
+        if page.rotation:
+            # Rotated sheets (portrait permit drawings shown landscape via
+            # /Rotate 90): PDF editors regenerate a dragged FreeText box in
+            # page space and flip its text sideways - Nitro does this to
+            # Telcyte's own boxes too (NR-1138768, 2026-06-11). On these
+            # sheets the box is baked into the page content with correctly
+            # rotated text: renders identically in every viewer and cannot
+            # be flipped. Movable annotations stay on unrotated sheets.
+            _add_baked_summary(page, rect, lines)
+        else:
+            # Single FreeText annotation: movable in PDF editors, with no
+            # baked page-content copy underneath. Dual rendering caused the
+            # "duplicate box when dragged" bug and the Adobe-red /
+            # Nitro-black mismatch (Nick Evans email, 2026-06-09, BI-304069).
+            _add_summary_annotation(page, rect, lines)
 
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
@@ -365,6 +375,42 @@ def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) 
     _repair_freetext_appearance(page, annot, rect)
     _set_editor_text_style(page, annot, rendered_lines, font_size)
     _pin_annotation_orientation(page, annot)
+
+
+def _add_baked_summary(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
+    """Stamp the totals box as page content on rotated sheets."""
+    page.draw_rect(rect, color=TEXT_RED, fill=BOX_FILL, width=BORDER_WIDTH, overlay=True)
+    _, _, base_font_size, _ = _box_metrics(page, lines)
+    style = TextStyle(size=base_font_size, color=TEXT_RED, bold_narrow=True)
+    font_file = _font_file(style)
+    font_kwargs: dict = {"fontname": "helv"}
+    if font_file:
+        font_kwargs = {"fontname": _font_name(style), "fontfile": str(font_file)}
+    font_size = base_font_size
+    padding = font_size * 0.5
+    for _ in range(10):
+        rendered_lines, fitted, padding = _summary_rendering(page, rect, lines, font_size=font_size)
+        leftover = page.insert_textbox(
+            rect + (padding, padding, -padding, -padding),
+            "\n".join(rendered_lines),
+            fontsize=fitted,
+            color=TEXT_RED,
+            rotate=_annotation_rotation(page),
+            overlay=True,
+            **font_kwargs,
+        )
+        if leftover >= 0 and len(rendered_lines) == len(lines):
+            return
+        font_size *= 0.88
+    page.insert_textbox(
+        rect + (padding, padding, -padding, -padding),
+        "\n".join(lines),
+        fontsize=8,
+        color=TEXT_RED,
+        rotate=_annotation_rotation(page),
+        overlay=True,
+        **font_kwargs,
+    )
 
 
 def _pin_annotation_orientation(page: fitz.Page, annot: fitz.Annot) -> None:

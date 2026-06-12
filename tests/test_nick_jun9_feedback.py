@@ -377,3 +377,35 @@ def test_box_has_norotate_flag_on_unrotated_pages() -> None:
         assert a.flags & fitz.PDF_ANNOT_IS_NO_ROTATE
     finally:
         doc.close()
+
+
+def test_rotated_pages_get_baked_box_normal_pages_get_annotation() -> None:
+    # NR-1138768 (2026-06-11): editors flip dragged FreeText boxes sideways
+    # on rotated sheets, so those get a baked box; normal sheets keep the
+    # movable annotation.
+    doc = fitz.open()
+    page = doc.new_page(width=1728, height=2592)
+    page.insert_text((600, 1200), "UG-06 - 2")
+    page.set_rotation(90)
+    rotated = doc.tobytes()
+    doc.close()
+
+    out = annotate_pdf(rotated, _summary())
+    doc = fitz.open(stream=out, filetype="pdf")
+    try:
+        page = doc[0]
+        assert page.rotation == 90
+        assert not [a for a in page.annots() or [] if "MKR" in str((a.info or {}).get("content", ""))]
+        baked_text = page.get_text("text").replace("\u00a0", " ")
+        assert "MKR Job Totals" in baked_text
+    finally:
+        doc.close()
+
+    out = annotate_pdf(_pdf_with_lines(["UG-06 - 2"]), _summary())
+    doc = fitz.open(stream=out, filetype="pdf")
+    try:
+        page = doc[0]
+        assert len([a for a in page.annots() or [] if "MKR" in str((a.info or {}).get("content", ""))]) == 1
+        assert b"MKR Job Totals" not in page.read_contents()
+    finally:
+        doc.close()

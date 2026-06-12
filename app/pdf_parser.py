@@ -59,7 +59,7 @@ def _clean_text(text: str) -> str:
     # Normalize typographic characters so authored maps match the patterns:
     # en/em/minus dashes -> hyphen, multiplication sign -> x.
     text = text.replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
-    text = text.replace("\u00d7", "x")
+    text = text.replace("\u00d7", "x").replace("\u00a0", " ")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

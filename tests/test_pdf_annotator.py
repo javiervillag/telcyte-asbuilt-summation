@@ -115,7 +115,11 @@ def test_generic_output_preserves_existing_green_annotations() -> None:
     assert summary_annotations == ["MKR Job Totals\nUG-83 - 140'"]
 
 
-def test_rotated_pdf_summary_is_selectable_upright_annotation() -> None:
+def test_rotated_pdf_summary_is_baked_page_content() -> None:
+    # Rotated sheets get a baked (non-movable) box: PDF editors flip dragged
+    # FreeText boxes sideways on these pages (NR-1138768, 2026-06-11), and
+    # remove_rotation() broke Telcyte's own annotations, so baking is the
+    # only viewer-proof rendering. Movable annotations stay on normal pages.
     input_pdf = SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf")
     summary = SummaryResult(
         model="parser-test",
@@ -128,12 +132,12 @@ def test_rotated_pdf_summary_is_selectable_upright_annotation() -> None:
     doc = fitz.open(stream=output, filetype="pdf")
     try:
         page = doc[0]
+        assert page.rotation == 90  # page untouched
         summary_annots = [annot for annot in page.annots() or [] if (annot.info or {}).get("content", "").startswith("MKR Job Totals")]
-        assert len(summary_annots) == 1
-        summary_annot = summary_annots[0]
-        assert summary_annot.type[1] == "FreeText"
-        assert "UG-56 - 168'" in summary_annot.info["content"]
-        assert "/Rotate 90" in doc.xref_object(summary_annot.xref, compressed=False)
+        assert summary_annots == []
+        baked_text = page.get_text("text").replace("\u00a0", " ")
+        assert "MKR Job Totals" in baked_text
+        assert "UG-56 - 168'" in baked_text
         assert _green_pixels_with_annotations(page) > 1000
     finally:
         doc.close()
