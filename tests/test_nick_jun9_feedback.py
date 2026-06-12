@@ -364,3 +364,16 @@ def test_existing_mkr_totals_box_is_not_counted() -> None:
     assert "UG-36 - 138" in totals        # not 276
     assert not any(t.startswith("TL-20") or t.startswith("PC-02") for t in totals)
     assert any("re-run detected" in n for n in notes)
+
+
+def test_box_has_norotate_flag_on_unrotated_pages() -> None:
+    # Nick's editor auto-rotates the box on drag/copy-paste for some permit
+    # drawings (2026-06-11); NoRotate pins the orientation.
+    output = annotate_pdf(_pdf_with_lines(["UG-06 - 1"]), _summary())
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        a = [x for x in page.annots() or [] if "MKR" in str((x.info or {}).get("content", ""))][0]
+        assert a.flags & fitz.PDF_ANNOT_IS_NO_ROTATE
+    finally:
+        doc.close()

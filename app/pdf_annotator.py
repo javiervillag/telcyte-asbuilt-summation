@@ -364,6 +364,21 @@ def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) 
     )
     _repair_freetext_appearance(page, annot, rect)
     _set_editor_text_style(page, annot, rendered_lines, font_size)
+    _pin_annotation_orientation(page, annot)
+
+
+def _pin_annotation_orientation(page: fitz.Page, annot: fitz.Annot) -> None:
+    """Set the NoRotate flag on unrotated pages.
+
+    Nick reports his PDF editor auto-rotates the totals box (and drops to
+    black text) when dragging/copy-pasting on some permit drawings
+    (2026-06-11). NoRotate (PDF annotation flag bit 5) is the standard way
+    to declare that an annotation keeps its own orientation. Only applied
+    when the page itself is unrotated - on rotated sheets our /Rotate key
+    keeps the text upright and must stay in charge.
+    """
+    if page.rotation == 0:
+        annot.set_flags(annot.flags | fitz.PDF_ANNOT_IS_NO_ROTATE)
 
 
 def _set_editor_text_style(page: fitz.Page, annot: fitz.Annot, lines: list[str], font_size: float) -> None:
