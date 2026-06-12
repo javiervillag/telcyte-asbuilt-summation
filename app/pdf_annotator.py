@@ -111,24 +111,34 @@ def _box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float
     return width, height, font_size, padding
 
 
-def _placement_box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float, float]:
+def _placement_box_metrics(
+    page: fitz.Page, lines: list[str], display_space: bool = False
+) -> tuple[float, float, float, float]:
     width, height, font_size, padding = _box_metrics(page, lines)
-    if page.rotation in {90, 270}:
+    if not display_space and page.rotation in {90, 270}:
         return height, width, font_size, padding
     return width, height, font_size, padding
 
 
-def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
-    width, height, _, _ = _placement_box_metrics(page, lines)
+def choose_box_rect(page: fitz.Page, lines: list[str], display_space: bool = False) -> fitz.Rect:
+    """Pick the box rect.
+
+    With display_space=True (baked box on rotated sheets) all geometry is in
+    the viewer's coordinate system - same top-left-first corner logic as
+    normal pages - and the caller transforms the result into page space for
+    drawing. The legacy rotation special-casing only applies to the FreeText
+    annotation path.
+    """
+    width, height, _, _ = _placement_box_metrics(page, lines, display_space=display_space)
     margin_x = max(14.0, page.rect.width * 0.014)
     margin_y = max(18.0, page.rect.height * 0.018)
-    if page.rotation in {90, 270}:
+    if not display_space and page.rotation in {90, 270}:
         # Rotated PDFs report page coordinates differently from the viewer. Keep
         # candidates in visible corners and let density scoring choose the least
         # disruptive one.
         margin_y = max(margin_y, page.mediabox.height * 0.02)
 
-    candidates = _candidate_rects(page, width, height, margin_x, margin_y)
+    candidates = _candidate_rects(page, width, height, margin_x, margin_y, display_space=display_space)
     density_image = _render_page_for_density(page)
     scale = density_image.width / page.rect.width if page.rect.width else 0.12
     text_blocks = _page_text_rects(page)
@@ -165,9 +175,10 @@ def _candidate_rects(
     height: float,
     margin_x: float,
     margin_y: float,
+    display_space: bool = False,
 ) -> list[fitz.Rect]:
     max_x = max(margin_x, page.rect.width - margin_x - width)
-    y_rows = _top_section_y_rows(page, height, margin_y)
+    y_rows = _top_section_y_rows(page, height, margin_y, display_space=display_space)
     # x-major order: the whole left column is preferred before any right
     # candidate (see choose_box_rect acceptance loop).
     return [
@@ -177,9 +188,11 @@ def _candidate_rects(
     ]
 
 
-def _top_section_y_rows(page: fitz.Page, height: float, margin_y: float) -> list[float]:
+def _top_section_y_rows(
+    page: fitz.Page, height: float, margin_y: float, display_space: bool = False
+) -> list[float]:
     max_y = max(margin_y, page.rect.height - margin_y - height)
-    if page.rotation in {90, 180, 270}:
+    if not display_space and page.rotation in {90, 180, 270}:
         band_start = max(margin_y, page.rect.height * 0.7 - height)
         top_edge = max_y
         mid = band_start + max(0.0, (top_edge - band_start) / 2)
@@ -312,6 +325,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             # sheets the box is baked into the page content with correctly
             # rotated text: renders identically in every viewer and cannot
             # be flipped. Movable annotations stay on unrotated sheets.
+            rect = choose_box_rect(page, lines, display_space=True)
             _add_baked_summary(page, rect, lines)
         else:
             # Single FreeText annotation: movable in PDF editors, with no
@@ -377,40 +391,48 @@ def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) 
     _pin_annotation_orientation(page, annot)
 
 
-def _add_baked_summary(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
-    """Stamp the totals box as page content on rotated sheets."""
-    page.draw_rect(rect, color=TEXT_RED, fill=BOX_FILL, width=BORDER_WIDTH, overlay=True)
-    _, _, base_font_size, _ = _box_metrics(page, lines)
-    style = TextStyle(size=base_font_size, color=TEXT_RED, bold_narrow=True)
+def _add_baked_summary(page: fitz.Page, rect_display: fitz.Rect, lines: list[str]) -> None:
+    """Stamp the totals box as page content on rotated sheets.
+
+    ``rect_display`` is in the viewer's (display) coordinate system; the
+    Shape/insert APIs work in unrotated page space, so the rect is mapped
+    through the derotation matrix before drawing (NR-1138768 follow-up,
+    2026-06-11: the box landed mid-sheet without this mapping).
+    """
+    page_rect = fitz.Rect(rect_display) * page.derotation_matrix
+    page_rect.normalize()
+    page.draw_rect(page_rect, color=TEXT_RED, fill=BOX_FILL, width=BORDER_WIDTH, overlay=True)
+
+    style = TextStyle(size=10.0, color=TEXT_RED, bold_narrow=True)
     font_file = _font_file(style)
     font_kwargs: dict = {"fontname": "helv"}
     if font_file:
         font_kwargs = {"fontname": _font_name(style), "fontfile": str(font_file)}
-    font_size = base_font_size
-    padding = font_size * 0.5
+
+    _, _, font_size, _ = _box_metrics(page, lines)
     for _ in range(10):
-        rendered_lines, fitted, padding = _summary_rendering(page, rect, lines, font_size=font_size)
+        padding = font_size * 0.5
+        max_width = max(font_size * 4, rect_display.width - padding * 2)
+        max_lines = max(1, int((rect_display.height - padding * 2) / (font_size * 1.18)))
+        rendered: list[str] = []
+        for line in lines:
+            rendered.extend(_wrap_line(line, max_width, font_size))
+        inset = fitz.Rect(
+            page_rect.x0 + padding, page_rect.y0 + padding,
+            page_rect.x1 - padding, page_rect.y1 - padding,
+        )
         leftover = page.insert_textbox(
-            rect + (padding, padding, -padding, -padding),
-            "\n".join(rendered_lines),
-            fontsize=fitted,
+            inset,
+            "\n".join(rendered),
+            fontsize=font_size,
             color=TEXT_RED,
             rotate=_annotation_rotation(page),
             overlay=True,
             **font_kwargs,
         )
-        if leftover >= 0 and len(rendered_lines) == len(lines):
+        if leftover >= 0 and len(rendered) <= max_lines:
             return
         font_size *= 0.88
-    page.insert_textbox(
-        rect + (padding, padding, -padding, -padding),
-        "\n".join(lines),
-        fontsize=8,
-        color=TEXT_RED,
-        rotate=_annotation_rotation(page),
-        overlay=True,
-        **font_kwargs,
-    )
 
 
 def _pin_annotation_orientation(page: fitz.Page, annot: fitz.Annot) -> None:
