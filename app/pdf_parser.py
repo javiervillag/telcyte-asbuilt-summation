@@ -38,6 +38,7 @@ class ExtractionDiagnostics:
     material_candidate_count: int
     review_required: bool
     warnings: list[str]
+    informational_notes: list[str]
 
 
 # Permit drawings span many sheets with billing callouts on later pages
@@ -171,6 +172,7 @@ def derive_code_totals(
     code_catalog: dict[CodeKey, str] | None = None,
     excluded_lines: list[str] | None = None,
     notes: list[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> list[str]:
     """Aggregate billing-code totals from text blocks.
 
@@ -292,10 +294,14 @@ def derive_code_totals(
         # (not fine) - a human should confirm the first time one appears.
         novel = sorted({key[0] for key in order if key[0] not in KNOWN_PREFIX_SET})
         if novel and not catalog:
-            notes.append(
+            message = (
                 "Unrecognized code prefixes totaled via the generic pattern - verify: "
                 + ", ".join(novel) + "."
             )
+            if warnings is not None:
+                warnings.append(message)
+            else:
+                notes.append(message)
     return rows
 
 
@@ -366,6 +372,7 @@ def diagnose_extraction(
     quantity_lines: list[str] | None = None,
     excluded_context_lines: list[str] | None = None,
     parser_notes: list[str] | None = None,
+    parser_warnings: list[str] | None = None,
     total_pages: int | None = None,
 ) -> ExtractionDiagnostics:
     quantity_lines = quantity_lines if quantity_lines is not None else extract_likely_quantity_lines(blocks)
@@ -376,16 +383,24 @@ def diagnose_extraction(
     annotation_text_count = sum(1 for block in blocks if block.source == "annotation")
     ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
     unresolved_callouts = _unresolved_callout_lines(blocks)
+    review_callouts = [line for line in unresolved_callouts if _callout_requires_review(line)]
+    note_callouts = [line for line in unresolved_callouts if line not in review_callouts]
     unresolved_callout_count = len(unresolved_callouts)
     warnings: list[str] = []
+    informational_notes: list[str] = []
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
     has_weak_quantity_context = len(quantity_lines) < MIN_QUANTITY_LINES
+    has_strong_page_text = not has_weak_text_layer and not has_weak_quantity_context and bool(code_totals)
 
     if has_weak_text_layer:
         warnings.append("This PDF does not have enough readable text for automatic summation.")
     elif has_weak_quantity_context:
         warnings.append("The PDF text layer has very few readable quantity lines.")
-    if annotation_text_count == 0 and len(blocks) < 12:
+    if annotation_text_count == 0 and has_strong_page_text:
+        informational_notes.append(
+            "No readable PDF text-box annotations were found; totals came from readable page text."
+        )
+    elif annotation_text_count == 0 and len(blocks) < 12:
         warnings.append("No readable PDF text-box annotations were found.")
 
     if not code_totals:
@@ -398,19 +413,35 @@ def diagnose_extraction(
             f"PDF has {total_pages} pages; only the first {DEFAULT_MAX_PARSE_PAGES} were parsed - "
             "verify callouts on the later sheets manually."
         )
+    for warning in parser_warnings or []:
+        warnings.append(warning)
     for note in parser_notes or []:
-        warnings.append(note)
+        informational_notes.append(note)
     if excluded_context_lines:
         preview = "; ".join(excluded_context_lines[:6])
         if len(excluded_context_lines) > 6:
             preview += f"; plus {len(excluded_context_lines) - 6} more"
-        warnings.append(
+        informational_notes.append(
             f"Lines skipped as non-billing context (bore/trench or utility markers): {preview}."
         )
-    if unresolved_callout_count:
-        preview = "; ".join(unresolved_callouts[:6])
-        if len(unresolved_callouts) > 6:
-            preview += f"; plus {len(unresolved_callouts) - 6} more"
+    if review_callouts:
+        preview = "; ".join(review_callouts[:6])
+        if len(review_callouts) > 6:
+            preview += f"; plus {len(review_callouts) - 6} more"
+        warnings.append(
+            f"Readable construction callouts require rate-card/composite interpretation: {preview}."
+        )
+    if note_callouts and has_strong_page_text:
+        preview = "; ".join(note_callouts[:6])
+        if len(note_callouts) > 6:
+            preview += f"; plus {len(note_callouts) - 6} more"
+        informational_notes.append(
+            f"Standalone construction callouts were noted but not treated as billing totals: {preview}."
+        )
+    elif note_callouts:
+        preview = "; ".join(note_callouts[:6])
+        if len(note_callouts) > 6:
+            preview += f"; plus {len(note_callouts) - 6} more"
         warnings.append(
             f"Readable construction callouts require rate-card/composite interpretation: {preview}."
         )
@@ -420,8 +451,9 @@ def diagnose_extraction(
         or has_weak_quantity_context
         or not code_totals
         or bool(ambiguous_code_line_count)
-        or bool(unresolved_callout_count)
+        or bool(review_callouts)
         or pages_beyond_cap
+        or bool(parser_warnings)
     )
     if review_required:
         warnings.append("Manual review is required; the app did not add unsupported totals.")
@@ -438,6 +470,7 @@ def diagnose_extraction(
         material_candidate_count=len(material_candidates),
         review_required=review_required,
         warnings=warnings,
+        informational_notes=informational_notes,
     )
 
 
@@ -468,6 +501,16 @@ def _unresolved_callout_lines(blocks: list[TextBlock]) -> list[str]:
                     seen.add(cleaned)
                     callouts.append(cleaned)
     return callouts
+
+
+def _callout_requires_review(line: str) -> bool:
+    if CODE_PATTERN.search(line):
+        return True
+    if re.search(r"\d", line):
+        return True
+    if re.search(r"(?:'|\bft\b|\bfeet\b|\bsqft\b|\bct\b|\bcount\b)", line, re.I):
+        return True
+    return False
 
 
 def build_pdf_context(

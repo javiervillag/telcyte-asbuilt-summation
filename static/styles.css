@@ -786,6 +786,11 @@ input[type="file"] {
   background: var(--success-bg);
 }
 
+.run-status.done_with_notes {
+  color: var(--success-ink);
+  background: var(--success-bg);
+}
+
 .run-status.manual_review {
   color: var(--warn-ink);
   background: var(--warn-bg);
@@ -868,6 +873,11 @@ input[type="file"] {
 }
 
 .status.done .status-badge {
+  color: var(--success-ink);
+  background: var(--success-bg);
+}
+
+.status.note .status-badge {
   color: var(--success-ink);
   background: var(--success-bg);
 }

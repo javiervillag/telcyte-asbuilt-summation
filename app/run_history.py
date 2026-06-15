@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # from this date forward (Javier, 2026-06-10).
 SAVINGS_START_DATE = "2026-06-10"
 SAVINGS_START_LABEL = "Jun 10"
+COMPLETED_STATUSES = {"success", "done_with_notes", "manual_review"}
 
 
 @dataclass
@@ -66,7 +67,7 @@ class RunHistoryStore:
         }
 
     def estimate_savings(self, status: str, has_output: bool) -> tuple[float, float]:
-        if status not in {"success", "manual_review"} or not has_output:
+        if status not in COMPLETED_STATUSES or not has_output:
             return 0.0, 0.0
         minutes = max(0.0, float(self.savings_minutes_per_completed_pdf))
         dollars = minutes / 60.0 * max(0.0, float(self.savings_hourly_rate))
@@ -136,6 +137,7 @@ class RunHistoryStore:
             fieldnames=[
                 "created_at",
                 "status",
+                "status_label",
                 "source_filename",
                 "output_filename",
                 "duration_seconds",
@@ -152,7 +154,9 @@ class RunHistoryStore:
         )
         writer.writeheader()
         for run in data["runs"]:
-            writer.writerow({key: run.get(key, "") for key in writer.fieldnames})
+            row = {key: run.get(key, "") for key in writer.fieldnames}
+            row["status_label"] = _status_label(str(run.get("status") or ""))
+            writer.writerow(row)
         return output.getvalue()
 
     def _record_to_row(self, record: RunLogRecord) -> dict[str, Any]:
@@ -260,6 +264,8 @@ class RunHistoryStore:
         return {
             "total_runs": int(row.get("total_runs") or 0),
             "completed_runs": int(row.get("completed_runs") or 0),
+            "done_runs": int(row.get("done_runs") or 0),
+            "done_with_notes_runs": int(row.get("done_with_notes_runs") or 0),
             "review_needed_runs": int(row.get("review_needed_runs") or 0),
             "failed_runs": int(row.get("failed_runs") or 0),
             # Computed from the CURRENT confirmed estimate (Nick 2026-06-08,
@@ -277,6 +283,8 @@ class RunHistoryStore:
     def _nick_review(self, summary: dict[str, Any]) -> dict[str, Any]:
         return {
             "completed_runs": summary["completed_runs"],
+            "done_runs": summary["done_runs"],
+            "done_with_notes_runs": summary["done_with_notes_runs"],
             "review_needed_runs": summary["review_needed_runs"],
             "failed_runs": summary["failed_runs"],
             "estimated_minutes_saved": summary["estimated_minutes_saved"],
@@ -305,6 +313,7 @@ class RunHistoryStore:
             "source_filename": row.get("source_filename") or "",
             "output_filename": row.get("output_filename") or "",
             "status": row.get("status") or "",
+            "status_label": _status_label(str(row.get("status") or "")),
             "duration_ms": int(row.get("duration_ms") or 0),
             "duration_seconds": duration_seconds,
             "pages_processed": row.get("pages_processed"),
@@ -331,6 +340,18 @@ def _iso_string(value: Any) -> str:
             value = value.replace(tzinfo=timezone.utc)
         return value.isoformat()
     return str(value)
+
+
+def _status_label(status: str) -> str:
+    if status == "success":
+        return "Done"
+    if status == "done_with_notes":
+        return "Done - Notes"
+    if status == "manual_review":
+        return "Review"
+    if status == "failed":
+        return "Failed"
+    return "Run"
 
 
 _POSTGRES_SCHEMA = """
@@ -458,8 +479,10 @@ _SQLITE_INSERT_SQL = _POSTGRES_INSERT_SQL.replace("%(", ":").replace(")s", "")
 _SUMMARY_SQL = f"""
 select
   count(*) as total_runs,
-  sum(case when status in ('success', 'manual_review') and output_filename <> '' then 1 else 0 end) as completed_runs,
-  sum(case when status in ('success', 'manual_review') and output_filename <> ''
+  sum(case when status in ('success', 'done_with_notes', 'manual_review') and output_filename <> '' then 1 else 0 end) as completed_runs,
+  sum(case when status = 'success' and output_filename <> '' then 1 else 0 end) as done_runs,
+  sum(case when status = 'done_with_notes' and output_filename <> '' then 1 else 0 end) as done_with_notes_runs,
+  sum(case when status in ('success', 'done_with_notes', 'manual_review') and output_filename <> ''
         and created_at >= '{SAVINGS_START_DATE}' then 1 else 0 end) as savings_eligible_runs,
   sum(case when status = 'manual_review' then 1 else 0 end) as review_needed_runs,
   sum(case when status = 'failed' then 1 else 0 end) as failed_runs,

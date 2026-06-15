@@ -29,10 +29,12 @@ class ManualReviewRequired(OpenRouterError):
         warnings: list[str],
         supported_totals: list[str] | None = None,
         unresolved_callouts: list[str] | None = None,
+        informational_notes: list[str] | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
         self.unresolved_callouts = unresolved_callouts or []
+        self.informational_notes = informational_notes or []
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -202,17 +204,20 @@ async def summarize_with_model(
         doc.close()
     excluded_context_lines: list[str] = []
     parser_notes: list[str] = []
+    parser_warnings: list[str] = []
     parser_totals = derive_code_totals(
         blocks,
         code_catalog=code_catalog,
         excluded_lines=excluded_context_lines,
         notes=parser_notes,
+        warnings=parser_warnings,
     )
     diagnostics = diagnose_extraction(
         blocks,
         parser_totals,
         excluded_context_lines=excluded_context_lines,
         parser_notes=parser_notes,
+        parser_warnings=parser_warnings,
         total_pages=total_pages,
     )
     if diagnostics.review_required and (
@@ -222,6 +227,7 @@ async def summarize_with_model(
             diagnostics.warnings,
             supported_totals=parser_totals,
             unresolved_callouts=diagnostics.unresolved_callouts,
+            informational_notes=diagnostics.informational_notes,
         )
 
     if not settings.openrouter_api_key:
@@ -289,6 +295,7 @@ async def summarize_with_model(
                 diagnostics.warnings,
                 supported_totals=parser_totals,
                 unresolved_callouts=diagnostics.unresolved_callouts,
+                informational_notes=diagnostics.informational_notes,
             ) from exc
         if parser_totals:
             # The deterministic parser is the source of truth (its totals
@@ -314,6 +321,9 @@ async def summarize_with_model(
     for warning in diagnostics.warnings:
         if warning not in summary.warnings:
             summary.warnings.append(warning)
+    for note in diagnostics.informational_notes:
+        if note not in summary.informational_notes:
+            summary.informational_notes.append(note)
     if not summary.job_totals and not summary.materials:
         summary.warnings.append("Unable to identify supported totals from the drawing.")
     logger.info(

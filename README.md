@@ -31,10 +31,13 @@ The optional-code catalog uses the unmatched-code review and MCA rate-card descr
 - `INCLUDE_PAGE_IMAGES`: optional `true`/`false`; defaults to parser-first text context without page images.
 - `INCLUDE_MATERIALS`: optional `true`/`false`; defaults to `false` so phase one focuses on billing-code totals.
 - `ALLOW_LLM_INFERRED_TOTALS`: optional `true`/`false`; defaults to `false` so the box is driven by parsed/summed codes.
+- `STRICT_REVIEW_BADGES`: optional `true`/`false`; defaults to `false`. When true, any warning or note shows as Review.
 - `RATE_CARD_CODES`: optional comma/newline-separated Cox billing codes.
 - `RATE_CARD_PATHS`: optional comma-separated local paths to code-only `.txt`, `.csv`, `.tsv`, or `.xlsx` rate-card files. For `.xlsx` files, highlighted cells are preferred first, highlighted tabs are used next, and the full workbook is used only when no highlights are found.
 
-Uploaded and generated files are processed in temporary memory/files only and are not persisted by the app.
+Run history stores uploaded input PDFs and generated output PDFs so prior runs can be searched, audited, replayed, and downloaded. PDF retention is still an open product decision; do not add automatic deletion without Telcyte approval.
+
+Run-history savings use Nick's 2026-06-08 estimate of about 8 minutes saved per completed as-built. Dollar savings stay hidden until the hourly rate is confirmed.
 
 ## Output Behavior
 

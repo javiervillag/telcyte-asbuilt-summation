@@ -172,6 +172,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     title="MKR Job Totals",
                     job_totals=exc.supported_totals,
                     warnings=exc.warnings,
+                    informational_notes=exc.informational_notes,
                     confidence=0.0,
                     model=f"parser+{settings.openrouter_model}",
                 ),
@@ -205,6 +206,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     title="MKR Job Totals",
                     job_totals=[],
                     warnings=exc.warnings,
+                    informational_notes=exc.informational_notes,
                     confidence=0.0,
                     model=f"parser+{settings.openrouter_model}",
                 )
@@ -234,6 +236,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 title="MKR Job Totals",
                 job_totals=exc.supported_totals,
                 warnings=exc.warnings,
+                informational_notes=exc.informational_notes,
                 confidence=0.0,
                 model=f"parser+{settings.openrouter_model}",
             )
@@ -309,7 +312,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
 
     base = Path(source_filename).stem
     output_name = f"{base}-telcyte-summary.pdf"
-    status = "manual_review" if summary.warnings else "success"
+    status = _status_for_summary(summary)
     _log_run_attempt(
         source_filename=source_filename,
         status=status,
@@ -336,6 +339,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             "Content-Disposition": f'attachment; filename="{output_name}"',
             "X-Telcyte-Model": summary.model,
             "X-Telcyte-Confidence": f"{summary.confidence:.2f}",
+            "X-Telcyte-Status": status,
             "X-Telcyte-Warnings": json.dumps(summary.warnings[:6]),
             "X-Telcyte-Result-Summary": _result_summary_header(summary, output_name),
         },
@@ -431,6 +435,16 @@ def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) 
         "result_lines": _result_detail_lines(summary),
     }
     return payload
+
+
+def _status_for_summary(summary: SummaryResult) -> str:
+    if settings.strict_review_badges and (summary.warnings or summary.informational_notes):
+        return "manual_review"
+    if summary.warnings:
+        return "manual_review"
+    if summary.informational_notes:
+        return "done_with_notes"
+    return "success"
 
 
 def _result_detail_lines(summary: SummaryResult) -> list[str]:

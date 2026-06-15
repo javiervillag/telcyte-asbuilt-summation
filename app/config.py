@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     include_materials: bool = Field(default=False, alias="INCLUDE_MATERIALS")
     allow_llm_inferred_totals: bool = Field(default=False, alias="ALLOW_LLM_INFERRED_TOTALS")
     enable_model_review_on_warnings: bool = Field(default=True, alias="ENABLE_MODEL_REVIEW_ON_WARNINGS")
+    strict_review_badges: bool = Field(default=False, alias="STRICT_REVIEW_BADGES")
     rate_card_codes: str = Field(default="", alias="RATE_CARD_CODES")
     rate_card_paths: str = Field(default="", alias="RATE_CARD_PATHS")
     run_log_database_url: Optional[str] = Field(default=None, alias="RUN_LOG_DATABASE_URL")

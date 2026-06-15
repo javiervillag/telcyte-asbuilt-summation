@@ -44,6 +44,8 @@ def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     data = client.get("/api/run-history").json()
     assert data["summary"]["completed_runs"] == 1
+    assert data["summary"]["done_runs"] == 1
+    assert data["summary"]["done_with_notes_runs"] == 0
     assert data["summary"]["failed_runs"] == 0
     # Minutes are shown (Nick confirmed ~8 min/as-built on 2026-06-08);
     # dollar figures stay hidden until the hourly rate is confirmed.
@@ -51,6 +53,7 @@ def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     assert "estimated_dollars_saved" not in data["summary"]
     run = data["runs"][0]
     assert run["status"] == "success"
+    assert run["status_label"] == "Done"
     assert run["source_filename"] == "success.pdf"
     assert run["output_filename"] == "success-telcyte-summary.pdf"
     assert run["detected_totals_count"] == 1
@@ -73,6 +76,8 @@ def test_failed_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     assert response.status_code == 400
     data = client.get("/api/run-history").json()
     assert data["summary"]["completed_runs"] == 0
+    assert data["summary"]["done_runs"] == 0
+    assert data["summary"]["done_with_notes_runs"] == 0
     assert data["summary"]["failed_runs"] == 1
     run = data["runs"][0]
     assert run["status"] == "failed"
@@ -102,11 +107,82 @@ def test_manual_review_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     data = client.get("/api/run-history").json()
     assert data["summary"]["completed_runs"] == 1
+    assert data["summary"]["done_runs"] == 0
+    assert data["summary"]["done_with_notes_runs"] == 0
     assert data["summary"]["review_needed_runs"] == 1
     run = data["runs"][0]
     assert run["status"] == "manual_review"
     assert run["warnings_count"] == 1
     assert run["detected_totals_count"] == 1
+
+
+def test_done_with_notes_pdf_run_is_logged_as_green_completed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main, "run_history_store", _temp_store(tmp_path))
+    monkeypatch.setattr(main.settings, "strict_review_badges", False)
+
+    async def fake_summarize(content, settings, source_name=None):
+        return SummaryResult(
+            model="parser+fake-model",
+            confidence=0.91,
+            job_totals=["UG-56 - 170"],
+            informational_notes=["No readable PDF text-box annotations were found; totals came from readable page text."],
+        )
+
+    monkeypatch.setattr(main, "summarize_with_model", fake_summarize)
+    monkeypatch.setattr(main, "annotate_pdf", lambda content, summary, source_name=None: b"%PDF-1.4 fake")
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("noted.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-telcyte-status"] == "done_with_notes"
+    assert response.headers["x-telcyte-warnings"] == "[]"
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert result_summary["notes"] == [
+        "No readable PDF text-box annotations were found; totals came from readable page text."
+    ]
+
+    data = client.get("/api/run-history").json()
+    assert data["summary"]["completed_runs"] == 1
+    assert data["summary"]["done_runs"] == 0
+    assert data["summary"]["done_with_notes_runs"] == 1
+    assert data["summary"]["review_needed_runs"] == 0
+    assert data["summary"]["estimated_minutes_saved"] == 8.0
+    run = data["runs"][0]
+    assert run["status"] == "done_with_notes"
+    assert run["status_label"] == "Done - Notes"
+    assert run["warnings_count"] == 0
+
+
+def test_strict_review_badges_turn_notes_back_to_review(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main, "run_history_store", _temp_store(tmp_path))
+    monkeypatch.setattr(main.settings, "strict_review_badges", True)
+
+    async def fake_summarize(content, settings, source_name=None):
+        return SummaryResult(
+            model="parser+fake-model",
+            confidence=0.91,
+            job_totals=["UG-56 - 170"],
+            informational_notes=["Handled note."],
+        )
+
+    monkeypatch.setattr(main, "summarize_with_model", fake_summarize)
+    monkeypatch.setattr(main, "annotate_pdf", lambda content, summary, source_name=None: b"%PDF-1.4 fake")
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("strict.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-telcyte-status"] == "manual_review"
+    data = client.get("/api/run-history").json()
+    assert data["summary"]["review_needed_runs"] == 1
+    assert data["runs"][0]["status"] == "manual_review"
 
 
 def test_logging_failure_does_not_block_pdf_generation(monkeypatch) -> None:
@@ -170,4 +246,15 @@ def test_run_history_csv_export(monkeypatch, tmp_path) -> None:
     assert "csv-telcyte-summary.pdf" in response.text
     assert "PC-02" not in response.text
     assert "estimated_minutes_saved" in response.text
+    assert "status_label" in response.text
     assert "estimated_dollars_saved" not in response.text
+
+
+def test_history_gui_knows_done_with_notes_state() -> None:
+    app_js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
+    styles = (Path(__file__).resolve().parents[1] / "static" / "styles.css").read_text()
+
+    assert 'status === "done_with_notes"' in app_js
+    assert 'kind === "note"' in app_js
+    assert ".run-status.done_with_notes" in styles
+    assert ".status.note .status-badge" in styles

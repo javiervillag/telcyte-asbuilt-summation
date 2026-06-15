@@ -201,11 +201,13 @@ form.addEventListener("submit", async (event) => {
     if (resultSummary && !resultSummary.output_name) {
       resultSummary.output_name = outputName;
     }
+    const notes = Array.isArray(resultSummary?.notes) ? resultSummary.notes.filter(Boolean) : [];
+    const resultKind = warnings.length ? "warn" : (notes.length ? "note" : "done");
     clearCurrentDownload();
     const url = URL.createObjectURL(blob);
     currentDownload = { url, filename: outputName };
     triggerDownload(currentDownload);
-    setStatus("PDF ready", "Download started.", warnings.length ? "warn" : "done", {
+    setStatus("PDF ready", "Download started.", resultKind, {
       warnings,
       resultSummary,
       canStartOver: true,
@@ -420,8 +422,9 @@ function clearCurrentDownload() {
 }
 
 function statusLabel(kind) {
-  if (kind === "done") return "Ready";
-  if (kind === "warn") return "Check";
+  if (kind === "done") return "Done";
+  if (kind === "note") return "Done • Notes";
+  if (kind === "warn") return "Review";
   if (kind === "error") return "Review";
   return "Status";
 }
@@ -867,12 +870,15 @@ function renderRunHistory(data) {
   historyExport.href = "/api/run-history.csv";
   historyCards.innerHTML = [
     metricCard("Completed PDFs", summary.completed_runs || 0),
+    metricCard("Done", summary.done_runs || 0),
+    metricCard("Done • Notes", summary.done_with_notes_runs || 0),
     metricCard("Need review", summary.review_needed_runs || 0),
     metricCard("Failed", summary.failed_runs || 0),
     metricCard(`Time saved (from ${summary.savings_since || "Jun 10"})`, formatMinutesSaved(summary.estimated_minutes_saved)),
   ].join("");
   nickReviewCopy.textContent =
-    `${summary.completed_runs || 0} completed PDF runs, ${summary.review_needed_runs || 0} review-needed runs, ` +
+    `${summary.completed_runs || 0} completed PDF runs: ${summary.done_runs || 0} done, ` +
+    `${summary.done_with_notes_runs || 0} done with notes, ${summary.review_needed_runs || 0} review-needed, ` +
     `${summary.failed_runs || 0} failed runs. Estimated ${formatMinutesSaved(summary.estimated_minutes_saved)} saved ` +
     `since ${summary.savings_since || "Jun 10"} (~8 min per completed as-built, Nick's 2026-06-08 estimate). ` +
     `Dollar savings stay hidden until the rate is confirmed.`;
@@ -989,6 +995,7 @@ function renderRunRow(run) {
 
 function statusLabelForRun(status) {
   if (status === "success") return "Done";
+  if (status === "done_with_notes") return "Done • Notes";
   if (status === "manual_review") return "Review";
   if (status === "failed") return "Failed";
   return "Run";

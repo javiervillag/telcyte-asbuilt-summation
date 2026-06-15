@@ -68,14 +68,22 @@ def test_utility_markers_are_not_codes() -> None:
 
 
 def test_utility_context_exclusions_are_surfaced_not_silent() -> None:
-    content = _pdf_with_lines(["PWR - UG-06 - 2", "UG-06 - 3"])
+    content = _pdf_with_lines([
+        "PWR - UG-06 - 2",
+        "UG-06 - 3",
+        "UG-44 - 4",
+        "UG-85 - 1",
+        "General as-built note with enough readable text for parser confidence.",
+        "Crew verified visible billing quantities and restoration notes.",
+    ])
     blocks = extract_text_blocks(content)
     excluded: list[str] = []
     totals = derive_code_totals(blocks, excluded_lines=excluded)
-    assert totals == ["UG-06 - 3"]
+    assert totals == ["UG-06 - 3", "UG-44 - 4", "UG-85 - 1"]
     assert any("PWR" in line for line in excluded)
     diagnostics = diagnose_extraction(blocks, totals, excluded_context_lines=excluded)
-    assert any("non-billing context" in w for w in diagnostics.warnings)
+    assert not diagnostics.warnings
+    assert any("non-billing context" in note for note in diagnostics.informational_notes)
 
 
 def test_bore_context_still_excluded_and_surfaced() -> None:
@@ -84,6 +92,43 @@ def test_bore_context_still_excluded_and_surfaced() -> None:
     totals = derive_code_totals(extract_text_blocks(content), excluded_lines=excluded)
     assert totals == ["UG-06 - 2"]
     assert excluded
+
+
+def test_standalone_unresolved_callout_is_done_with_notes_candidate() -> None:
+    content = _pdf_with_lines([
+        "UG-06 - 2",
+        "UG-44 - 4",
+        "UG-85 - 1",
+        "Tie Point",
+        "As-built notes include enough readable page text for a confident parser run.",
+        "Crew verified quantities and restoration notes in the drawing text.",
+    ])
+    blocks = extract_text_blocks(content)
+    totals = derive_code_totals(blocks)
+
+    diagnostics = diagnose_extraction(blocks, totals)
+
+    assert diagnostics.review_required is False
+    assert not diagnostics.warnings
+    assert any("Standalone construction callouts" in note and "Tie Point" in note for note in diagnostics.informational_notes)
+
+
+def test_unresolved_callout_near_quantity_stays_review() -> None:
+    content = _pdf_with_lines([
+        "UG-06 - 2",
+        "UG-44 - 4",
+        "UG-85 - 1",
+        "EOL - 48Ct - 66'",
+        "As-built notes include enough readable page text for parser review.",
+        "Crew verified quantities and restoration notes in the drawing text.",
+    ])
+    blocks = extract_text_blocks(content)
+    totals = derive_code_totals(blocks)
+
+    diagnostics = diagnose_extraction(blocks, totals)
+
+    assert diagnostics.review_required is True
+    assert any("EOL - 48Ct - 66'" in warning for warning in diagnostics.warnings)
 
 
 # --- Email: totals box format (single annotation, border 2, red, scaled font) ---
