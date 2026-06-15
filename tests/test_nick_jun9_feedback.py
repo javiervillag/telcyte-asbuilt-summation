@@ -6,8 +6,11 @@ None of these tests require local sample PDFs.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import fitz
 import pytest
+from PIL import Image
 
 from app.models import SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
@@ -379,10 +382,10 @@ def test_box_has_norotate_flag_on_unrotated_pages() -> None:
         doc.close()
 
 
-def test_rotated_pages_get_baked_box_normal_pages_get_annotation() -> None:
-    # NR-1138768 (2026-06-11): editors flip dragged FreeText boxes sideways
-    # on rotated sheets, so those get a baked box; normal sheets keep the
-    # movable annotation.
+def test_rotated_pages_get_movable_annotation() -> None:
+    # NR-1138768 (2026-06-15): Adobe shows baked boxes as stuck page ink,
+    # absent from the Comments pane. Rotated sheets must still get a real
+    # movable FreeText annotation; editor drag behavior is verified manually.
     doc = fitz.open()
     page = doc.new_page(width=1728, height=2592)
     page.insert_text((600, 1200), "UG-06 - 2")
@@ -395,9 +398,15 @@ def test_rotated_pages_get_baked_box_normal_pages_get_annotation() -> None:
     try:
         page = doc[0]
         assert page.rotation == 90
-        assert not [a for a in page.annots() or [] if "MKR" in str((a.info or {}).get("content", ""))]
-        baked_text = page.get_text("text").replace("\u00a0", " ")
-        assert "MKR Job Totals" in baked_text
+        summary_annots = [
+            a for a in page.annots() or []
+            if str((a.info or {}).get("content", "")).startswith("MKR Job Totals")
+        ]
+        assert len(summary_annots) == 1
+        summary_annot = summary_annots[0]
+        assert summary_annot.type[1] == "FreeText"
+        assert (doc.xref_get_key(summary_annot.xref, "Rotate")[1] or "") == "90"
+        assert b"MKR Job Totals" not in page.read_contents()
     finally:
         doc.close()
 
@@ -409,3 +418,71 @@ def test_rotated_pages_get_baked_box_normal_pages_get_annotation() -> None:
         assert b"MKR Job Totals" not in page.read_contents()
     finally:
         doc.close()
+
+
+def test_nr_1138768_replaces_existing_rotated_totals_box() -> None:
+    sample = Path(
+        "/Users/javiervillaguardado/Downloads/New as built summation issue_15 Jun/"
+        "Input/COAX-ASBUILT-(TelCyte)-NR-1138768 (1).pdf"
+    )
+    if not sample.exists():
+        pytest.skip("NR-1138768 local sample PDF not available")
+
+    content = sample.read_bytes()
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-85 - 10" in totals
+
+    summary = SummaryResult(model="parser-test", confidence=1.0, job_totals=totals)
+    output = annotate_pdf(content, summary)
+    assert any("previous box showed UG-85 - 9" in note for note in summary.informational_notes)
+    assert summary.warnings == []
+
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        summary_annots = [
+            a for a in page.annots() or []
+            if str((a.info or {}).get("content", "")).startswith("MKR Job Totals")
+        ]
+        assert len(summary_annots) == 1
+        annot = summary_annots[0]
+        assert annot.type[1] == "FreeText"
+        assert annot.rect.x0 <= 1
+        assert (doc.xref_get_key(annot.xref, "Rotate")[1] or "") == "90"
+        assert "UG-85 - 10" in str((annot.info or {}).get("content", ""))
+        assert _top_totals_box_count(page) == 1
+    finally:
+        doc.close()
+
+
+def _top_totals_box_count(page: fitz.Page) -> int:
+    pix = page.get_pixmap(matrix=fitz.Matrix(0.35, 0.35), annots=True, alpha=False)
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    top_limit = int(image.height * 0.35)
+    pixels = image.load()
+    visited: set[tuple[int, int]] = set()
+    components = 0
+    for y in range(top_limit):
+        for x in range(image.width):
+            if (x, y) in visited or not _is_totals_green(pixels[x, y]):
+                continue
+            stack = [(x, y)]
+            visited.add((x, y))
+            count = 0
+            while stack:
+                px, py = stack.pop()
+                count += 1
+                for nx, ny in ((px + 1, py), (px - 1, py), (px, py + 1), (px, py - 1)):
+                    if nx < 0 or ny < 0 or nx >= image.width or ny >= top_limit or (nx, ny) in visited:
+                        continue
+                    if _is_totals_green(pixels[nx, ny]):
+                        visited.add((nx, ny))
+                        stack.append((nx, ny))
+            if count > 150:
+                components += 1
+    return components
+
+
+def _is_totals_green(pixel: tuple[int, int, int]) -> bool:
+    r, g, b = pixel
+    return g > 220 and 170 <= r <= 230 and 130 <= b <= 210

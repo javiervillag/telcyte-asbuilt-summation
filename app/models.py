@@ -10,6 +10,7 @@ class SummaryResult(BaseModel):
     extra_notes: list[str] = Field(default_factory=list)
     materials: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    informational_notes: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     model: str
 

@@ -362,6 +362,7 @@ function appendResultSummary(summary, warnings = []) {
   }
   appendDetailSection(block, "Detected totals details", summary.detected_totals);
   appendDetailSection(block, "Extra billing codes details", summary.extra_billing_codes);
+  appendDetailSection(block, "Notes", summary.notes);
   appendDetailSection(block, "Review items", warnings);
   appendDetailSection(block, "MKR Job Totals details", summary.result_lines);
   statusBox.appendChild(block);

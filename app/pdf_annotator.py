@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from io import BytesIO
 import os
 from pathlib import Path
+import re
 
 import fitz
 from PIL import Image
 
 from app.models import SummaryResult
+from app.rate_cards import total_line_key
 
 BOX_FILL = (0.78, 1.0, 0.63)
 TEXT_RED = (1.0, 0.0, 0.0)
@@ -66,6 +68,14 @@ class PlacementScore:
     text_overlap_ratio: float
     annotation_overlap_ratio: float
     rect: fitz.Rect
+
+
+@dataclass(frozen=True)
+class ExistingTotalsBox:
+    xref: int
+    rect: fitz.Rect
+    content: str
+    font_size: float | None = None
 
 
 def _render_page_for_density(page: fitz.Page, scale: float = 0.12) -> Image.Image:
@@ -316,22 +326,26 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
-        rect = choose_box_rect(page, lines)
-        if page.rotation:
-            # Rotated sheets (portrait permit drawings shown landscape via
-            # /Rotate 90): PDF editors regenerate a dragged FreeText box in
-            # page space and flip its text sideways - Nitro does this to
-            # Telcyte's own boxes too (NR-1138768, 2026-06-11). On these
-            # sheets the box is baked into the page content with correctly
-            # rotated text: renders identically in every viewer and cannot
-            # be flipped. Movable annotations stay on unrotated sheets.
-            rect = choose_box_rect(page, lines, display_space=True)
-            _add_baked_summary(page, rect, lines)
+        existing_boxes = _existing_totals_boxes(page)
+        if existing_boxes:
+            replacement = existing_boxes[0]
+            _record_replaced_total_deltas(summary, replacement.content)
+            _delete_annotations_by_xref(page, [box.xref for box in existing_boxes])
+            _add_summary_annotation(
+                page,
+                replacement.rect,
+                lines,
+                preferred_font_size=replacement.font_size,
+            )
         else:
+            rect = choose_box_rect(page, lines)
             # Single FreeText annotation: movable in PDF editors, with no
             # baked page-content copy underneath. Dual rendering caused the
             # "duplicate box when dragged" bug and the Adobe-red /
             # Nitro-black mismatch (Nick Evans email, 2026-06-09, BI-304069).
+            # Rotated sheets deliberately stay in this annotation path: NR-1138768
+            # had a working movable /Rotate 90 FreeText box, while baking made
+            # the new box invisible to Adobe's Comments pane and impossible to drag.
             _add_summary_annotation(page, rect, lines)
 
         buffer = BytesIO()
@@ -341,7 +355,87 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
         doc.close()
 
 
-def _repair_freetext_appearance(page: fitz.Page, annot: fitz.Annot, rect: fitz.Rect) -> None:
+def _existing_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    boxes: list[ExistingTotalsBox] = []
+    doc = page.parent
+    for annot in page.annots() or []:
+        content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
+        if not _starts_with_totals_title(content):
+            continue
+        boxes.append(
+            ExistingTotalsBox(
+                xref=annot.xref,
+                rect=fitz.Rect(annot.rect),
+                content=content,
+                font_size=_annotation_font_size(doc, annot.xref),
+            )
+        )
+    boxes.sort(key=lambda box: (box.rect.x0, box.rect.y0))
+    return boxes
+
+
+def _starts_with_totals_title(text: str) -> bool:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip().lower().startswith("mkr job totals")
+    return False
+
+
+def _annotation_font_size(doc: fitz.Document, xref: int) -> float | None:
+    da = doc.xref_get_key(xref, "DA")[1] or ""
+    matches = re.findall(r"([-+]?\d+(?:\.\d+)?)\s+Tf\b", da)
+    if not matches:
+        return None
+    try:
+        return float(matches[-1])
+    except ValueError:
+        return None
+
+
+def _delete_annotations_by_xref(page: fitz.Page, xrefs: list[int]) -> None:
+    for xref in xrefs:
+        for annot in page.annots() or []:
+            if annot.xref == xref:
+                page.delete_annot(annot)
+                break
+
+
+def _record_replaced_total_deltas(summary: SummaryResult, old_content: str) -> None:
+    old_totals = _totals_by_code(old_content.splitlines())
+    new_totals = _totals_by_code(summary.job_totals)
+    deltas: list[str] = []
+    for key in sorted(set(old_totals) & set(new_totals)):
+        old_qty, old_line = old_totals[key]
+        new_qty, new_line = new_totals[key]
+        if old_qty != new_qty:
+            deltas.append(f"previous box showed {old_line}; recomputed drawing total is {new_line}")
+    if not deltas:
+        return
+    note = "Replaced an existing totals box: " + "; ".join(deltas[:4]) + "."
+    if len(deltas) > 4:
+        note += f" Plus {len(deltas) - 4} more changed totals."
+    if note not in summary.informational_notes:
+        summary.informational_notes.append(note)
+
+
+def _totals_by_code(lines: list[str]) -> dict[tuple[str, str], tuple[str, str]]:
+    totals: dict[tuple[str, str], tuple[str, str]] = {}
+    for line in lines:
+        parsed = total_line_key(line)
+        if not parsed:
+            continue
+        code, qty, _unit = parsed
+        totals[code] = (qty, line.strip())
+    return totals
+
+
+def _repair_freetext_appearance(
+    page: fitz.Page,
+    annot: fitz.Annot,
+    rect: fitz.Rect,
+    rendered_lines: list[str] | None = None,
+    font_size: float | None = None,
+) -> None:
     """Work around PyMuPDF 1.25.x FreeText appearance defects.
 
     PyMuPDF writes the appearance-stream /BBox in page coordinates while the
@@ -353,19 +447,26 @@ def _repair_freetext_appearance(page: fitz.Page, annot: fitz.Annot, rect: fitz.R
     /BBox to origin and dropping /CL makes the single authored appearance
     render identically everywhere.
     """
-    import re as _re
-
     doc = page.parent
     ap_ref = doc.xref_get_key(annot.xref, "AP")[1] or ""
-    match = _re.search(r"(\d+) 0 R", ap_ref)
+    match = re.search(r"(\d+) 0 R", ap_ref)
     if match:
-        doc.xref_set_key(int(match.group(1)), "BBox", f"[0 0 {rect.width} {rect.height}]")
+        ap_xref = int(match.group(1))
+        if page.rotation in {90, 180, 270} and rendered_lines and font_size:
+            _write_freetext_appearance(page, ap_xref, rect, rendered_lines, font_size)
+        else:
+            doc.xref_set_key(ap_xref, "BBox", f"[0 0 {_pdf_num(rect.width)} {_pdf_num(rect.height)}]")
     if (doc.xref_get_key(annot.xref, "CL")[1] or "null") != "null":
         doc.xref_set_key(annot.xref, "CL", "null")
 
 
-def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) -> None:
-    rendered_lines, font_size, _ = _summary_rendering(page, rect, lines)
+def _add_summary_annotation(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    lines: list[str],
+    preferred_font_size: float | None = None,
+) -> None:
+    rendered_lines, font_size, _ = _summary_rendering(page, rect, lines, font_size=preferred_font_size)
     annot = page.add_freetext_annot(
         rect,
         "\n".join(rendered_lines),
@@ -379,16 +480,96 @@ def _add_summary_annotation(page: fitz.Page, rect: fitz.Rect, lines: list[str]) 
     # base-14 fonts only, so Helvetica (metrically identical to Arial) is used;
     # text color lives in /DA so all viewers (Adobe, Nitro) render it red.
     annot.set_border(width=BORDER_WIDTH)
-    annot.update(
-        fontname="helv",
-        fontsize=font_size,
-        text_color=TEXT_RED,
-        fill_color=BOX_FILL,
-        border_color=TEXT_RED,
-    )
-    _repair_freetext_appearance(page, annot, rect)
+    update_kwargs = {
+        "fontname": "helv",
+        "fontsize": font_size,
+        "text_color": TEXT_RED,
+        "fill_color": BOX_FILL,
+    }
+    if page.rotation == 0:
+        update_kwargs["border_color"] = TEXT_RED
+    try:
+        annot.update(**update_kwargs)
+    except ValueError:
+        update_kwargs.pop("border_color", None)
+        annot.update(**update_kwargs)
+    _repair_freetext_appearance(page, annot, rect, rendered_lines, font_size)
     _set_editor_text_style(page, annot, rendered_lines, font_size)
     _pin_annotation_orientation(page, annot)
+
+
+def _write_freetext_appearance(
+    page: fitz.Page,
+    ap_xref: int,
+    rect: fitz.Rect,
+    lines: list[str],
+    font_size: float,
+) -> None:
+    doc = page.parent
+    rotation = _annotation_rotation(page)
+    if rotation in {90, 270}:
+        bbox_width = rect.height
+        bbox_height = rect.width
+    else:
+        bbox_width = rect.width
+        bbox_height = rect.height
+
+    if rotation == 90:
+        matrix = [0, 1, -1, 0, rect.width, 0]
+    elif rotation == 270:
+        matrix = [0, -1, 1, 0, 0, rect.height]
+    elif rotation == 180:
+        matrix = [-1, 0, 0, -1, rect.width, rect.height]
+    else:
+        matrix = [1, 0, 0, 1, 0, 0]
+
+    doc.xref_set_key(ap_xref, "BBox", f"[0 0 {_pdf_num(bbox_width)} {_pdf_num(bbox_height)}]")
+    doc.xref_set_key(ap_xref, "Matrix", "[" + " ".join(_pdf_num(value) for value in matrix) + "]")
+    doc.update_stream(
+        ap_xref,
+        _freetext_appearance_stream(bbox_width, bbox_height, lines, font_size).encode("latin-1"),
+    )
+
+
+def _freetext_appearance_stream(width: float, height: float, lines: list[str], font_size: float) -> str:
+    padding = max(4.0, font_size * 0.18)
+    line_height = font_size * 1.16
+    x = padding
+    y = max(font_size, height - padding - font_size * 1.05)
+    fill = " ".join(_pdf_num(v) for v in BOX_FILL)
+    red = " ".join(_pdf_num(v) for v in TEXT_RED)
+    box_w = max(1.0, width - 2.0)
+    box_h = max(1.0, height - 2.0)
+    rows = [
+        f"{fill} rg",
+        f"{red} RG",
+        f"{_pdf_num(BORDER_WIDTH)} w",
+        f"1 1 {_pdf_num(box_w)} {_pdf_num(box_h)} re",
+        "B",
+        f"{red} rg",
+        "BT",
+        f"/Helv {_pdf_num(font_size)} Tf",
+        f"{_pdf_num(x)} {_pdf_num(y)} Td",
+        f"{_pdf_num(line_height)} TL",
+    ]
+    for index, line in enumerate(lines):
+        operator = "Tj" if index == 0 else "'"
+        rows.append(f"{_pdf_literal(line)} {operator}")
+    rows.append("ET")
+    return "\n".join(rows) + "\n"
+
+
+def _pdf_literal(text: str) -> str:
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    escaped = escaped.replace("\r", " ").replace("\n", " ")
+    return f"({escaped})"
+
+
+def _pdf_num(value: float) -> str:
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.4f}".rstrip("0").rstrip(".")
 
 
 def _add_baked_summary(page: fitz.Page, rect_display: fitz.Rect, lines: list[str]) -> None:

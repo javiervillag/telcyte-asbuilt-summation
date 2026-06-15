@@ -262,6 +262,7 @@ async def summarize_with_model(
         # large multi-page drawings, truncating it mid-object (NR-702749
         # processing_error, 2026-06-10).
         "max_tokens": 6000,
+        "verbosity": "max",
         "response_format": {"type": "json_object"},
     }
     if "4.6" in selected_model:

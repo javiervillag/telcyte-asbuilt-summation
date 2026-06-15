@@ -384,8 +384,8 @@ def _log_run_attempt(
     warnings_count: int = 0,
     error_type: str = "",
     error_message: str = "",
-    input_pdf: bytes | None = None,
-    output_pdf: bytes | None = None,
+    input_pdf: Optional[bytes] = None,
+    output_pdf: Optional[bytes] = None,
 ) -> None:
     minutes_saved, dollars_saved = run_history_store.estimate_savings(status, bool(output_filename))
     record = RunLogRecord(
@@ -427,6 +427,7 @@ def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) 
         "detected_totals": summary.job_totals[:20],
         "extra_billing_codes": summary.extra_totals[:20],
         "materials": summary.materials[:10],
+        "notes": summary.informational_notes[:10],
         "result_lines": _result_detail_lines(summary),
     }
     return payload
