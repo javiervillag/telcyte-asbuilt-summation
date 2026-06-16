@@ -13,10 +13,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Production launch of the verified pipeline: time-saved totals count runs
-# from this date forward (Javier, 2026-06-10).
-SAVINGS_START_DATE = "2026-06-10"
-SAVINGS_START_LABEL = "Jun 10"
+# Time-saved totals count runs from the cleaned production history baseline.
+SAVINGS_START_DATE = "2026-06-15"
+SAVINGS_START_LABEL = "Jun 15"
 COMPLETED_STATUSES = {"success", "done_with_notes", "manual_review"}
 
 
