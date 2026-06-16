@@ -960,6 +960,67 @@ input[type="file"] {
   white-space: pre-wrap;
 }
 
+.cable-lines {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.cable-line {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfc;
+  padding: 10px;
+}
+
+.cable-line > strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.cable-line-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cable-line-grid span {
+  display: grid;
+  gap: 3px;
+  border-left: 3px solid var(--line-strong);
+  padding-left: 8px;
+}
+
+.cable-line-grid em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.cable-line-grid b {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.cable-line p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.cable-flags {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 16px;
+  color: var(--warn-ink);
+  font-size: 12px;
+}
+
 .status-actions {
   display: flex;
   flex-wrap: wrap;

@@ -15,6 +15,7 @@ from app.rate_cards import total_line_key
 BOX_FILL = (0.78, 1.0, 0.63)
 TEXT_RED = (1.0, 0.0, 0.0)
 MATERIAL_TEXT = (0.0, 0.0, 0.0)
+MATERIAL_BORDER_BLUE = (0.0, 0.0, 1.0)
 REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
 BOLD_NARROW_FONT_ENV = "TELCYTE_PDF_BOLD_NARROW_FONT_PATH"
 MAX_SAFE_PLACEMENT_SCORE = 1.35
@@ -179,6 +180,50 @@ def choose_box_rect(page: fitz.Page, lines: list[str], display_space: bool = Fal
     return scored[0].rect
 
 
+def choose_material_box_rect(page: fitz.Page, lines: list[str], display_space: bool = False) -> fitz.Rect:
+    width, height, _, _ = _placement_box_metrics(page, lines, display_space=display_space)
+    margin_x = max(14.0, page.rect.width * 0.014)
+    margin_y = max(18.0, page.rect.height * 0.018)
+    if not display_space and page.rotation in {90, 270}:
+        margin_y = max(margin_y, page.mediabox.height * 0.02)
+
+    candidates = _candidate_rects(
+        page,
+        width,
+        height,
+        margin_x,
+        margin_y,
+        display_space=display_space,
+        vertical_preference="bottom",
+    )
+    density_image = _render_page_for_density(page)
+    scale = density_image.width / page.rect.width if page.rect.width else 0.12
+    text_blocks = _page_text_rects(page)
+    annotation_blocks = _page_annotation_rects(page)
+    scored = [
+        _placement_score(
+            density_image,
+            page,
+            candidate,
+            scale,
+            text_blocks,
+            annotation_blocks,
+            position_penalty=_material_position_preference_penalty,
+        )
+        for candidate in candidates
+    ]
+    for row in scored:
+        if (
+            page.rect.contains(row.rect)
+            and row.density <= MAX_ACCEPTABLE_DENSITY
+            and row.text_overlap_ratio <= MAX_TEXT_OVERLAP_RATIO
+            and row.annotation_overlap_ratio <= MAX_ANNOTATION_OVERLAP_RATIO
+        ):
+            return row.rect
+    scored.sort(key=lambda row: row.total)
+    return scored[0].rect
+
+
 def _candidate_rects(
     page: fitz.Page,
     width: float,
@@ -186,9 +231,13 @@ def _candidate_rects(
     margin_x: float,
     margin_y: float,
     display_space: bool = False,
+    vertical_preference: str = "top",
 ) -> list[fitz.Rect]:
     max_x = max(margin_x, page.rect.width - margin_x - width)
-    y_rows = _top_section_y_rows(page, height, margin_y, display_space=display_space)
+    if vertical_preference == "bottom":
+        y_rows = _bottom_section_y_rows(page, height, margin_y, display_space=display_space)
+    else:
+        y_rows = _top_section_y_rows(page, height, margin_y, display_space=display_space)
     # x-major order: the whole left column is preferred before any right
     # candidate (see choose_box_rect acceptance loop).
     return [
@@ -211,6 +260,19 @@ def _top_section_y_rows(
     band_end = max(margin_y, min(max_y, page.rect.height * 0.3 - height))
     mid = margin_y + max(0.0, (band_end - margin_y) / 2)
     return _unique_positions([margin_y, mid, band_end])
+
+
+def _bottom_section_y_rows(
+    page: fitz.Page, height: float, margin_y: float, display_space: bool = False
+) -> list[float]:
+    max_y = max(margin_y, page.rect.height - margin_y - height)
+    if not display_space and page.rotation in {90, 180, 270}:
+        band_end = max(margin_y, min(max_y, page.rect.height * 0.3 - height))
+        mid = margin_y + max(0.0, (band_end - margin_y) / 2)
+        return _unique_positions([margin_y, mid, band_end])
+    band_start = max(margin_y, page.rect.height * 0.7 - height)
+    mid = band_start + max(0.0, (max_y - band_start) / 2)
+    return _unique_positions([max_y, mid, band_start])
 
 
 def _unique_positions(values: list[float]) -> list[float]:
@@ -275,7 +337,10 @@ def _placement_score(
     scale: float,
     text_blocks: list[fitz.Rect],
     annotation_blocks: list[fitz.Rect],
+    position_penalty=None,
 ) -> PlacementScore:
+    if position_penalty is None:
+        position_penalty = _position_preference_penalty
     rect_area = max(_rect_area(candidate), 1.0)
     overlap_area = 0.0
     for block in text_blocks:
@@ -297,7 +362,7 @@ def _placement_score(
         + density
         + overlap_ratio * 2.0
         + annotation_overlap_ratio * 4.0
-        + _position_preference_penalty(page, candidate)
+        + position_penalty(page, candidate)
         + right_side_penalty
     )
     return PlacementScore(
@@ -317,12 +382,21 @@ def _position_preference_penalty(page: fitz.Page, candidate: fitz.Rect) -> float
     return 0.35
 
 
+def _material_position_preference_penalty(page: fitz.Page, candidate: fitz.Rect) -> float:
+    if candidate.y1 >= page.rect.height * 0.88:
+        return 0.0
+    if candidate.y1 >= page.rect.height * 0.4:
+        return 0.2
+    return 0.35
+
+
 def _rect_area(rect: fitz.Rect) -> float:
     return max(0.0, rect.width) * max(0.0, rect.height)
 
 
 def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | None = None) -> bytes:
-    lines = summary.display_lines()
+    lines = summary.totals_box_lines()
+    material_lines = summary.material_box_lines()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
@@ -348,6 +422,21 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             # the new box invisible to Adobe's Comments pane and impossible to drag.
             _add_summary_annotation(page, rect, lines)
 
+        if material_lines:
+            existing_material_boxes = _existing_material_boxes(page)
+            if existing_material_boxes:
+                material_replacement = existing_material_boxes[0]
+                _delete_annotations_by_xref(page, [box.xref for box in existing_material_boxes])
+                _add_material_annotation(
+                    page,
+                    material_replacement.rect,
+                    material_lines,
+                    preferred_font_size=material_replacement.font_size,
+                )
+            else:
+                material_rect = choose_material_box_rect(page, material_lines)
+                _add_material_annotation(page, material_rect, material_lines)
+
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
         return buffer.getvalue()
@@ -356,11 +445,19 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
 
 
 def _existing_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    return _existing_output_boxes(page, _starts_with_totals_title)
+
+
+def _existing_material_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    return _existing_output_boxes(page, _starts_with_materials_title)
+
+
+def _existing_output_boxes(page: fitz.Page, predicate) -> list[ExistingTotalsBox]:
     boxes: list[ExistingTotalsBox] = []
     doc = page.parent
     for annot in page.annots() or []:
         content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
-        if not _starts_with_totals_title(content):
+        if not predicate(content):
             continue
         boxes.append(
             ExistingTotalsBox(
@@ -375,9 +472,13 @@ def _existing_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
 
 
 def _starts_with_totals_title(text: str) -> bool:
+    return re.sub(r"\s+", " ", text.strip()).lower().startswith("mkr job totals")
+
+
+def _starts_with_materials_title(text: str) -> bool:
     for line in text.splitlines():
         if line.strip():
-            return line.strip().lower().startswith("mkr job totals")
+            return line.strip().lower() in {"material", "materials"}
     return False
 
 
@@ -435,6 +536,9 @@ def _repair_freetext_appearance(
     rect: fitz.Rect,
     rendered_lines: list[str] | None = None,
     font_size: float | None = None,
+    text_color: tuple[float, float, float] = TEXT_RED,
+    border_color: tuple[float, float, float] = TEXT_RED,
+    fill_color: tuple[float, float, float] = BOX_FILL,
 ) -> None:
     """Work around PyMuPDF 1.25.x FreeText appearance defects.
 
@@ -452,8 +556,17 @@ def _repair_freetext_appearance(
     match = re.search(r"(\d+) 0 R", ap_ref)
     if match:
         ap_xref = int(match.group(1))
-        if page.rotation in {90, 180, 270} and rendered_lines and font_size:
-            _write_freetext_appearance(page, ap_xref, rect, rendered_lines, font_size)
+        if rendered_lines and font_size:
+            _write_freetext_appearance(
+                page,
+                ap_xref,
+                rect,
+                rendered_lines,
+                font_size,
+                text_color=text_color,
+                border_color=border_color,
+                fill_color=fill_color,
+            )
         else:
             doc.xref_set_key(ap_xref, "BBox", f"[0 0 {_pdf_num(rect.width)} {_pdf_num(rect.height)}]")
     if (doc.xref_get_key(annot.xref, "CL")[1] or "null") != "null":
@@ -466,14 +579,51 @@ def _add_summary_annotation(
     lines: list[str],
     preferred_font_size: float | None = None,
 ) -> None:
+    _add_freetext_box(
+        page,
+        rect,
+        lines,
+        preferred_font_size=preferred_font_size,
+        text_color=TEXT_RED,
+        border_color=TEXT_RED,
+        fill_color=BOX_FILL,
+    )
+
+
+def _add_material_annotation(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    lines: list[str],
+    preferred_font_size: float | None = None,
+) -> None:
+    _add_freetext_box(
+        page,
+        rect,
+        lines,
+        preferred_font_size=preferred_font_size,
+        text_color=MATERIAL_TEXT,
+        border_color=MATERIAL_BORDER_BLUE,
+        fill_color=BOX_FILL,
+    )
+
+
+def _add_freetext_box(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    lines: list[str],
+    preferred_font_size: float | None = None,
+    text_color: tuple[float, float, float] = TEXT_RED,
+    border_color: tuple[float, float, float] = TEXT_RED,
+    fill_color: tuple[float, float, float] = BOX_FILL,
+) -> None:
     rendered_lines, font_size, _ = _summary_rendering(page, rect, lines, font_size=preferred_font_size)
     annot = page.add_freetext_annot(
         rect,
         "\n".join(rendered_lines),
         fontsize=font_size,
         fontname="helv",
-        text_color=TEXT_RED,
-        fill_color=BOX_FILL,
+        text_color=text_color,
+        fill_color=fill_color,
         rotate=_annotation_rotation(page),
     )
     # Border = yes, size 2 (Nick Evans email, 2026-06-09). FreeText supports
@@ -483,18 +633,27 @@ def _add_summary_annotation(
     update_kwargs = {
         "fontname": "helv",
         "fontsize": font_size,
-        "text_color": TEXT_RED,
-        "fill_color": BOX_FILL,
+        "text_color": text_color,
+        "fill_color": fill_color,
     }
     if page.rotation == 0:
-        update_kwargs["border_color"] = TEXT_RED
+        update_kwargs["border_color"] = border_color
     try:
         annot.update(**update_kwargs)
     except ValueError:
         update_kwargs.pop("border_color", None)
         annot.update(**update_kwargs)
-    _repair_freetext_appearance(page, annot, rect, rendered_lines, font_size)
-    _set_editor_text_style(page, annot, rendered_lines, font_size)
+    _repair_freetext_appearance(
+        page,
+        annot,
+        rect,
+        rendered_lines,
+        font_size,
+        text_color=text_color,
+        border_color=border_color,
+        fill_color=fill_color,
+    )
+    _set_editor_text_style(page, annot, rendered_lines, font_size, text_color)
     _pin_annotation_orientation(page, annot)
 
 
@@ -504,6 +663,9 @@ def _write_freetext_appearance(
     rect: fitz.Rect,
     lines: list[str],
     font_size: float,
+    text_color: tuple[float, float, float] = TEXT_RED,
+    border_color: tuple[float, float, float] = TEXT_RED,
+    fill_color: tuple[float, float, float] = BOX_FILL,
 ) -> None:
     doc = page.parent
     rotation = _annotation_rotation(page)
@@ -527,26 +689,43 @@ def _write_freetext_appearance(
     doc.xref_set_key(ap_xref, "Matrix", "[" + " ".join(_pdf_num(value) for value in matrix) + "]")
     doc.update_stream(
         ap_xref,
-        _freetext_appearance_stream(bbox_width, bbox_height, lines, font_size).encode("latin-1"),
+        _freetext_appearance_stream(
+            bbox_width,
+            bbox_height,
+            lines,
+            font_size,
+            text_color=text_color,
+            border_color=border_color,
+            fill_color=fill_color,
+        ).encode("latin-1"),
     )
 
 
-def _freetext_appearance_stream(width: float, height: float, lines: list[str], font_size: float) -> str:
+def _freetext_appearance_stream(
+    width: float,
+    height: float,
+    lines: list[str],
+    font_size: float,
+    text_color: tuple[float, float, float] = TEXT_RED,
+    border_color: tuple[float, float, float] = TEXT_RED,
+    fill_color: tuple[float, float, float] = BOX_FILL,
+) -> str:
     padding = max(4.0, font_size * 0.18)
     line_height = font_size * 1.16
     x = padding
     y = max(font_size, height - padding - font_size * 1.05)
-    fill = " ".join(_pdf_num(v) for v in BOX_FILL)
-    red = " ".join(_pdf_num(v) for v in TEXT_RED)
+    fill = " ".join(_pdf_num(v) for v in fill_color)
+    border = " ".join(_pdf_num(v) for v in border_color)
+    text = " ".join(_pdf_num(v) for v in text_color)
     box_w = max(1.0, width - 2.0)
     box_h = max(1.0, height - 2.0)
     rows = [
         f"{fill} rg",
-        f"{red} RG",
+        f"{border} RG",
         f"{_pdf_num(BORDER_WIDTH)} w",
         f"1 1 {_pdf_num(box_w)} {_pdf_num(box_h)} re",
         "B",
-        f"{red} rg",
+        f"{text} rg",
         "BT",
         f"/Helv {_pdf_num(font_size)} Tf",
         f"{_pdf_num(x)} {_pdf_num(y)} Td",
@@ -630,22 +809,28 @@ def _pin_annotation_orientation(page: fitz.Page, annot: fitz.Annot) -> None:
         annot.set_flags(annot.flags | fitz.PDF_ANNOT_IS_NO_ROTATE)
 
 
-def _set_editor_text_style(page: fitz.Page, annot: fitz.Annot, lines: list[str], font_size: float) -> None:
-    """Keep the text red when a PDF editor regenerates the appearance.
+def _set_editor_text_style(
+    page: fitz.Page,
+    annot: fitz.Annot,
+    lines: list[str],
+    font_size: float,
+    text_color: tuple[float, float, float],
+) -> None:
+    """Keep the text color when a PDF editor regenerates the appearance.
 
     Editors (Nitro, Bluebeam, Adobe) rebuild a FreeText appearance from /DA,
     /DS (and /RC if present) when the box is moved or edited. PyMuPDF writes /DA with a
     nonstandard lowercase font name and no /DS or /RC, so some editors fell
-    back to black text on move (Nick, BI-945043, 2026-06-10). Write all three
-    in standard form with the red color.
+        back to black text on move (Nick, BI-945043, 2026-06-10). Write all three
+        in standard form with the intended color.
     """
     doc = page.parent
     size = round(float(font_size), 2)
-    doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(f"/Helv {size} Tf 1 0 0 rg"))
+    doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(f"/Helv {size} Tf {_rgb_operator(text_color)} rg"))
     doc.xref_set_key(
         annot.xref,
         "DS",
-        fitz.get_pdf_str(f"font: {size}pt Helvetica, sans-serif; color:#FF0000"),
+        fitz.get_pdf_str(f"font: {size}pt Helvetica, sans-serif; color:{_rgb_hex(text_color)}"),
     )
     # Deliberately NO /RC: editors prefer rich content over the plain
     # Contents when regenerating a moved box, and they join its paragraphs
@@ -654,6 +839,14 @@ def _set_editor_text_style(page: fitz.Page, annot: fitz.Annot, lines: list[str],
     # line breaks survive the move.
     if (doc.xref_get_key(annot.xref, "RC")[1] or "null") != "null":
         doc.xref_set_key(annot.xref, "RC", "null")
+
+
+def _rgb_operator(color: tuple[float, float, float]) -> str:
+    return " ".join(_pdf_num(value) for value in color)
+
+
+def _rgb_hex(color: tuple[float, float, float]) -> str:
+    return "#" + "".join(f"{max(0, min(255, round(value * 255))):02X}" for value in color[:3])
 
 
 def _summary_rendering(

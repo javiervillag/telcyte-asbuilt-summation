@@ -414,6 +414,24 @@ def test_existing_mkr_totals_box_is_not_counted() -> None:
     assert any("re-run detected" in n for n in notes)
 
 
+def test_split_title_existing_mkr_totals_box_is_not_counted() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((600, 300), "UG-06 - 4")
+    page.add_freetext_annot(
+        fitz.Rect(20, 20, 280, 200),
+        "MKR Job\nTotals\nUG-06 - 4\nTL-20 - 2",
+        fontsize=12,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert totals == ["UG-06 - 4"]
+    assert any("re-run detected" in n for n in notes)
+
+
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:
     # Nick's editor auto-rotates the box on drag/copy-paste for some permit
     # drawings (2026-06-11); NoRotate pins the orientation.

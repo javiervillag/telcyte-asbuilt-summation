@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import fitz
 from PIL import Image
@@ -22,12 +23,16 @@ def test_annotate_pdf_adds_totals_text() -> None:
     try:
         text = _page_text_with_annotations(doc[0])
         baked_content = doc[0].read_contents()
+        summary_annotations = _summary_annotations(doc[0])
+        material_annotations = _material_annotations(doc[0])
     finally:
         doc.close()
     assert "MKR Job Totals" in text
     assert "UG-56 - 170'" in text
     assert "605-3277 48Ct - 750'" in text
     assert "\u00ad" not in text
+    assert "605-3277 48Ct - 750'" not in summary_annotations[0]
+    assert material_annotations == ["Materials\n605-3277 48Ct - 750'"]
     # The box is annotation-only: no baked page-content duplicate underneath
     # (drag-duplicate bug, Nick Evans email 2026-06-09, BI-304069).
     assert b"MKR Job Totals" not in baked_content
@@ -80,6 +85,67 @@ def test_choose_box_rect_stays_top_side_even_when_candidates_touch_annotations()
         rect = choose_box_rect(page, ["MKR Job Totals", "UG-56 - 170'"])
         assert rect.y0 <= page.rect.height * 0.3
         assert rect.x0 <= page.rect.width * 0.2 or rect.x1 >= page.rect.width * 0.8
+    finally:
+        doc.close()
+
+
+def test_materials_box_is_separate_bottom_left_and_sample_styled() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["UG-56 - 170'"],
+        materials=["220-9236 (.625) - 140'"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        material_annots = [
+            annot for annot in page.annots() or []
+            if str((annot.info or {}).get("content", "")).startswith("Materials")
+        ]
+        assert len(material_annots) == 1
+        material = material_annots[0]
+        assert material.type[1] == "FreeText"
+        assert material.rect.x0 < page.rect.width * 0.25
+        assert material.rect.y1 > page.rect.height * 0.75
+        assert "0 0 0 rg" in (doc.xref_get_key(material.xref, "DA")[1] or "")
+        assert b"0 0 1 RG" in _appearance_stream(doc, material)
+    finally:
+        doc.close()
+
+
+def test_split_title_existing_totals_box_is_replaced_in_place() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    original_rect = fitz.Rect(20, 24, 180, 180)
+    page.add_freetext_annot(original_rect, "MKR Job\nTotals\nUG-06 - 2", fontsize=12)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["UG-85 - 10"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        summary_annots = [
+            annot for annot in page.annots() or []
+            if "MKR Job" in str((annot.info or {}).get("content", ""))
+        ]
+        assert len(summary_annots) == 1
+        assert summary_annots[0].info["content"] == "MKR Job Totals\nUG-85 - 10"
+        assert "UG-06 - 2" not in summary_annots[0].info["content"]
+        assert abs(summary_annots[0].rect.x0 - original_rect.x0) < 1
+        assert abs(summary_annots[0].rect.y0 - original_rect.y0) < 1
     finally:
         doc.close()
 
@@ -198,6 +264,23 @@ def _summary_annotations(page: fitz.Page) -> list[str]:
         if annot.type[1] == "FreeText" and content.startswith("MKR Job Totals"):
             rows.append(content)
     return rows
+
+
+def _material_annotations(page: fitz.Page) -> list[str]:
+    rows = []
+    for annot in page.annots() or []:
+        content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
+        if annot.type[1] == "FreeText" and content.startswith("Materials"):
+            rows.append(content)
+    return rows
+
+
+def _appearance_stream(doc: fitz.Document, annot: fitz.Annot) -> bytes:
+    ap_ref = doc.xref_get_key(annot.xref, "AP")[1] or ""
+    match = re.search(r"(\d+) 0 R", ap_ref)
+    if not match:
+        return b""
+    return doc.xref_stream(int(match.group(1))) or b""
 
 
 def _page_text_with_annotations(page: fitz.Page) -> str:

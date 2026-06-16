@@ -130,10 +130,18 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
 
 
 def _starts_with_totals_title(text: str) -> bool:
+    return re.sub(r"\s+", " ", text.strip()).lower().startswith("mkr job totals")
+
+
+def _starts_with_materials_title(text: str) -> bool:
     for line in text.splitlines():
         if line.strip():
-            return line.strip().lower().startswith("mkr job totals")
+            return line.strip().lower() in {"material", "materials"}
     return False
+
+
+def _starts_with_output_box_title(text: str) -> bool:
+    return _starts_with_totals_title(text) or _starts_with_materials_title(text)
 
 
 def _remove_duplicate_annotation_lines(text: str, annotation_lines: set[str]) -> str:
@@ -208,29 +216,9 @@ def derive_code_totals(
             catalog_misses.append(cleaned)
 
     # Re-run safety: a previously stamped "MKR Job Totals" box (ours or a
-    # manual one) must never be counted as field callouts - re-running an
-    # already-summarized PDF doubled every total and absorbed box-only lines
-    # like TL-20/PC-02 (BI-872022 re-run, 2026-06-11).
-    skipped_total_boxes = 0
-    box_rects: list[tuple[int, tuple[float, float, float, float]]] = []
-    billable_blocks: list[TextBlock] = []
-    for block in blocks:
-        if _starts_with_totals_title(block.text):
-            skipped_total_boxes += 1
-            box_rects.append((block.page, block.bbox))
-        else:
-            billable_blocks.append(block)
-
-    def _inside_box(block: TextBlock) -> bool:
-        cx = (block.bbox[0] + block.bbox[2]) / 2
-        cy = (block.bbox[1] + block.bbox[3]) / 2
-        for page, (x0, y0, x1, y1) in box_rects:
-            if block.page == page and x0 <= cx <= x1 and y0 <= cy <= y1 and (x1 - x0) > 1:
-                return True
-        return False
-
-    # Flattened remnants of a stamped box sit inside its rect on the page.
-    blocks = [b for b in billable_blocks if not (b.source == "page" and _inside_box(b))]
+    # manual one) must never be counted as field callouts. The same applies to
+    # a stamped Materials box now that cable output can be re-uploaded.
+    blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
 
     for block in blocks:
         for line in block.text.splitlines():
@@ -282,6 +270,11 @@ def derive_code_totals(
                 f"Ignored {skipped_total_boxes} existing 'MKR Job Totals' box(es) already stamped "
                 "on the drawing (re-run detected); totals were recomputed from the field callouts only."
             )
+        if skipped_material_boxes:
+            notes.append(
+                f"Ignored {skipped_material_boxes} existing 'Materials' box(es) already stamped "
+                "on the drawing (re-run detected); materials were recomputed from the field callouts only."
+            )
         if catalog_misses:
             preview = "; ".join(catalog_misses[:6])
             if len(catalog_misses) > 6:
@@ -303,6 +296,37 @@ def derive_code_totals(
             else:
                 notes.append(message)
     return rows
+
+
+def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int, int]:
+    """Return field blocks with prior output boxes and flattened remnants removed."""
+    skipped_total_boxes = 0
+    skipped_material_boxes = 0
+    box_rects: list[tuple[int, tuple[float, float, float, float]]] = []
+    field_blocks: list[TextBlock] = []
+    for block in blocks:
+        if _starts_with_totals_title(block.text):
+            skipped_total_boxes += 1
+            box_rects.append((block.page, block.bbox))
+        elif _starts_with_materials_title(block.text):
+            skipped_material_boxes += 1
+            box_rects.append((block.page, block.bbox))
+        else:
+            field_blocks.append(block)
+
+    def _inside_box(block: TextBlock) -> bool:
+        cx = (block.bbox[0] + block.bbox[2]) / 2
+        cy = (block.bbox[1] + block.bbox[3]) / 2
+        for page, (x0, y0, x1, y1) in box_rects:
+            if block.page == page and x0 <= cx <= x1 and y0 <= cy <= y1 and (x1 - x0) > 1:
+                return True
+        return False
+
+    return (
+        [b for b in field_blocks if not (b.source == "page" and _inside_box(b))],
+        skipped_total_boxes,
+        skipped_material_boxes,
+    )
 
 
 def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
@@ -373,6 +397,7 @@ def diagnose_extraction(
     excluded_context_lines: list[str] | None = None,
     parser_notes: list[str] | None = None,
     parser_warnings: list[str] | None = None,
+    resolved_callout_lines: set[str] | None = None,
     total_pages: int | None = None,
 ) -> ExtractionDiagnostics:
     quantity_lines = quantity_lines if quantity_lines is not None else extract_likely_quantity_lines(blocks)
@@ -382,7 +407,7 @@ def diagnose_extraction(
     text_chars = sum(len(block.text) for block in blocks)
     annotation_text_count = sum(1 for block in blocks if block.source == "annotation")
     ambiguous_code_line_count = _ambiguous_code_line_count(quantity_lines)
-    unresolved_callouts = _unresolved_callout_lines(blocks)
+    unresolved_callouts = _unresolved_callout_lines(blocks, resolved_callout_lines=resolved_callout_lines)
     review_callouts = [line for line in unresolved_callouts if _callout_requires_review(line)]
     note_callouts = [line for line in unresolved_callouts if line not in review_callouts]
     unresolved_callout_count = len(unresolved_callouts)
@@ -490,12 +515,18 @@ def _ambiguous_code_line_count(quantity_lines: list[str]) -> int:
     return count
 
 
-def _unresolved_callout_lines(blocks: list[TextBlock]) -> list[str]:
+def _unresolved_callout_lines(
+    blocks: list[TextBlock],
+    resolved_callout_lines: set[str] | None = None,
+) -> list[str]:
+    resolved = resolved_callout_lines or set()
     seen: set[str] = set()
     callouts: list[str] = []
     for block in blocks:
         for line in block.text.splitlines():
             cleaned = _clean_text(line)
+            if cleaned in resolved:
+                continue
             if UNRESOLVED_CALLOUT_PATTERN.search(cleaned) and not CODE_PATTERN.search(cleaned):
                 if cleaned not in seen:
                     seen.add(cleaned)

@@ -171,6 +171,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 SummaryResult(
                     title="MKR Job Totals",
                     job_totals=exc.supported_totals,
+                    cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
                     confidence=0.0,
@@ -205,6 +206,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 review_summary = SummaryResult(
                     title="MKR Job Totals",
                     job_totals=[],
+                    cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
                     confidence=0.0,
@@ -235,6 +237,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             summary = SummaryResult(
                 title="MKR Job Totals",
                 job_totals=exc.supported_totals,
+                cable_footage=exc.cable_footage,
                 warnings=exc.warnings,
                 informational_notes=exc.informational_notes,
                 confidence=0.0,
@@ -414,6 +417,10 @@ def _log_run_attempt(
         input_pdf=input_pdf,
         output_pdf=output_pdf,
         result_lines=summary.display_lines() if summary else [],
+        cable_footage=[
+            line.model_dump()
+            for line in summary.cable_footage
+        ] if summary else [],
     )
     try:
         run_history_store.log_run(record)
@@ -431,6 +438,10 @@ def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) 
         "detected_totals": summary.job_totals[:20],
         "extra_billing_codes": summary.extra_totals[:20],
         "materials": summary.materials[:10],
+        "cable_footage": [
+            line.model_dump()
+            for line in summary.cable_footage[:10]
+        ],
         "notes": summary.informational_notes[:10],
         "result_lines": _result_detail_lines(summary),
     }

@@ -105,4 +105,4 @@ def test_sqlite_schema_migration_adds_blob_columns(tmp_path) -> None:
     assert data["summary"]["total_runs"] == 0
     with sqlite3.connect(db) as conn:
         columns = {row[1] for row in conn.execute("pragma table_info(asbuilt_run_history)")}
-    assert {"input_pdf", "output_pdf"} <= columns
+    assert {"input_pdf", "output_pdf", "cable_footage_json"} <= columns

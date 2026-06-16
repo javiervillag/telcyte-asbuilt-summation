@@ -11,6 +11,7 @@ import fitz
 import httpx
 from PIL import Image
 
+from app.cable_footage import CableFootageResult, derive_cable_footage
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
@@ -30,11 +31,13 @@ class ManualReviewRequired(OpenRouterError):
         supported_totals: list[str] | None = None,
         unresolved_callouts: list[str] | None = None,
         informational_notes: list[str] | None = None,
+        cable_footage: list | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
         self.unresolved_callouts = unresolved_callouts or []
         self.informational_notes = informational_notes or []
+        self.cable_footage = cable_footage or []
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -212,12 +215,23 @@ async def summarize_with_model(
         notes=parser_notes,
         warnings=parser_warnings,
     )
+    cable_result = (
+        derive_cable_footage(
+            blocks,
+            auto_stamp=settings.auto_stamp_cable_footage,
+            path_code=settings.cable_path_code,
+            coax_rounding_increment=settings.coax_rounding_increment,
+        )
+        if settings.include_cable_footage
+        else CableFootageResult()
+    )
     diagnostics = diagnose_extraction(
         blocks,
         parser_totals,
         excluded_context_lines=excluded_context_lines,
         parser_notes=parser_notes,
         parser_warnings=parser_warnings,
+        resolved_callout_lines=cable_result.handled_callout_lines,
         total_pages=total_pages,
     )
     if diagnostics.review_required and (
@@ -228,6 +242,7 @@ async def summarize_with_model(
             supported_totals=parser_totals,
             unresolved_callouts=diagnostics.unresolved_callouts,
             informational_notes=diagnostics.informational_notes,
+            cable_footage=cable_result.lines,
         )
 
     if not settings.openrouter_api_key:
@@ -296,6 +311,7 @@ async def summarize_with_model(
                 supported_totals=parser_totals,
                 unresolved_callouts=diagnostics.unresolved_callouts,
                 informational_notes=diagnostics.informational_notes,
+                cable_footage=cable_result.lines,
             ) from exc
         if parser_totals:
             # The deterministic parser is the source of truth (its totals
@@ -318,6 +334,7 @@ async def summarize_with_model(
         else:
             raise
     summary = _merge_parser_and_model(parser_totals, model_summary, settings)
+    summary = _with_cable_footage(summary, cable_result, settings)
     for warning in diagnostics.warnings:
         if warning not in summary.warnings:
             summary.warnings.append(warning)
@@ -334,6 +351,35 @@ async def summarize_with_model(
         summary.confidence,
     )
     return summary
+
+
+def _with_cable_footage(
+    summary: SummaryResult,
+    cable_result: CableFootageResult,
+    settings: Settings,
+) -> SummaryResult:
+    if not settings.include_cable_footage:
+        return summary
+    materials = list(summary.materials)
+    for line in cable_result.lines:
+        if line.eligible_for_stamp and line.material_line and line.material_line not in materials:
+            materials.append(line.material_line)
+    warnings = list(summary.warnings)
+    for warning in cable_result.warnings:
+        if warning not in warnings:
+            warnings.append(warning)
+    informational_notes = list(summary.informational_notes)
+    for note in cable_result.informational_notes:
+        if note not in informational_notes:
+            informational_notes.append(note)
+    return summary.model_copy(
+        update={
+            "materials": materials,
+            "cable_footage": cable_result.lines,
+            "warnings": warnings,
+            "informational_notes": informational_notes,
+        }
+    )
 
 
 async def try_models(

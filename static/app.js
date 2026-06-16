@@ -351,6 +351,9 @@ function appendResultSummary(summary, warnings = []) {
   if (Array.isArray(summary.materials) && summary.materials.length) {
     rows.push(["Materials", countLabel(summary.materials, "item")]);
   }
+  if (Array.isArray(summary.cable_footage) && summary.cable_footage.length) {
+    rows.push(["Cable materials", countLabel(summary.cable_footage, "type")]);
+  }
   for (const [label, value] of rows) {
     const row = document.createElement("div");
     row.className = "included-row";
@@ -364,10 +367,81 @@ function appendResultSummary(summary, warnings = []) {
   }
   appendDetailSection(block, "Detected totals details", summary.detected_totals);
   appendDetailSection(block, "Extra billing codes details", summary.extra_billing_codes);
+  appendCableBreakdown(block, summary.cable_footage);
   appendDetailSection(block, "Notes", summary.notes);
   appendDetailSection(block, "Review items", warnings);
   appendDetailSection(block, "MKR Job Totals details", summary.result_lines);
   statusBox.appendChild(block);
+}
+
+function appendCableBreakdown(block, lines) {
+  if (!Array.isArray(lines) || !lines.length) return;
+  const details = document.createElement("details");
+  details.className = "included-details cable-breakdown";
+  details.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = "Cable material breakdown";
+  const list = document.createElement("div");
+  list.className = "cable-lines";
+  for (const line of lines) {
+    const item = document.createElement("div");
+    item.className = "cable-line";
+    const title = document.createElement("strong");
+    title.textContent = line.material_line || `${line.part_number || "Unmapped"} (${line.display_type || line.callout || "Cable"})`;
+    item.appendChild(title);
+    const meta = document.createElement("div");
+    meta.className = "cable-line-grid";
+    meta.appendChild(cableMetric("Path", formatFeet(line.path_subtotal)));
+    meta.appendChild(cableMetric("Storage", formatFeet(line.storage_subtotal)));
+    meta.appendChild(cableMetric("Buffer", `${Math.round(Number(line.buffer || 1) * 100 - 100)}%`));
+    meta.appendChild(cableMetric("Rounding", String(line.rounding || "n/a").replace("ceil_", "up ")));
+    item.appendChild(meta);
+    const sources = cableSources(line);
+    if (sources.length) {
+      const source = document.createElement("p");
+      source.textContent = sources.join("; ");
+      item.appendChild(source);
+    }
+    if (Array.isArray(line.review_flags) && line.review_flags.length) {
+      const flags = document.createElement("ul");
+      flags.className = "cable-flags";
+      for (const flag of line.review_flags) {
+        const flagItem = document.createElement("li");
+        flagItem.textContent = flag;
+        flags.appendChild(flagItem);
+      }
+      item.appendChild(flags);
+    }
+    list.appendChild(item);
+  }
+  details.appendChild(summary);
+  details.appendChild(list);
+  block.appendChild(details);
+}
+
+function cableMetric(label, value) {
+  const span = document.createElement("span");
+  span.innerHTML = `<em>${escapeHtml(label)}</em><b>${escapeHtml(value)}</b>`;
+  return span;
+}
+
+function cableSources(line) {
+  const rows = [];
+  const pathSegments = Array.isArray(line.path_segments) ? line.path_segments : [];
+  if (pathSegments.length) {
+    rows.push(`Path segments: ${pathSegments.map((item) => `${formatFeet(item.feet)} p${item.page || "?"}`).join(", ")}`);
+  }
+  const storageItems = Array.isArray(line.storage_items) ? line.storage_items : [];
+  if (storageItems.length) {
+    rows.push(`Storage/slack: ${storageItems.map((item) => `${item.label || "Item"} ${formatFeet(item.feet)} p${item.page || "?"}`).join(", ")}`);
+  }
+  return rows;
+}
+
+function formatFeet(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "0'";
+  return `${number % 1 === 0 ? number.toFixed(0) : number.toFixed(1)}'`;
 }
 
 function appendDetailSection(block, title, lines) {
@@ -970,6 +1044,11 @@ function renderRunRow(run) {
         .map((line) => `<span>${escapeHtml(line)}</span>`)
         .join("")}</div>`
     : "";
+  const cableLines = Array.isArray(run.cable_footage) && run.cable_footage.length
+    ? `<div class="history-result-lines"><strong>Cable materials</strong>${run.cable_footage
+        .map((line) => `<span>${escapeHtml(line.material_line || `${line.part_number || "Unmapped"} (${line.display_type || line.callout || "Cable"})`)}</span>`)
+        .join("")}</div>`
+    : "";
   return `
     <details class="history-row">
       <summary>
@@ -989,6 +1068,7 @@ function renderRunRow(run) {
         ${downloads ? `<span class="history-downloads">${downloads}</span>` : storageNote}
       </div>
       ${resultLines}
+      ${cableLines}
     </details>
   `;
 }

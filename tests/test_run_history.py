@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.models import SummaryResult
+from app.models import CableFootageLine, SummaryResult
 from app.openrouter_client import ManualReviewRequired
 from app.run_history import RunHistoryStore
 
@@ -54,8 +54,46 @@ def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     run = data["runs"][0]
     assert run["status"] == "success"
     assert run["status_label"] == "Done"
-    assert run["source_filename"] == "success.pdf"
-    assert run["output_filename"] == "success-telcyte-summary.pdf"
+
+
+def test_cable_footage_round_trips_to_run_history(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main, "run_history_store", _temp_store(tmp_path))
+
+    async def fake_summarize(content, settings, source_name=None):
+        return SummaryResult(
+            model="parser+fake-model",
+            confidence=0.91,
+            job_totals=["UG-56 - 170'"],
+            cable_footage=[
+                CableFootageLine(
+                    callout="48ct",
+                    display_type="48Ct",
+                    part_number="605-3277",
+                    family="fiber",
+                    path_subtotal=1772,
+                    storage_subtotal=730,
+                    total_ft=2800,
+                    material_line="605-3277 (48Ct) - 2800'",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(main, "summarize_with_model", fake_summarize)
+    monkeypatch.setattr(main, "annotate_pdf", lambda content, summary, source_name=None: b"%PDF-1.4 fake")
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("fiber.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.headers["x-telcyte-result-summary"])
+    assert payload["cable_footage"][0]["material_line"] == "605-3277 (48Ct) - 2800'"
+    run = client.get("/api/run-history").json()["runs"][0]
+    assert run["cable_footage"][0]["material_line"] == "605-3277 (48Ct) - 2800'"
+    assert run["source_filename"] == "fiber.pdf"
+    assert run["output_filename"] == "fiber-telcyte-summary.pdf"
     assert run["detected_totals_count"] == 1
     assert run["pages_processed"] >= 1
     assert run["estimated_minutes_saved"] == 8.0
