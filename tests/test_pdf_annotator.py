@@ -150,7 +150,7 @@ def test_unrotated_mkr_box_keeps_standard_appearance_stream() -> None:
 def test_split_title_existing_totals_box_is_replaced_in_place() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
-    original_rect = fitz.Rect(20, 24, 180, 180)
+    original_rect = fitz.Rect(20, 24, 180, 420)
     page.add_freetext_annot(original_rect, "MKR Job\nTotals\nUG-06 - 2", fontsize=12)
     source = doc.tobytes()
     doc.close()
@@ -173,6 +173,7 @@ def test_split_title_existing_totals_box_is_replaced_in_place() -> None:
         assert "UG-06 - 2" not in summary_annots[0].info["content"]
         assert abs(summary_annots[0].rect.x0 - original_rect.x0) < 1
         assert abs(summary_annots[0].rect.y0 - original_rect.y0) < 1
+        assert summary_annots[0].rect.height < original_rect.height * 0.35
     finally:
         doc.close()
 

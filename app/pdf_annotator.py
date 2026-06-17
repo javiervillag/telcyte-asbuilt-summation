@@ -407,7 +407,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             _delete_annotations_by_xref(page, [box.xref for box in existing_boxes])
             _add_summary_annotation(
                 page,
-                replacement.rect,
+                _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
                 lines,
                 preferred_font_size=replacement.font_size,
             )
@@ -429,7 +429,12 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                 _delete_annotations_by_xref(page, [box.xref for box in existing_material_boxes])
                 _add_material_annotation(
                     page,
-                    material_replacement.rect,
+                    _replacement_rect_for_content(
+                        page,
+                        material_replacement.rect,
+                        material_lines,
+                        material_replacement.font_size,
+                    ),
                     material_lines,
                     preferred_font_size=material_replacement.font_size,
                 )
@@ -469,6 +474,51 @@ def _existing_output_boxes(page: fitz.Page, predicate) -> list[ExistingTotalsBox
         )
     boxes.sort(key=lambda box: (box.rect.x0, box.rect.y0))
     return boxes
+
+
+def _replacement_rect_for_content(
+    page: fitz.Page,
+    anchor: fitz.Rect,
+    lines: list[str],
+    preferred_font_size: float | None = None,
+) -> fitz.Rect:
+    """Keep the old box location, but fit the new content.
+
+    Older/manual output boxes can be much larger than the new run needs. Reusing
+    the whole stale rectangle makes a tiny two-line total cover a large swath of
+    the drawing. The location is the re-run signal; the stale dimensions are not.
+    Rotated pages keep the existing rectangle because their authored dimensions
+    are part of the known-good movable annotation structure.
+    """
+    if page.rotation:
+        return fitz.Rect(anchor)
+    width, height, _, _ = _box_metrics_for_font(page, lines, preferred_font_size)
+    rect = fitz.Rect(anchor.x0, anchor.y0, anchor.x0 + width, anchor.y0 + height)
+    if rect.x1 > page.rect.x1:
+        rect.x0 = max(page.rect.x0, page.rect.x1 - width)
+        rect.x1 = page.rect.x1
+    if rect.y1 > page.rect.y1:
+        rect.y0 = max(page.rect.y0, page.rect.y1 - height)
+        rect.y1 = page.rect.y1
+    return rect
+
+
+def _box_metrics_for_font(
+    page: fitz.Page,
+    lines: list[str],
+    font_size: float | None = None,
+) -> tuple[float, float, float, float]:
+    if font_size is None:
+        return _box_metrics(page, lines)
+    line_height = font_size * 1.18
+    padding = font_size * 0.5
+    longest = max(
+        (fitz.get_text_length(line, fontname="helv", fontsize=font_size) for line in lines),
+        default=font_size * 10,
+    )
+    width = min(page.rect.width * 0.34, longest + padding * 2 + font_size * 0.8)
+    height = min(page.rect.height * 0.82, len(lines) * line_height + padding * 2 + font_size * 0.4)
+    return width, height, font_size, padding
 
 
 def _starts_with_totals_title(text: str) -> bool:
