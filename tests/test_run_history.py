@@ -1,15 +1,13 @@
 import json
 from pathlib import Path
 
+import fitz
 from fastapi.testclient import TestClient
 
 import app.main as main
 from app.models import CableFootageLine, SummaryResult
 from app.openrouter_client import ManualReviewRequired
 from app.run_history import RunHistoryStore
-
-
-SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
 
 
 def _temp_store(tmp_path) -> RunHistoryStore:
@@ -19,6 +17,15 @@ def _temp_store(tmp_path) -> RunHistoryStore:
         savings_minutes_per_completed_pdf=8.0,
         savings_hourly_rate=75.0,
     )
+
+
+def _sample_pdf() -> bytes:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "UG-56 - 170'")
+    content = doc.tobytes()
+    doc.close()
+    return content
 
 
 def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
@@ -38,7 +45,7 @@ def test_successful_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     client = TestClient(main.app)
     response = client.post(
         "/api/summarize",
-        files={"file": ("success.pdf", SAMPLE.read_bytes(), "application/pdf")},
+        files={"file": ("success.pdf", _sample_pdf(), "application/pdf")},
     )
 
     assert response.status_code == 200
@@ -84,7 +91,7 @@ def test_cable_footage_round_trips_to_run_history(monkeypatch, tmp_path) -> None
     client = TestClient(main.app)
     response = client.post(
         "/api/summarize",
-        files={"file": ("fiber.pdf", SAMPLE.read_bytes(), "application/pdf")},
+        files={"file": ("fiber.pdf", _sample_pdf(), "application/pdf")},
     )
 
     assert response.status_code == 200
@@ -139,7 +146,7 @@ def test_manual_review_pdf_run_is_logged(monkeypatch, tmp_path) -> None:
     client = TestClient(main.app)
     response = client.post(
         "/api/summarize",
-        files={"file": ("review.pdf", SAMPLE.read_bytes(), "application/pdf")},
+        files={"file": ("review.pdf", _sample_pdf(), "application/pdf")},
     )
 
     assert response.status_code == 200
@@ -172,7 +179,7 @@ def test_done_with_notes_pdf_run_is_logged_as_green_completed(monkeypatch, tmp_p
     client = TestClient(main.app)
     response = client.post(
         "/api/summarize",
-        files={"file": ("noted.pdf", SAMPLE.read_bytes(), "application/pdf")},
+        files={"file": ("noted.pdf", _sample_pdf(), "application/pdf")},
     )
 
     assert response.status_code == 200
@@ -213,7 +220,7 @@ def test_strict_review_badges_turn_notes_back_to_review(monkeypatch, tmp_path) -
     client = TestClient(main.app)
     response = client.post(
         "/api/summarize",
-        files={"file": ("strict.pdf", SAMPLE.read_bytes(), "application/pdf")},
+        files={"file": ("strict.pdf", _sample_pdf(), "application/pdf")},
     )
 
     assert response.status_code == 200
@@ -246,7 +253,7 @@ def test_logging_failure_does_not_block_pdf_generation(monkeypatch) -> None:
     client = TestClient(main.app)
     response = client.post(
         "/api/summarize",
-        files={"file": ("success.pdf", SAMPLE.read_bytes(), "application/pdf")},
+        files={"file": ("success.pdf", _sample_pdf(), "application/pdf")},
     )
 
     assert response.status_code == 200
@@ -273,7 +280,7 @@ def test_run_history_csv_export(monkeypatch, tmp_path) -> None:
     client.post(
         "/api/summarize",
         data={"extra_billing_codes": json.dumps(extras)},
-        files={"file": ("csv.pdf", SAMPLE.read_bytes(), "application/pdf")},
+        files={"file": ("csv.pdf", _sample_pdf(), "application/pdf")},
     )
     response = client.get("/api/run-history.csv")
 

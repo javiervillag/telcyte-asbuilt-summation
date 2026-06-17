@@ -120,6 +120,33 @@ def test_materials_box_is_separate_bottom_left_and_sample_styled() -> None:
         doc.close()
 
 
+def test_unrotated_mkr_box_keeps_standard_appearance_stream() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["UG-85 - 10"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        summary_annots = [
+            annot for annot in page.annots() or []
+            if str((annot.info or {}).get("content", "")).startswith("MKR Job Totals")
+        ]
+        assert len(summary_annots) == 1
+        stream = _appearance_stream(doc, summary_annots[0])
+        assert b"1 1 " not in stream
+        assert b" re\nB\n" not in stream
+    finally:
+        doc.close()
+
+
 def test_split_title_existing_totals_box_is_replaced_in_place() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)

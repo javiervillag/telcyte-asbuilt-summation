@@ -387,7 +387,7 @@ function appendCableBreakdown(block, lines) {
     const item = document.createElement("div");
     item.className = "cable-line";
     const title = document.createElement("strong");
-    title.textContent = line.material_line || `${line.part_number || "Unmapped"} (${line.display_type || line.callout || "Cable"})`;
+    title.textContent = cableTitle(line);
     item.appendChild(title);
     const meta = document.createElement("div");
     meta.className = "cable-line-grid";
@@ -423,6 +423,12 @@ function cableMetric(label, value) {
   const span = document.createElement("span");
   span.innerHTML = `<em>${escapeHtml(label)}</em><b>${escapeHtml(value)}</b>`;
   return span;
+}
+
+function cableTitle(line) {
+  const base = line.material_line || `${line.part_number || "Unmapped"} (${line.display_type || line.callout || "Cable"})`;
+  const hasReviewFlags = Array.isArray(line.review_flags) && line.review_flags.length > 0;
+  return hasReviewFlags ? `${base} (preliminary)` : base;
 }
 
 function cableSources(line) {
@@ -1046,7 +1052,7 @@ function renderRunRow(run) {
     : "";
   const cableLines = Array.isArray(run.cable_footage) && run.cable_footage.length
     ? `<div class="history-result-lines"><strong>Cable materials</strong>${run.cable_footage
-        .map((line) => `<span>${escapeHtml(line.material_line || `${line.part_number || "Unmapped"} (${line.display_type || line.callout || "Cable"})`)}</span>`)
+        .map((line) => `<span>${escapeHtml(cableTitle(line))}</span>`)
         .join("")}</div>`
     : "";
   return `

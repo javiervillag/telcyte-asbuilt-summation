@@ -539,6 +539,7 @@ def _repair_freetext_appearance(
     text_color: tuple[float, float, float] = TEXT_RED,
     border_color: tuple[float, float, float] = TEXT_RED,
     fill_color: tuple[float, float, float] = BOX_FILL,
+    force_custom_stream: bool = False,
 ) -> None:
     """Work around PyMuPDF 1.25.x FreeText appearance defects.
 
@@ -556,7 +557,7 @@ def _repair_freetext_appearance(
     match = re.search(r"(\d+) 0 R", ap_ref)
     if match:
         ap_xref = int(match.group(1))
-        if rendered_lines and font_size:
+        if force_custom_stream and rendered_lines and font_size:
             _write_freetext_appearance(
                 page,
                 ap_xref,
@@ -587,6 +588,7 @@ def _add_summary_annotation(
         text_color=TEXT_RED,
         border_color=TEXT_RED,
         fill_color=BOX_FILL,
+        force_custom_stream=page.rotation != 0,
     )
 
 
@@ -604,6 +606,7 @@ def _add_material_annotation(
         text_color=MATERIAL_TEXT,
         border_color=MATERIAL_BORDER_BLUE,
         fill_color=BOX_FILL,
+        force_custom_stream=True,
     )
 
 
@@ -615,6 +618,7 @@ def _add_freetext_box(
     text_color: tuple[float, float, float] = TEXT_RED,
     border_color: tuple[float, float, float] = TEXT_RED,
     fill_color: tuple[float, float, float] = BOX_FILL,
+    force_custom_stream: bool = False,
 ) -> None:
     rendered_lines, font_size, _ = _summary_rendering(page, rect, lines, font_size=preferred_font_size)
     annot = page.add_freetext_annot(
@@ -652,6 +656,7 @@ def _add_freetext_box(
         text_color=text_color,
         border_color=border_color,
         fill_color=fill_color,
+        force_custom_stream=force_custom_stream,
     )
     _set_editor_text_style(page, annot, rendered_lines, font_size, text_color)
     _pin_annotation_orientation(page, annot)
