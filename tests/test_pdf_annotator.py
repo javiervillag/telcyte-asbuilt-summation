@@ -178,6 +178,51 @@ def test_split_title_existing_totals_box_is_replaced_in_place() -> None:
         doc.close()
 
 
+def test_material_replacement_uses_mkr_box_font_size() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(
+        fitz.Rect(20, 24, 180, 420),
+        "MKR Job\nTotals\nUG-06 - 2",
+        fontsize=18,
+    )
+    page.add_freetext_annot(
+        fitz.Rect(220, 600, 360, 760),
+        "Materials\n605-3277 (48Ct) - 100'",
+        fontsize=8,
+    )
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["UG-85 - 10"],
+        materials=["605-3277 (48Ct) - 2800'"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        summary_annots = [
+            annot for annot in page.annots() or []
+            if str((annot.info or {}).get("content", "")).startswith("MKR Job Totals")
+        ]
+        material_annots = [
+            annot for annot in page.annots() or []
+            if str((annot.info or {}).get("content", "")).startswith("Materials")
+        ]
+        assert len(summary_annots) == 1
+        assert len(material_annots) == 1
+        summary_da = doc.xref_get_key(summary_annots[0].xref, "DA")[1] or ""
+        material_da = doc.xref_get_key(material_annots[0].xref, "DA")[1] or ""
+        assert "/Helv 18.0 Tf" in summary_da
+        assert "/Helv 18.0 Tf" in material_da
+        assert material_annots[0].rect.height > 60
+    finally:
+        doc.close()
+
+
 def test_generic_output_preserves_existing_green_annotations() -> None:
     input_pdf = SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf")
     before_doc = fitz.open(input_pdf)

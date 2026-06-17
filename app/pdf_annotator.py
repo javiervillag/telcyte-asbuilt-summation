@@ -125,7 +125,16 @@ def _box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float
 def _placement_box_metrics(
     page: fitz.Page, lines: list[str], display_space: bool = False
 ) -> tuple[float, float, float, float]:
-    width, height, font_size, padding = _box_metrics(page, lines)
+    return _placement_box_metrics_for_font(page, lines, display_space=display_space)
+
+
+def _placement_box_metrics_for_font(
+    page: fitz.Page,
+    lines: list[str],
+    display_space: bool = False,
+    font_size: float | None = None,
+) -> tuple[float, float, float, float]:
+    width, height, font_size, padding = _box_metrics_for_font(page, lines, font_size)
     if not display_space and page.rotation in {90, 270}:
         return height, width, font_size, padding
     return width, height, font_size, padding
@@ -180,8 +189,18 @@ def choose_box_rect(page: fitz.Page, lines: list[str], display_space: bool = Fal
     return scored[0].rect
 
 
-def choose_material_box_rect(page: fitz.Page, lines: list[str], display_space: bool = False) -> fitz.Rect:
-    width, height, _, _ = _placement_box_metrics(page, lines, display_space=display_space)
+def choose_material_box_rect(
+    page: fitz.Page,
+    lines: list[str],
+    display_space: bool = False,
+    preferred_font_size: float | None = None,
+) -> fitz.Rect:
+    width, height, _, _ = _placement_box_metrics_for_font(
+        page,
+        lines,
+        display_space=display_space,
+        font_size=preferred_font_size,
+    )
     margin_x = max(14.0, page.rect.width * 0.014)
     margin_y = max(18.0, page.rect.height * 0.018)
     if not display_space and page.rotation in {90, 270}:
@@ -401,11 +420,12 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     try:
         page = doc[0]
         existing_boxes = _existing_totals_boxes(page)
+        totals_font_size: float | None = None
         if existing_boxes:
             replacement = existing_boxes[0]
             _record_replaced_total_deltas(summary, replacement.content)
             _delete_annotations_by_xref(page, [box.xref for box in existing_boxes])
-            _add_summary_annotation(
+            totals_font_size = _add_summary_annotation(
                 page,
                 _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
                 lines,
@@ -420,7 +440,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             # Rotated sheets deliberately stay in this annotation path: NR-1138768
             # had a working movable /Rotate 90 FreeText box, while baking made
             # the new box invisible to Adobe's Comments pane and impossible to drag.
-            _add_summary_annotation(page, rect, lines)
+            totals_font_size = _add_summary_annotation(page, rect, lines)
 
         if material_lines:
             existing_material_boxes = _existing_material_boxes(page)
@@ -433,14 +453,23 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                         page,
                         material_replacement.rect,
                         material_lines,
-                        material_replacement.font_size,
+                        totals_font_size,
                     ),
                     material_lines,
-                    preferred_font_size=material_replacement.font_size,
+                    preferred_font_size=totals_font_size,
                 )
             else:
-                material_rect = choose_material_box_rect(page, material_lines)
-                _add_material_annotation(page, material_rect, material_lines)
+                material_rect = choose_material_box_rect(
+                    page,
+                    material_lines,
+                    preferred_font_size=totals_font_size,
+                )
+                _add_material_annotation(
+                    page,
+                    material_rect,
+                    material_lines,
+                    preferred_font_size=totals_font_size,
+                )
 
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
@@ -629,8 +658,8 @@ def _add_summary_annotation(
     rect: fitz.Rect,
     lines: list[str],
     preferred_font_size: float | None = None,
-) -> None:
-    _add_freetext_box(
+) -> float:
+    return _add_freetext_box(
         page,
         rect,
         lines,
@@ -647,8 +676,8 @@ def _add_material_annotation(
     rect: fitz.Rect,
     lines: list[str],
     preferred_font_size: float | None = None,
-) -> None:
-    _add_freetext_box(
+) -> float:
+    return _add_freetext_box(
         page,
         rect,
         lines,
@@ -669,7 +698,7 @@ def _add_freetext_box(
     border_color: tuple[float, float, float] = TEXT_RED,
     fill_color: tuple[float, float, float] = BOX_FILL,
     force_custom_stream: bool = False,
-) -> None:
+) -> float:
     rendered_lines, font_size, _ = _summary_rendering(page, rect, lines, font_size=preferred_font_size)
     annot = page.add_freetext_annot(
         rect,
@@ -710,6 +739,7 @@ def _add_freetext_box(
     )
     _set_editor_text_style(page, annot, rendered_lines, font_size, text_color)
     _pin_annotation_orientation(page, annot)
+    return font_size
 
 
 def _write_freetext_appearance(
