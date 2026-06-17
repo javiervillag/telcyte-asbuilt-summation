@@ -6,7 +6,7 @@ from PIL import Image
 
 from app.cable_footage import derive_cable_footage
 from app.models import SummaryResult
-from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, choose_box_rect
+from app.pdf_annotator import BORDER_WIDTH, PlacementReviewRequired, annotate_pdf, choose_box_rect
 from app.pdf_parser import extract_text_blocks
 
 
@@ -122,7 +122,7 @@ def test_materials_box_is_separate_bottom_left_and_sample_styled() -> None:
         doc.close()
 
 
-def test_unrotated_mkr_box_keeps_standard_appearance_stream() -> None:
+def test_unrotated_mkr_box_without_materials_is_movable_and_visible() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
     source = doc.tobytes()
@@ -142,9 +142,14 @@ def test_unrotated_mkr_box_keeps_standard_appearance_stream() -> None:
             if str((annot.info or {}).get("content", "")).startswith("MKR Job Totals")
         ]
         assert len(summary_annots) == 1
-        stream = _appearance_stream(doc, summary_annots[0])
-        assert b"1 1 " not in stream
-        assert b" re\nB\n" not in stream
+        summary_annot = summary_annots[0]
+        assert summary_annot.type[1] == "FreeText"
+        assert summary_annot.info["content"] == "MKR Job Totals\nUG-85 - 10"
+        assert summary_annot.flags & fitz.PDF_ANNOT_IS_NO_ROTATE
+        assert summary_annot.border["width"] == BORDER_WIDTH
+        assert summary_annot.rect.width > 40
+        assert summary_annot.rect.height > 20
+        assert _material_annotations(page) == []
     finally:
         doc.close()
 

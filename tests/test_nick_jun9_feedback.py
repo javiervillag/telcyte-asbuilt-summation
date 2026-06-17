@@ -213,6 +213,45 @@ def test_extract_json_truncated_payload_is_model_error() -> None:
         _extract_json('{"title": "MKR Job Totals", "job_totals": ["UG-06 - 3"')
 
 
+def test_extract_json_ignores_trailing_model_notes() -> None:
+    from app.openrouter_client import _extract_json
+
+    payload = """```json
+{
+  "title": "MKR Job Totals",
+  "job_totals": ["Comp-15 - 1228"],
+  "materials": [],
+  "warnings": [],
+  "confidence": 0.78
+}
+```
+
+**Reasoning notes:**
+
+| Code | Evidence basis |
+|---|---|
+| Comp-15 | Included |
+"""
+
+    assert _extract_json(payload) == {
+        "title": "MKR Job Totals",
+        "job_totals": ["Comp-15 - 1228"],
+        "materials": [],
+        "warnings": [],
+        "confidence": 0.78,
+    }
+
+
+def test_extract_json_accepts_plain_fenced_and_prefaced_json() -> None:
+    from app.openrouter_client import _extract_json
+
+    expected = {"title": "MKR Job Totals", "job_totals": ["UG-06 - 3"]}
+
+    assert _extract_json('{"title": "MKR Job Totals", "job_totals": ["UG-06 - 3"]}') == expected
+    assert _extract_json('```json\n{"title": "MKR Job Totals", "job_totals": ["UG-06 - 3"]}\n```') == expected
+    assert _extract_json('Reasoning first.\n{"title": "MKR Job Totals", "job_totals": ["UG-06 - 3"]}') == expected
+
+
 def test_model_review_failure_falls_back_to_parser_totals(monkeypatch) -> None:
     # A reviewer crash must never sink a run that has parser-backed totals.
     import asyncio

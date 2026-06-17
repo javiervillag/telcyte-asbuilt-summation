@@ -125,8 +125,8 @@ def test_warning_case_uses_model_review_without_auto_adding_unsupported_totals(m
 
         async def post(self, url, headers=None, json=None):
             assert json["model"] == "anthropic/claude-sonnet-4.6"
-            assert json["reasoning"] == {"enabled": True}
-            assert json["verbosity"] == "max"
+            assert "reasoning" not in json
+            assert "verbosity" not in json
             return FakeResponse()
 
     monkeypatch.setattr("app.openrouter_client.httpx.AsyncClient", FakeClient)

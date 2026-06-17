@@ -119,17 +119,25 @@ def render_pdf_images(pdf_bytes: bytes, max_pages: int = 2) -> list[str]:
 
 def _extract_json(text: str) -> dict:
     cleaned = text.strip()
-    cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
-    cleaned = re.sub(r"```$", "", cleaned).strip()
-    if not cleaned.startswith("{"):
-        match = re.search(r"\{.*\}", cleaned, re.S)
-        if not match:
-            raise OpenRouterError("Model did not return JSON.")
-        cleaned = match.group(0)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise OpenRouterError("Model returned invalid or truncated JSON.") from exc
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.S | re.I)
+    candidates = [fenced.group(1).strip()] if fenced else []
+    candidates.append(cleaned)
+    decoder = json.JSONDecoder()
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        candidate = re.sub(r"^```(?:json)?", "", candidate).strip()
+        candidate = re.sub(r"```$", "", candidate).strip()
+        for match in re.finditer(r"\{", candidate):
+            try:
+                value, _end = decoder.raw_decode(candidate[match.start() :])
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                continue
+            if isinstance(value, dict):
+                return value
+    if "{" not in cleaned:
+        raise OpenRouterError("Model did not return JSON.")
+    raise OpenRouterError("Model returned invalid or truncated JSON.") from last_error
 
 
 def _normalize_summary(data: dict, model: str) -> SummaryResult:
@@ -278,16 +286,12 @@ async def summarize_with_model(
             {"role": "user", "content": content},
         ],
         "temperature": 0.1,
-        # Reasoning tokens count toward max_tokens on Anthropic models: the
-        # old 2200 cap + max verbosity left no room for the JSON answer on
-        # large multi-page drawings, truncating it mid-object (NR-702749
-        # processing_error, 2026-06-10).
+        # Keep enough room for large multi-page drawing context, but do not
+        # ask the reviewer for extra verbosity/reasoning. Some providers honor
+        # JSON mode loosely and append narrative notes after the object.
         "max_tokens": 6000,
-        "verbosity": "max",
         "response_format": {"type": "json_object"},
     }
-    if "4.6" in selected_model:
-        payload["reasoning"] = {"enabled": True}
 
     logger.info("requesting_summary model=%s image_pages=%s parsed_chars=%s", selected_model, image_count, len(parsed_context))
     try:
