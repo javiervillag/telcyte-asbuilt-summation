@@ -149,6 +149,35 @@ def test_unrotated_mkr_box_keeps_standard_appearance_stream() -> None:
         doc.close()
 
 
+def test_mkr_box_with_materials_uses_deterministic_line_breaks() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=2592, height=1728)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["Comp-15 - 1228", "UG-28 - 1", "UG-16 - 1", "UG-17 - 1"],
+        materials=["605-3277 (48Ct) - 1700'"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        summary_annots = [
+            annot for annot in page.annots() or []
+            if str((annot.info or {}).get("content", "")).startswith("MKR Job Totals")
+        ]
+        assert len(summary_annots) == 1
+        stream = _appearance_stream(doc, summary_annots[0])
+        assert b"(UG-28 - 1) '" in stream
+        assert b"(UG-16 - 1) '" in stream
+        assert b"(UG-28 - 1 UG-16" not in stream
+    finally:
+        doc.close()
+
+
 def test_split_title_existing_totals_box_is_replaced_in_place() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)

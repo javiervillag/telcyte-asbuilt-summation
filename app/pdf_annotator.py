@@ -416,6 +416,7 @@ def _rect_area(rect: fitz.Rect) -> float:
 def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | None = None) -> bytes:
     lines = summary.totals_box_lines()
     material_lines = summary.material_box_lines()
+    force_summary_stream = bool(material_lines)
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
@@ -430,6 +431,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                 _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
                 lines,
                 preferred_font_size=replacement.font_size,
+                force_custom_stream=force_summary_stream,
             )
         else:
             rect = choose_box_rect(page, lines)
@@ -440,7 +442,12 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             # Rotated sheets deliberately stay in this annotation path: NR-1138768
             # had a working movable /Rotate 90 FreeText box, while baking made
             # the new box invisible to Adobe's Comments pane and impossible to drag.
-            totals_font_size = _add_summary_annotation(page, rect, lines)
+            totals_font_size = _add_summary_annotation(
+                page,
+                rect,
+                lines,
+                force_custom_stream=force_summary_stream,
+            )
 
         if material_lines:
             existing_material_boxes = _existing_material_boxes(page)
@@ -470,6 +477,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                     material_lines,
                     preferred_font_size=totals_font_size,
                 )
+            _force_summary_line_break_appearance(page, lines)
 
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
@@ -658,6 +666,7 @@ def _add_summary_annotation(
     rect: fitz.Rect,
     lines: list[str],
     preferred_font_size: float | None = None,
+    force_custom_stream: bool = False,
 ) -> float:
     return _add_freetext_box(
         page,
@@ -667,8 +676,31 @@ def _add_summary_annotation(
         text_color=TEXT_RED,
         border_color=TEXT_RED,
         fill_color=BOX_FILL,
-        force_custom_stream=page.rotation != 0,
+        force_custom_stream=force_custom_stream or page.rotation != 0,
     )
+
+
+def _force_summary_line_break_appearance(page: fitz.Page, lines: list[str]) -> None:
+    for annot in page.annots() or []:
+        content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
+        if annot.type[1] != "FreeText" or not _starts_with_totals_title(content):
+            continue
+        font_size = _annotation_font_size(page.parent, annot.xref)
+        rendered_lines, font_size, _ = _summary_rendering(page, annot.rect, lines, font_size=font_size)
+        _repair_freetext_appearance(
+            page,
+            annot,
+            annot.rect,
+            rendered_lines,
+            font_size,
+            text_color=TEXT_RED,
+            border_color=TEXT_RED,
+            fill_color=BOX_FILL,
+            force_custom_stream=True,
+        )
+        _set_editor_text_style(page, annot, rendered_lines, font_size, TEXT_RED)
+        _pin_annotation_orientation(page, annot)
+        return
 
 
 def _add_material_annotation(
