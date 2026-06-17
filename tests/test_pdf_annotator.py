@@ -4,8 +4,10 @@ import re
 import fitz
 from PIL import Image
 
+from app.cable_footage import derive_cable_footage
 from app.models import SummaryResult
 from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, choose_box_rect
+from app.pdf_parser import extract_text_blocks
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
@@ -221,6 +223,39 @@ def test_material_replacement_uses_mkr_box_font_size() -> None:
         assert material_annots[0].rect.height > 60
     finally:
         doc.close()
+
+
+def test_materials_rerun_does_not_duplicate_or_double_count() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_textbox(
+        fitz.Rect(120, 120, 360, 280),
+        "Comp-15 - 1200'\nComp-15 - 28'\nEOL - 48Ct - 122'\nStorage - 48Ct - 100'\nTie Point - 48Ct - 68'",
+        fontsize=10,
+    )
+    source = doc.tobytes()
+    doc.close()
+    cable = derive_cable_footage(extract_text_blocks(source), auto_stamp=True)
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["Comp-15 - 1228"],
+        cable_footage=cable.lines,
+    ).with_eligible_cable_materials()
+
+    first = annotate_pdf(source, summary)
+    cable_after_first = derive_cable_footage(extract_text_blocks(first), auto_stamp=True)
+    second = annotate_pdf(first, summary)
+    doc = fitz.open(stream=second, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert cable_after_first.lines[0].path_subtotal == 1228
+    assert cable_after_first.lines[0].storage_subtotal == 290
+    assert cable_after_first.lines[0].material_line == "605-3277 (48Ct) - 1700'"
+    assert material_annotations == ["Materials\n605-3277 (48Ct) - 1700'"]
 
 
 def test_generic_output_preserves_existing_green_annotations() -> None:

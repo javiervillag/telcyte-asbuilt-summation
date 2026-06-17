@@ -379,7 +379,7 @@ def _with_cable_footage(
             "warnings": warnings,
             "informational_notes": informational_notes,
         }
-    )
+    ).with_eligible_cable_materials()
 
 
 async def try_models(

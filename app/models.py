@@ -44,6 +44,17 @@ class SummaryResult(BaseModel):
     confidence: float = 0.0
     model: str
 
+    def with_eligible_cable_materials(self) -> "SummaryResult":
+        materials = list(self.materials)
+        changed = False
+        for line in self.cable_footage:
+            if line.eligible_for_stamp and line.material_line and line.material_line not in materials:
+                materials.append(line.material_line)
+                changed = True
+        if not changed:
+            return self
+        return self.model_copy(update={"materials": materials})
+
     def totals_box_lines(self) -> list[str]:
         lines = [self.title.strip() or "MKR Job Totals"]
         lines.extend(line.strip() for line in self.job_totals if line.strip())

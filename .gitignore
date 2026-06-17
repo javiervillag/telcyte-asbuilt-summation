@@ -12,6 +12,10 @@ build/
 tmp/
 tmp_analysis/
 sample_reports/
+downloaded/
+output/
+outputs/
+docs/asbuilt-cable-footage-upgrade/audit-*.md
 .internal-working-spec.md
 *.log
 *.har

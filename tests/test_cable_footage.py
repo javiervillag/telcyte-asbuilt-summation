@@ -40,6 +40,25 @@ def test_fiber_material_uses_comp15_only_and_rounds_up() -> None:
     assert stamped.eligible_for_stamp is True
 
 
+def test_bi_942102_fiber_material_rounds_to_1700() -> None:
+    blocks = [
+        _block("Comp-15 - 1200'\nComp-15 - 28'"),
+        _block("EOL - 48Ct - 122'\nStorage - 48Ct - 100'\nTie Point - 48Ct - 68'"),
+        _block("UG-28 - 1\nUG-16 - 1\nUG-17 - 1"),
+    ]
+
+    result = derive_cable_footage(blocks, auto_stamp=True)
+
+    assert result.warnings == []
+    assert len(result.lines) == 1
+    line = result.lines[0]
+    assert line.path_subtotal == 1228
+    assert line.storage_subtotal == 290
+    assert line.total_ft == 1700
+    assert line.material_line == "605-3277 (48Ct) - 1700'"
+    assert line.eligible_for_stamp is True
+
+
 def test_cable_path_is_independent_of_rate_card_filtering() -> None:
     blocks = [_block("Storage - 48Ct - 100'\nComp-15 - 290'\nComp-15 - 270'")]
 

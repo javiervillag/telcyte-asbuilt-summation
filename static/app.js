@@ -436,12 +436,26 @@ function cableSources(line) {
   const pathSegments = Array.isArray(line.path_segments) ? line.path_segments : [];
   if (pathSegments.length) {
     rows.push(`Path segments: ${pathSegments.map((item) => `${formatFeet(item.feet)} p${item.page || "?"}`).join(", ")}`);
+  } else if (Number(line.path_segment_count || 0) > 0) {
+    rows.push(`Path segments: ${formatCount(line.path_segment_count, "segment")} ${formatPages(line.path_pages || line.source_pages)}`);
   }
   const storageItems = Array.isArray(line.storage_items) ? line.storage_items : [];
   if (storageItems.length) {
     rows.push(`Storage/slack: ${storageItems.map((item) => `${item.label || "Item"} ${formatFeet(item.feet)} p${item.page || "?"}`).join(", ")}`);
+  } else if (Number(line.storage_item_count || 0) > 0) {
+    rows.push(`Storage/slack: ${formatCount(line.storage_item_count, "item")} ${formatPages(line.storage_pages || line.source_pages)}`);
   }
   return rows;
+}
+
+function formatCount(value, noun) {
+  const count = Number(value || 0);
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function formatPages(pages) {
+  if (!Array.isArray(pages) || !pages.length) return "";
+  return `on ${pages.map((page) => `p${page || "?"}`).join(", ")}`;
 }
 
 function formatFeet(value) {

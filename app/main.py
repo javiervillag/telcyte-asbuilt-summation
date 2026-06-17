@@ -163,11 +163,12 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
     try:
         summary = await summarize_with_model(content, settings, source_name=source_filename)
         summary = _with_user_selected_extras(summary, selected_extras)
+        summary = _finalize_summary_for_output(summary)
         output = annotate_pdf(content, summary, source_name=source_filename)
     except ManualReviewRequired as exc:
         logger.warning("manual_review_required filename=%s warnings=%s", source_filename, exc.warnings)
         if selected_extras:
-            summary = _with_user_selected_extras(
+            summary = _finalize_summary_for_output(_with_user_selected_extras(
                 SummaryResult(
                     title="MKR Job Totals",
                     job_totals=exc.supported_totals,
@@ -178,7 +179,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     model=f"parser+{settings.openrouter_model}",
                 ),
                 selected_extras,
-            )
+            ))
             try:
                 output = annotate_pdf(content, summary, source_name=source_filename)
             except PlacementReviewRequired as placement_exc:
@@ -203,7 +204,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 )
         else:
             if not exc.supported_totals:
-                review_summary = SummaryResult(
+                review_summary = _finalize_summary_for_output(SummaryResult(
                     title="MKR Job Totals",
                     job_totals=[],
                     cable_footage=exc.cable_footage,
@@ -211,7 +212,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     informational_notes=exc.informational_notes,
                     confidence=0.0,
                     model=f"parser+{settings.openrouter_model}",
-                )
+                ))
                 _log_run_attempt(
                     source_filename=source_filename,
                     status="manual_review",
@@ -234,7 +235,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                         "result_summary": _result_summary_payload(review_summary, None),
                     },
                 )
-            summary = SummaryResult(
+            summary = _finalize_summary_for_output(SummaryResult(
                 title="MKR Job Totals",
                 job_totals=exc.supported_totals,
                 cable_footage=exc.cable_footage,
@@ -242,7 +243,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 informational_notes=exc.informational_notes,
                 confidence=0.0,
                 model=f"parser+{settings.openrouter_model}",
-            )
+            ))
             try:
                 output = annotate_pdf(content, summary, source_name=source_filename)
             except PlacementReviewRequired as placement_exc:
@@ -364,6 +365,10 @@ def _with_user_selected_extras(
     )
 
 
+def _finalize_summary_for_output(summary: SummaryResult) -> SummaryResult:
+    return summary.with_eligible_cable_materials()
+
+
 def _validate_pdf_upload(content: bytes) -> int:
     try:
         doc = fitz.open(stream=content, filetype="pdf")
@@ -439,13 +444,39 @@ def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) 
         "extra_billing_codes": summary.extra_totals[:20],
         "materials": summary.materials[:10],
         "cable_footage": [
-            line.model_dump()
+            _compact_cable_footage(line)
             for line in summary.cable_footage[:10]
         ],
         "notes": summary.informational_notes[:10],
         "result_lines": _result_detail_lines(summary),
     }
     return payload
+
+
+def _compact_cable_footage(line) -> dict:
+    path_pages = sorted({item.page for item in line.path_segments if item.page})
+    storage_pages = sorted({item.page for item in line.storage_items if item.page})
+    return {
+        "callout": line.callout,
+        "display_type": line.display_type,
+        "part_number": line.part_number,
+        "family": line.family,
+        "path_subtotal": line.path_subtotal,
+        "storage_subtotal": line.storage_subtotal,
+        "buffer": line.buffer,
+        "rounding": line.rounding,
+        "total_ft": line.total_ft,
+        "material_line": line.material_line,
+        "eligible_for_stamp": line.eligible_for_stamp,
+        "source_pages": line.source_pages,
+        "path_segment_count": len(line.path_segments),
+        "storage_item_count": len(line.storage_items),
+        "path_pages": path_pages,
+        "storage_pages": storage_pages,
+        "confidence": line.confidence,
+        "review_flags": line.review_flags[:10],
+        "notes": line.notes[:10],
+    }
 
 
 def _status_for_summary(summary: SummaryResult) -> str:

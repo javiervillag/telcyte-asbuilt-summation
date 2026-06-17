@@ -1,15 +1,43 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.models import SummaryResult
+from app.main import _result_summary_header, _result_summary_payload, app
+from app.models import CableFootageItem, CableFootageLine, SummaryResult
 from app.openrouter_client import ManualReviewRequired
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
+
+
+def _cable_line(*, eligible: bool = True, review_flags: list[str] | None = None) -> CableFootageLine:
+    return CableFootageLine(
+        callout="48ct",
+        display_type="48Ct",
+        part_number="605-3277",
+        family="fiber",
+        path_segments=[
+            CableFootageItem(label="Comp-15", page=1, feet=1200, source="Comp-15 - 1200'"),
+            CableFootageItem(label="Comp-15", page=1, feet=28, source="Comp-15 - 28'"),
+        ],
+        storage_items=[
+            CableFootageItem(label="EOL", page=1, feet=122, source="EOL - 48Ct - 122'"),
+            CableFootageItem(label="Storage", page=1, feet=100, source="Storage - 48Ct - 100'"),
+            CableFootageItem(label="Tie Point", page=1, feet=68, source="Tie Point - 48Ct - 68'"),
+        ],
+        path_subtotal=1228,
+        storage_subtotal=290,
+        total_ft=1700,
+        material_line="605-3277 (48Ct) - 1700'",
+        eligible_for_stamp=eligible,
+        source_pages=[1],
+        confidence=0.92 if eligible else 0.55,
+        review_flags=review_flags or [],
+    )
 
 
 def test_health_endpoint() -> None:
@@ -301,6 +329,101 @@ def test_manual_review_with_supported_totals_returns_review_pdf(monkeypatch: pyt
         "MKR Job Totals",
         "UG-06 - 13",
     ]
+
+
+def test_manual_review_with_eligible_cable_still_adds_materials(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, SummaryResult] = {}
+
+    async def fake_summarize(content, settings, source_name=None):
+        raise ManualReviewRequired(
+            ["Review remains for an unrelated reason."],
+            supported_totals=["Comp-15 - 1228"],
+            unresolved_callouts=[],
+            cable_footage=[_cable_line()],
+        )
+
+    def fake_annotate(content, summary, source_name=None):
+        captured["summary"] = summary
+        return b"%PDF-1.4 fake"
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", fake_annotate)
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("review-cable.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert captured["summary"].materials == ["605-3277 (48Ct) - 1700'"]
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert result_summary["materials"] == ["605-3277 (48Ct) - 1700'"]
+    assert result_summary["result_lines"] == [
+        "MKR Job Totals",
+        "Comp-15 - 1228",
+        "Material",
+        "605-3277 (48Ct) - 1700'",
+    ]
+
+
+def test_ineligible_cable_line_is_not_promoted_to_materials(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, SummaryResult] = {}
+
+    async def fake_summarize(content, settings, source_name=None):
+        raise ManualReviewRequired(
+            ["Cable material needs review for .625: Coax source path must be validated before automatic stamping."],
+            supported_totals=["Comp-15 - 118"],
+            unresolved_callouts=[],
+            cable_footage=[
+                _cable_line(
+                    eligible=False,
+                    review_flags=["Coax source path must be validated before automatic stamping."],
+                )
+            ],
+        )
+
+    def fake_annotate(content, summary, source_name=None):
+        captured["summary"] = summary
+        return b"%PDF-1.4 fake"
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", fake_annotate)
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("review-cable.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert captured["summary"].materials == []
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert result_summary["materials"] == []
+    assert result_summary["cable_footage"][0]["eligible_for_stamp"] is False
+    assert result_summary["result_lines"] == ["MKR Job Totals", "Comp-15 - 118"]
+
+
+def test_cable_header_payload_is_compact_for_many_segments() -> None:
+    line = _cable_line()
+    long_segments = [
+        CableFootageItem(label="Comp-15", page=1, feet=10, source=f"Comp-15 - 10' verbose source line {i} " * 20)
+        for i in range(250)
+    ]
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["Comp-15 - 2500"],
+        cable_footage=[line.model_copy(update={"path_segments": long_segments})],
+    ).with_eligible_cable_materials()
+
+    payload = _result_summary_payload(summary, "large-cable.pdf")
+    compact = payload["cable_footage"][0]
+    header = _result_summary_header(summary, "large-cable.pdf")
+
+    assert compact["path_segment_count"] == 250
+    assert "path_segments" not in compact
+    assert "storage_items" not in compact
+    assert "verbose source line" not in header
+    assert len(header) < 4096
 
 
 def test_sample_manual_review_response_includes_supported_evidence() -> None:
