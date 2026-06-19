@@ -5,7 +5,7 @@ import fitz
 from PIL import Image
 
 from app.cable_footage import derive_cable_footage
-from app.models import SummaryResult
+from app.models import CableFootageLine, SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, PlacementReviewRequired, annotate_pdf, choose_box_rect
 from app.pdf_parser import extract_text_blocks
 
@@ -416,6 +416,102 @@ def test_existing_materials_box_is_untouched_without_computed_materials() -> Non
         doc.close()
 
     assert material_annotations == ["Materials\n220-9236 (.625) - 140'\nEMT - 10'"]
+
+
+def test_preliminary_cable_evidence_normalizes_existing_materials_rows_only() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(
+        fitz.Rect(20, 520, 300, 760),
+        "Materials\n144ct - 1192'\nLockBox - 1\nEMT - 10'\n470-9997 - 500'\n605-3277 - 603'",
+        fontsize=10,
+    )
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["COMP-15 - 1170"],
+        materials=[],
+        cable_footage=[
+            CableFootageLine(
+                callout="144ct",
+                display_type="144Ct",
+                part_number="605-1502",
+                family="fiber",
+                storage_subtotal=150,
+                eligible_for_stamp=False,
+                review_flags=[
+                    "No supported pulled-path footage was found for 144Ct.",
+                    "Pulled-path footage could not be safely assigned to this cable type.",
+                ],
+            ),
+            CableFootageLine(
+                callout="48ct",
+                display_type="48Ct",
+                part_number="605-3277",
+                family="fiber",
+                storage_subtotal=232,
+                eligible_for_stamp=False,
+                review_flags=[
+                    "No supported pulled-path footage was found for 48Ct.",
+                    "Pulled-path footage could not be safely assigned to this cable type.",
+                ],
+            ),
+        ],
+    )
+
+    output = annotate_pdf(source, summary)
+    again = annotate_pdf(output, summary)
+    doc = fitz.open(stream=again, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert len(material_annotations) == 1
+    content = material_annotations[0]
+    assert content.count("605-1502 (144Ct) - 1192'") == 1
+    assert content.count("605-3277 (48Ct) - 603'") == 1
+    assert "144ct - 1192'" not in content
+    assert "605-3277 - 603'" not in content
+    assert "LockBox - 1" in content
+    assert "EMT - 10'" in content
+    assert "470-9997 - 500'" in content
+    assert any("normalized 2 cable material row(s)" in note for note in summary.informational_notes)
+    assert any("kept 3 existing material line(s)" in note for note in summary.informational_notes)
+
+
+def test_preliminary_cable_evidence_does_not_create_new_materials_box() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["COMP-15 - 1170"],
+        materials=[],
+        cable_footage=[
+            CableFootageLine(
+                callout="144ct",
+                display_type="144Ct",
+                part_number="605-1502",
+                family="fiber",
+                eligible_for_stamp=False,
+                review_flags=["Pulled-path footage could not be safely assigned to this cable type."],
+            )
+        ],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert material_annotations == []
 
 
 def test_generic_output_preserves_existing_green_annotations() -> None:

@@ -417,10 +417,14 @@ def _rect_area(rect: fitz.Rect) -> float:
 def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | None = None) -> bytes:
     lines = summary.totals_box_lines()
     material_lines = summary.material_box_lines()
-    force_summary_stream = bool(material_lines)
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
+        existing_material_boxes = _existing_material_boxes(page)
+        should_update_material_box = bool(material_lines) or bool(
+            existing_material_boxes and summary.cable_footage
+        )
+        force_summary_stream = should_update_material_box
         existing_boxes = _existing_totals_boxes(page)
         totals_font_size: float | None = None
         if existing_boxes:
@@ -450,8 +454,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                 force_custom_stream=force_summary_stream,
             )
 
-        if material_lines:
-            existing_material_boxes = _existing_material_boxes(page)
+        if should_update_material_box:
             if existing_material_boxes:
                 material_replacement = existing_material_boxes[0]
                 existing_material_rows: list[str] = []
@@ -460,7 +463,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                 computed_material_rows = [line.strip() for line in summary.materials if line.strip()]
                 merged_material_rows = merge_material_rows(existing_material_rows, computed_material_rows)
                 merged_material_lines = ["Materials", *merged_material_rows]
-                _record_material_merge_note(summary, existing_material_rows, computed_material_rows)
+                _record_material_merge_note(summary, existing_material_rows, merged_material_rows)
                 _delete_annotations_by_xref(page, [box.xref for box in existing_material_boxes])
                 _add_material_annotation(
                     page,
@@ -485,7 +488,8 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                     material_lines,
                     preferred_font_size=totals_font_size,
                 )
-            _force_summary_line_break_appearance(page, lines)
+            if material_lines or existing_material_boxes:
+                _force_summary_line_break_appearance(page, lines)
 
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
@@ -617,7 +621,7 @@ def _record_replaced_total_deltas(summary: SummaryResult, old_content: str) -> N
 def _record_material_merge_note(
     summary: SummaryResult,
     existing_rows: list[str],
-    computed_rows: list[str],
+    merged_rows: list[str],
 ) -> None:
     old_by_key = {
         key: row
@@ -626,22 +630,22 @@ def _record_material_merge_note(
     }
     new_by_key = {
         key: row
-        for row in computed_rows
+        for row in merged_rows
         if (key := cable_material_key(row))
     }
-    replaced: list[str] = []
+    changed: list[str] = []
     added: list[str] = []
-    for key, new_row in new_by_key.items():
+    for key, new_row in sorted(new_by_key.items()):
         old_row = old_by_key.get(key)
         if old_row and old_row != new_row:
-            replaced.append(f"{old_row} -> {new_row}")
+            changed.append(f"{old_row} -> {new_row}")
         elif not old_row:
             added.append(new_row)
 
     preserved_count = sum(1 for row in existing_rows if not cable_material_key(row))
     parts: list[str] = []
-    if replaced:
-        parts.append("replaced cable footage " + "; ".join(replaced))
+    if changed:
+        parts.append(f"normalized {len(changed)} cable material row(s)")
     if added:
         parts.append("added cable footage " + "; ".join(added))
     if preserved_count:

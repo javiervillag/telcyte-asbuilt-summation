@@ -1,5 +1,6 @@
 from app.cable_footage import (
     cable_material_key,
+    canonicalize_cable_material_row,
     derive_cable_footage,
     extract_material_rows,
     merge_material_rows,
@@ -35,6 +36,18 @@ def test_material_cable_keys_include_legacy_bare_rows_without_hitting_manual_row
     assert cable_material_key("Tape - 1") is None
 
 
+def test_canonicalize_cable_material_rows_preserves_footage_and_avoids_notes() -> None:
+    assert canonicalize_cable_material_row("144ct - 1192'") == "605-1502 (144Ct) - 1192'"
+    assert canonicalize_cable_material_row("605-3277 - 603'") == "605-3277 (48Ct) - 603'"
+    assert canonicalize_cable_material_row("605-3277 (48Ct) - 603'") == "605-3277 (48Ct) - 603'"
+    assert canonicalize_cable_material_row(".625 - 140'") == "220-9236 (.625) - 140'"
+    assert canonicalize_cable_material_row("Spare 605-3277 cable - 20'") == "Spare 605-3277 cable - 20'"
+    assert canonicalize_cable_material_row("605-3277 spare cable - 20'") == "605-3277 spare cable - 20'"
+    assert canonicalize_cable_material_row("Spare coil (48Ct) - 20'") == "Spare coil (48Ct) - 20'"
+    assert canonicalize_cable_material_row("EMT - 10'") == "EMT - 10'"
+    assert canonicalize_cable_material_row("470-9997 - 500'") == "470-9997 - 500'"
+
+
 def test_merge_material_rows_replaces_cable_rows_and_preserves_manual_rows() -> None:
     existing = extract_material_rows(
         "Material\n\n48Ct - 1200'\nLg Ped - 2\nEMT - 20'\nMule - 900'\nTape - 1"
@@ -66,8 +79,32 @@ def test_merge_material_rows_replaces_each_cable_type_independently() -> None:
 
     assert merged == [
         "605-3277 (48Ct) - 1200'",
-        ".625 - 140'",
+        "220-9236 (.625) - 140'",
         "EMT - 10'",
+    ]
+
+
+def test_merge_material_rows_normalizes_preliminary_rows_without_computed_rows() -> None:
+    existing = [
+        "144ct - 1192'",
+        "LockBox - 1",
+        "EMT - 10'",
+        'EMT 2" Fitting - 2',
+        "470-9997 - 500'",
+        "605-3277 - 603'",
+        "460-0008 - 1315'",
+    ]
+
+    merged = merge_material_rows(existing, [])
+
+    assert merged == [
+        "605-1502 (144Ct) - 1192'",
+        "LockBox - 1",
+        "EMT - 10'",
+        'EMT 2" Fitting - 2',
+        "470-9997 - 500'",
+        "605-3277 (48Ct) - 603'",
+        "460-0008 - 1315'",
     ]
 
 

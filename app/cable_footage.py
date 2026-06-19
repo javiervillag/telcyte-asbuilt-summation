@@ -49,6 +49,10 @@ MATERIAL_BARE_TYPE_ROW_PATTERN = re.compile(
     rf"^\s*(?P<type>{TYPE_TEXT})\s*-\s*\d[\d,]*\s*(?:'|ft\b|feet\b)?\s*$",
     re.I,
 )
+CABLE_ROW_FOOTAGE_PATTERN = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b)?)\s*$",
+    re.I,
+)
 
 
 @dataclass
@@ -98,6 +102,24 @@ def cable_material_key(line: str) -> str | None:
     return None
 
 
+def canonicalize_cable_material_row(line: str) -> str:
+    """Normalize a recognized cable material row while preserving its footage."""
+    key = cable_material_key(line)
+    if not key:
+        return line
+    entry = PART_MAP.get(key)
+    if not entry:
+        return line
+    _family, display_type, part_number = entry
+    if not part_number:
+        return line
+    text = re.sub(r"\s+", " ", line or "").strip()
+    match = CABLE_ROW_FOOTAGE_PATTERN.search(text)
+    if not match:
+        return line
+    return f"{part_number} ({display_type}) - {match.group(1).strip()}"
+
+
 def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> list[str]:
     computed_by_key: dict[str, str] = {}
     computed_other: list[str] = []
@@ -125,6 +147,8 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
         if key and key in computed_by_key:
             add(computed_by_key[key])
             used_keys.add(key)
+        elif key:
+            add(canonicalize_cable_material_row(row))
         else:
             add(row)
 
