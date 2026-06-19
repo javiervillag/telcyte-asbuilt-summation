@@ -1,4 +1,10 @@
-from app.cable_footage import derive_cable_footage, normalize_cable_type
+from app.cable_footage import (
+    cable_material_key,
+    derive_cable_footage,
+    extract_material_rows,
+    merge_material_rows,
+    normalize_cable_type,
+)
 from app.pdf_parser import TextBlock, _unresolved_callout_lines, derive_code_totals
 
 
@@ -12,6 +18,53 @@ def test_normalize_cable_type_variants() -> None:
     assert normalize_cable_type(".625") == ".625"
     assert normalize_cable_type(".875") == ".875"
     assert normalize_cable_type("PWR-625") is None
+
+
+def test_material_cable_keys_include_legacy_bare_rows_without_hitting_manual_rows() -> None:
+    assert cable_material_key("605-3277 (48Ct) - 1000'") == "48ct"
+    assert cable_material_key("48Ct - 1200'") == "48ct"
+    assert cable_material_key(".625 - 140'") == ".625"
+    assert cable_material_key("220-9236 (.625) - 140'") == ".625"
+    assert cable_material_key("Mule - 900'") is None
+    assert cable_material_key("EMT - 20'") is None
+    assert cable_material_key('2" PVC - 40\'') is None
+    assert cable_material_key("Tape - 1") is None
+
+
+def test_merge_material_rows_replaces_cable_rows_and_preserves_manual_rows() -> None:
+    existing = extract_material_rows(
+        "Material\n\n48Ct - 1200'\nLg Ped - 2\nEMT - 20'\nMule - 900'\nTape - 1"
+    )
+    computed = ["605-3277 (48Ct) - 1200'"]
+
+    merged = merge_material_rows(existing, computed)
+
+    assert merged == [
+        "605-3277 (48Ct) - 1200'",
+        "Lg Ped - 2",
+        "EMT - 20'",
+        "Mule - 900'",
+        "Tape - 1",
+    ]
+
+
+def test_merge_material_rows_replaces_each_cable_type_independently() -> None:
+    existing = [
+        "48Ct - 1000'",
+        ".625 - 140'",
+        "EMT - 10'",
+    ]
+    computed = [
+        "605-3277 (48Ct) - 1200'",
+    ]
+
+    merged = merge_material_rows(existing, computed)
+
+    assert merged == [
+        "605-3277 (48Ct) - 1200'",
+        ".625 - 140'",
+        "EMT - 10'",
+    ]
 
 
 def test_fiber_material_uses_comp15_only_and_rounds_up() -> None:
@@ -88,7 +141,7 @@ def test_coax_rollup_box_is_not_double_counted_and_stays_review_gated() -> None:
     assert line.material_line == "220-9236 (.625) - 130'"
     assert line.eligible_for_stamp is False
     assert any("Coax source path" in flag for flag in line.review_flags)
-    assert any("Materials" in note for note in result.informational_notes)
+    assert not any("Materials" in note for note in result.informational_notes)
 
 
 def test_resolved_cable_callouts_do_not_stay_unresolved() -> None:

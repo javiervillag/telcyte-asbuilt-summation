@@ -272,8 +272,8 @@ def derive_code_totals(
             )
         if skipped_material_boxes:
             notes.append(
-                f"Ignored {skipped_material_boxes} existing 'Materials' box(es) already stamped "
-                "on the drawing (re-run detected); materials were recomputed from the field callouts only."
+                f"Found {skipped_material_boxes} existing 'Materials' box(es); ignored as calculation evidence "
+                "so re-runs do not double-count. The visible box is preserved and merged during stamping."
             )
         if catalog_misses:
             preview = "; ".join(catalog_misses[:6])

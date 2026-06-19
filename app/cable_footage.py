@@ -20,6 +20,9 @@ PART_MAP = {
 
 TYPE_TEXT = r"(?:\.\s*(?:625|875)|0?(?:48|144|288)\s*(?:ct|count))"
 TYPE_PATTERN = re.compile(TYPE_TEXT, re.I)
+MATERIALS_TITLE_PATTERN = re.compile(r"^\s*materials?\s*:?\s*$", re.I)
+MATERIAL_CABLE_ROW_PATTERN = re.compile(r"\(\s*(?P<type>[^)]+?)\s*\)\s*-\s*\d[\d,]*\s*'?\s*$")
+MATERIAL_FOOTAGE_PATTERN = re.compile(r"\d\s*(?:'|ft\b|feet\b)", re.I)
 STORAGE_PATTERN = re.compile(
     rf"\b(?P<label>Storage|Tie\s*Point|EOL)\s*-\s*(?P<type>{TYPE_TEXT})\s*-\s*"
     rf"(?P<feet>{QTY_TEXT_PATTERN})\s*(?:'|ft|feet)?\b",
@@ -33,6 +36,7 @@ DIRECT_CODE_PATTERN = re.compile(
     rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
     re.I,
 )
+MATERIAL_PART_TO_KEY = {part: key for key, (_family, _display, part) in PART_MAP.items() if part}
 
 
 @dataclass
@@ -52,6 +56,75 @@ def normalize_cable_type(value: str) -> str | None:
     if fiber:
         return f"{int(fiber.group(1))}ct"
     return None
+
+
+def extract_material_rows(content: str) -> list[str]:
+    rows: list[str] = []
+    for raw in str(content or "").replace("\r", "\n").splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        if line and not MATERIALS_TITLE_PATTERN.match(line):
+            rows.append(line)
+    return rows
+
+
+def cable_material_key(line: str) -> str | None:
+    text = re.sub(r"\s+", " ", line or "").strip()
+    match = MATERIAL_CABLE_ROW_PATTERN.search(text)
+    if match:
+        key = normalize_cable_type(match.group("type"))
+        if key:
+            return key
+
+    for part, key in MATERIAL_PART_TO_KEY.items():
+        if MATERIAL_FOOTAGE_PATTERN.search(text) and re.search(rf"(?<![\w.-]){re.escape(part)}(?![\w.-])", text):
+            return key
+
+    if MATERIAL_FOOTAGE_PATTERN.search(text):
+        head = re.split(r"\s*-\s*", text, 1)[0].strip()
+        key = normalize_cable_type(head)
+        if key:
+            return key
+    return None
+
+
+def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> list[str]:
+    computed_by_key: dict[str, str] = {}
+    computed_other: list[str] = []
+
+    for row in extract_material_rows("\n".join(computed_rows)):
+        key = cable_material_key(row)
+        if key:
+            computed_by_key[key] = row
+        else:
+            computed_other.append(row)
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    used_keys: set[str] = set()
+
+    def add(row: str) -> None:
+        clean = re.sub(r"\s+", " ", row).strip()
+        normalized = clean.lower()
+        if clean and normalized not in seen:
+            seen.add(normalized)
+            merged.append(clean)
+
+    for row in extract_material_rows("\n".join(existing_rows)):
+        key = cable_material_key(row)
+        if key and key in computed_by_key:
+            add(computed_by_key[key])
+            used_keys.add(key)
+        else:
+            add(row)
+
+    for key, row in computed_by_key.items():
+        if key not in used_keys:
+            add(row)
+
+    for row in computed_other:
+        add(row)
+
+    return merged
 
 
 def derive_cable_footage(
@@ -83,7 +156,7 @@ def _derive_cable_footage(
     path_code: str,
     coax_rounding_increment: int,
 ) -> CableFootageResult:
-    field_blocks, _skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
+    field_blocks, _skipped_total_boxes, _skipped_material_boxes = field_evidence_blocks(blocks)
     target_code = code_key(path_code)
     if not target_code:
         return CableFootageResult(
@@ -140,10 +213,6 @@ def _derive_cable_footage(
         return CableFootageResult()
 
     result = CableFootageResult(handled_callout_lines=handled_callout_lines)
-    if skipped_material_boxes:
-        result.informational_notes.append(
-            f"Ignored {skipped_material_boxes} existing Materials box(es) already stamped on the drawing."
-        )
 
     type_keys = sorted(type_evidence or storage_by_type)
     if not type_keys:

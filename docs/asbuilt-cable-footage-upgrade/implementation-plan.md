@@ -22,6 +22,15 @@ Produce, per cable type on an as-built, a material line (e.g. `605-3277 (48Ct) -
 - Never emits a silently-low total: if any required input is missing/ambiguous, it flags for review instead of guessing.
 - Billing-code totals, placement, and re-run idempotency are byte-for-byte unchanged when the feature flag is off.
 
+**June 18, 2026 field-feedback artifacts now required for validation:**
+- `BI-913037` production input/output pair: validates Nick's newest Materials-box merge request. The input already has a Materials box with manual rows (`Lg Ped`, `VP`, `EMT`, PVC, Mule, Tape, etc.); the current production output incorrectly replaces it with only `605-3277 (48Ct) - 1200'`.
+- `BI-883032` latest production input/output pair: validates re-run behavior where the input already has a cable row plus manual material rows; the output must keep the manual rows and avoid duplicating the cable row.
+- `BI-942102` production input/output pair: stays as the known cable baseline and must continue producing `605-3277 (48Ct) - 1700'`.
+
+Local artifact folder:
+
+`/Users/javiervillaguardado/Documents/Claude/Telcyte_asbuilt-summation_fix_10 Jun/telcyte-asbuilt-summation/downloaded/latest-nick-materials-feedback`
+
 ---
 
 ## 2. Non-negotiable invariants (carried from `CLAUDE.md`)

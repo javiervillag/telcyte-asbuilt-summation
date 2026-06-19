@@ -292,6 +292,132 @@ def test_materials_rerun_does_not_duplicate_or_double_count() -> None:
     assert material_annotations == ["Materials\n605-3277 (48Ct) - 1700'"]
 
 
+def test_existing_materials_box_preserves_manual_rows_and_replaces_legacy_cable_row() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(
+        fitz.Rect(20, 580, 260, 760),
+        'Material\n\n48Ct - 1200\'\nLg Ped - 2\nVP - 1\nEMT - 20\'\nMule - 900\'\nTape - 1',
+        fontsize=10,
+    )
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["Comp-15 - 746"],
+        materials=["605-3277 (48Ct) - 1200'"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert len(material_annotations) == 1
+    content = material_annotations[0]
+    assert "605-3277 (48Ct) - 1200'" in content
+    assert "48Ct - 1200'" not in content
+    assert "Lg Ped - 2" in content
+    assert "VP - 1" in content
+    assert "EMT - 20'" in content
+    assert "Mule - 900'" in content
+    assert "Tape - 1" in content
+    assert any("Updated the existing Materials box" in note for note in summary.informational_notes)
+
+
+def test_existing_materials_box_is_idempotent_with_parenthetical_cable_row() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(
+        fitz.Rect(20, 580, 260, 760),
+        'Materials\n\n605-3277 (48Ct) - 1000\'\nEMT - 10\'\n2" PVC - 40\'\nTape - 1',
+        fontsize=10,
+    )
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["Comp-15 - 556"],
+        materials=["605-3277 (48Ct) - 1000'"],
+    )
+
+    first = annotate_pdf(source, summary)
+    second = annotate_pdf(first, summary)
+    doc = fitz.open(stream=second, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert len(material_annotations) == 1
+    content = material_annotations[0]
+    assert content.count("605-3277 (48Ct) - 1000'") == 1
+    assert "EMT - 10'" in content
+    assert '2" PVC - 40\'' in content
+    assert "Tape - 1" in content
+
+
+def test_multiple_existing_materials_boxes_merge_before_replacement() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(fitz.Rect(20, 580, 250, 720), "Materials\n48Ct - 1200'\nLg Ped - 2", fontsize=10)
+    page.add_freetext_annot(fitz.Rect(280, 580, 500, 720), 'Materials\n2" PVC - 20\'\nTape - 1', fontsize=10)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["Comp-15 - 746"],
+        materials=["605-3277 (48Ct) - 1200'"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert len(material_annotations) == 1
+    content = material_annotations[0]
+    assert content.count("605-3277 (48Ct) - 1200'") == 1
+    assert "48Ct - 1200'" not in content
+    assert "Lg Ped - 2" in content
+    assert '2" PVC - 20\'' in content
+    assert "Tape - 1" in content
+
+
+def test_existing_materials_box_is_untouched_without_computed_materials() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(
+        fitz.Rect(20, 580, 260, 760),
+        "Materials\n220-9236 (.625) - 140'\nEMT - 10'",
+        fontsize=10,
+    )
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["Comp-15 - 118"],
+        materials=[],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert material_annotations == ["Materials\n220-9236 (.625) - 140'\nEMT - 10'"]
+
+
 def test_generic_output_preserves_existing_green_annotations() -> None:
     input_pdf = SAMPLE.parent.joinpath("COAX-ASBUILT-(TelCyte)-RL-248790-Totals Removed.pdf")
     before_doc = fitz.open(input_pdf)

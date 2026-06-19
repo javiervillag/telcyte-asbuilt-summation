@@ -9,6 +9,7 @@ import re
 import fitz
 from PIL import Image
 
+from app.cable_footage import cable_material_key, extract_material_rows, merge_material_rows
 from app.models import SummaryResult
 from app.rate_cards import total_line_key
 
@@ -453,16 +454,23 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             existing_material_boxes = _existing_material_boxes(page)
             if existing_material_boxes:
                 material_replacement = existing_material_boxes[0]
+                existing_material_rows: list[str] = []
+                for box in existing_material_boxes:
+                    existing_material_rows.extend(extract_material_rows(box.content))
+                computed_material_rows = [line.strip() for line in summary.materials if line.strip()]
+                merged_material_rows = merge_material_rows(existing_material_rows, computed_material_rows)
+                merged_material_lines = ["Materials", *merged_material_rows]
+                _record_material_merge_note(summary, existing_material_rows, computed_material_rows)
                 _delete_annotations_by_xref(page, [box.xref for box in existing_material_boxes])
                 _add_material_annotation(
                     page,
                     _replacement_rect_for_content(
                         page,
                         material_replacement.rect,
-                        material_lines,
+                        merged_material_lines,
                         totals_font_size,
                     ),
-                    material_lines,
+                    merged_material_lines,
                     preferred_font_size=totals_font_size,
                 )
             else:
@@ -602,6 +610,46 @@ def _record_replaced_total_deltas(summary: SummaryResult, old_content: str) -> N
     note = "Replaced an existing totals box: " + "; ".join(deltas[:4]) + "."
     if len(deltas) > 4:
         note += f" Plus {len(deltas) - 4} more changed totals."
+    if note not in summary.informational_notes:
+        summary.informational_notes.append(note)
+
+
+def _record_material_merge_note(
+    summary: SummaryResult,
+    existing_rows: list[str],
+    computed_rows: list[str],
+) -> None:
+    old_by_key = {
+        key: row
+        for row in existing_rows
+        if (key := cable_material_key(row))
+    }
+    new_by_key = {
+        key: row
+        for row in computed_rows
+        if (key := cable_material_key(row))
+    }
+    replaced: list[str] = []
+    added: list[str] = []
+    for key, new_row in new_by_key.items():
+        old_row = old_by_key.get(key)
+        if old_row and old_row != new_row:
+            replaced.append(f"{old_row} -> {new_row}")
+        elif not old_row:
+            added.append(new_row)
+
+    preserved_count = sum(1 for row in existing_rows if not cable_material_key(row))
+    parts: list[str] = []
+    if replaced:
+        parts.append("replaced cable footage " + "; ".join(replaced))
+    if added:
+        parts.append("added cable footage " + "; ".join(added))
+    if preserved_count:
+        parts.append(f"kept {preserved_count} existing material line(s)")
+    if not parts:
+        return
+
+    note = "Updated the existing Materials box: " + "; ".join(parts) + "."
     if note not in summary.informational_notes:
         summary.informational_notes.append(note)
 
