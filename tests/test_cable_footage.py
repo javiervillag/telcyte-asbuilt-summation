@@ -22,9 +22,13 @@ def test_normalize_cable_type_variants() -> None:
 
 def test_material_cable_keys_include_legacy_bare_rows_without_hitting_manual_rows() -> None:
     assert cable_material_key("605-3277 (48Ct) - 1000'") == "48ct"
+    assert cable_material_key("605-3277 - 1200'") == "48ct"
     assert cable_material_key("48Ct - 1200'") == "48ct"
     assert cable_material_key(".625 - 140'") == ".625"
     assert cable_material_key("220-9236 (.625) - 140'") == ".625"
+    assert cable_material_key("Spare 605-3277 cable - 20'") is None
+    assert cable_material_key("605-3277 spare cable - 20'") is None
+    assert cable_material_key("Spare coil (48Ct) - 20'") is None
     assert cable_material_key("Mule - 900'") is None
     assert cable_material_key("EMT - 20'") is None
     assert cable_material_key('2" PVC - 40\'') is None

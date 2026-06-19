@@ -21,8 +21,6 @@ PART_MAP = {
 TYPE_TEXT = r"(?:\.\s*(?:625|875)|0?(?:48|144|288)\s*(?:ct|count))"
 TYPE_PATTERN = re.compile(TYPE_TEXT, re.I)
 MATERIALS_TITLE_PATTERN = re.compile(r"^\s*materials?\s*:?\s*$", re.I)
-MATERIAL_CABLE_ROW_PATTERN = re.compile(r"\(\s*(?P<type>[^)]+?)\s*\)\s*-\s*\d[\d,]*\s*'?\s*$")
-MATERIAL_FOOTAGE_PATTERN = re.compile(r"\d\s*(?:'|ft\b|feet\b)", re.I)
 STORAGE_PATTERN = re.compile(
     rf"\b(?P<label>Storage|Tie\s*Point|EOL)\s*-\s*(?P<type>{TYPE_TEXT})\s*-\s*"
     rf"(?P<feet>{QTY_TEXT_PATTERN})\s*(?:'|ft|feet)?\b",
@@ -37,6 +35,20 @@ DIRECT_CODE_PATTERN = re.compile(
     re.I,
 )
 MATERIAL_PART_TO_KEY = {part: key for key, (_family, _display, part) in PART_MAP.items() if part}
+MATERIAL_PART_TEXT = "|".join(re.escape(part) for part in MATERIAL_PART_TO_KEY) or r"(?!x)x"
+MATERIAL_PART_TYPE_ROW_PATTERN = re.compile(
+    rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*\(\s*(?P<type>{TYPE_TEXT})\s*\)\s*-\s*"
+    rf"\d[\d,]*\s*(?:'|ft\b|feet\b)?\s*$",
+    re.I,
+)
+MATERIAL_PART_ONLY_ROW_PATTERN = re.compile(
+    rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*-\s*\d[\d,]*\s*(?:'|ft\b|feet\b)?\s*$",
+    re.I,
+)
+MATERIAL_BARE_TYPE_ROW_PATTERN = re.compile(
+    rf"^\s*(?P<type>{TYPE_TEXT})\s*-\s*\d[\d,]*\s*(?:'|ft\b|feet\b)?\s*$",
+    re.I,
+)
 
 
 @dataclass
@@ -69,21 +81,20 @@ def extract_material_rows(content: str) -> list[str]:
 
 def cable_material_key(line: str) -> str | None:
     text = re.sub(r"\s+", " ", line or "").strip()
-    match = MATERIAL_CABLE_ROW_PATTERN.search(text)
+
+    match = MATERIAL_PART_TYPE_ROW_PATTERN.match(text)
     if match:
-        key = normalize_cable_type(match.group("type"))
-        if key:
-            return key
+        part_key = MATERIAL_PART_TO_KEY.get(match.group("part"))
+        type_key = normalize_cable_type(match.group("type"))
+        return part_key if part_key and part_key == type_key else None
 
-    for part, key in MATERIAL_PART_TO_KEY.items():
-        if MATERIAL_FOOTAGE_PATTERN.search(text) and re.search(rf"(?<![\w.-]){re.escape(part)}(?![\w.-])", text):
-            return key
+    match = MATERIAL_PART_ONLY_ROW_PATTERN.match(text)
+    if match:
+        return MATERIAL_PART_TO_KEY.get(match.group("part"))
 
-    if MATERIAL_FOOTAGE_PATTERN.search(text):
-        head = re.split(r"\s*-\s*", text, 1)[0].strip()
-        key = normalize_cable_type(head)
-        if key:
-            return key
+    match = MATERIAL_BARE_TYPE_ROW_PATTERN.match(text)
+    if match:
+        return normalize_cable_type(match.group("type"))
     return None
 
 
