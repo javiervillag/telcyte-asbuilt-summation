@@ -14,7 +14,12 @@ from PIL import Image
 
 from app.models import SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
-from app.pdf_parser import derive_code_totals, diagnose_extraction, extract_text_blocks
+from app.pdf_parser import (
+    derive_code_totals,
+    derive_code_totals_by_page,
+    diagnose_extraction,
+    extract_text_blocks,
+)
 from app.rate_cards import code_key, total_line_key
 
 
@@ -537,6 +542,38 @@ def test_existing_mkr_page_totals_box_is_not_counted() -> None:
     assert "Comp-9 - 430" in totals  # not 860
     assert not any(t.startswith("UG-85") for t in totals)  # box-only line excluded
     assert any("re-run detected" in n for n in notes)
+
+
+def test_per_page_totals_partition_and_sum_to_job() -> None:
+    # Page Totals (R1): each page totals only its own billing codes, reusing the
+    # same aggregation as the job total so the per-page totals sum to the job
+    # total. Validated against Nick's real NR-996825 (page totals 430 + 1058 =
+    # job 1488). Page numbering is 1-based; pages with no codes are omitted.
+    doc = fitz.open()
+    p1 = doc.new_page(width=1224, height=792)
+    p1.insert_text((600, 300), "UG-44 - 100")
+    p1.insert_text((600, 340), "Comp-9 - 5")
+    p2 = doc.new_page(width=1224, height=792)
+    p2.insert_text((600, 300), "UG-44 - 56")
+    p2.insert_text((600, 340), "Comp-6 - 2")
+    doc.new_page(width=1224, height=792)  # page 3: no codes -> omitted
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    job = derive_code_totals(blocks)
+    pages = derive_code_totals_by_page(blocks)
+
+    assert set(pages) == {1, 2}  # 1-based; the empty page 3 is omitted
+    assert "UG-44 - 100" in pages[1] and "Comp-9 - 5" in pages[1]
+    assert "UG-44 - 56" in pages[2] and "Comp-6 - 2" in pages[2]
+    assert "UG-44 - 156" in job  # job sums across pages (100 + 56)
+    # Page totals are billing codes only - never a materials/extras heading.
+    assert all(
+        not r.lower().startswith(("material", "user-"))
+        for rows in pages.values()
+        for r in rows
+    )
 
 
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:

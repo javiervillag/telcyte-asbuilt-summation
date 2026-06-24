@@ -179,20 +179,18 @@ def _format_number(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
-def derive_code_totals(
+def _aggregate_code_rows(
     blocks: list[TextBlock],
-    code_catalog: dict[CodeKey, str] | None = None,
-    excluded_lines: list[str] | None = None,
-    notes: list[str] | None = None,
-    warnings: list[str] | None = None,
-) -> list[str]:
-    """Aggregate billing-code totals from text blocks.
+    catalog: dict[CodeKey, str],
+    excluded_lines: list[str] | None,
+    catalog_misses: list[str],
+) -> tuple[list[str], list[CodeKey]]:
+    """Two-pass billing-code aggregation over already-filtered field blocks.
 
-    Unit markers (' and sqft) are consumed but ignored: per Nick Evans
-    (email 2026-06-09, BI-304069) quantities for the same code always total
-    together and the output rows carry no unit suffix ("UG-80 - 258").
-    Lines skipped as non-billing context are appended to ``excluded_lines``
-    (when provided) so exclusions are never silent.
+    Returns ``(rows, ordered_keys)``. Shared by ``derive_code_totals`` (job
+    totals) and ``derive_code_totals_by_page`` (per-page totals) so the two can
+    never diverge in how they read the same callouts. Callers own exclusion
+    (``field_evidence_blocks``) and notes; this is pure aggregation.
     """
     direct_pattern = re.compile(
         rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
@@ -202,7 +200,6 @@ def derive_code_totals(
         rf"\b({QTY_TEXT_PATTERN})\s*x\s*({CODE_TEXT_PATTERN})\b",
         re.I,
     )
-    catalog = code_catalog or {}
     totals: dict[CodeKey, float] = defaultdict(float)
     display: dict[CodeKey, str] = {}
     order: list[CodeKey] = []
@@ -212,17 +209,10 @@ def derive_code_totals(
         if excluded_lines is not None and cleaned and cleaned not in excluded_lines:
             excluded_lines.append(cleaned)
 
-    catalog_misses: list[str] = []
-
     def _record_catalog_miss(line: str) -> None:
         cleaned = line.strip()
         if cleaned and cleaned not in catalog_misses:
             catalog_misses.append(cleaned)
-
-    # Re-run safety: a previously stamped "MKR Job Totals" box (ours or a
-    # manual one) must never be counted as field callouts. The same applies to
-    # a stamped Materials box now that cable output can be re-uploaded.
-    blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
 
     for block in blocks:
         for line in block.text.splitlines():
@@ -264,9 +254,33 @@ def derive_code_totals(
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
                 totals[key] += float(raw_qty.replace(",", ""))
 
-    rows: list[str] = []
-    for key in order:
-        rows.append(f"{display[key]} - {_format_number(totals[key])}")
+    rows = [f"{display[key]} - {_format_number(totals[key])}" for key in order]
+    return rows, order
+
+
+def derive_code_totals(
+    blocks: list[TextBlock],
+    code_catalog: dict[CodeKey, str] | None = None,
+    excluded_lines: list[str] | None = None,
+    notes: list[str] | None = None,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """Aggregate billing-code totals from text blocks.
+
+    Unit markers (' and sqft) are consumed but ignored: per Nick Evans
+    (email 2026-06-09, BI-304069) quantities for the same code always total
+    together and the output rows carry no unit suffix ("UG-80 - 258").
+    Lines skipped as non-billing context are appended to ``excluded_lines``
+    (when provided) so exclusions are never silent.
+    """
+    catalog = code_catalog or {}
+    catalog_misses: list[str] = []
+
+    # Re-run safety: a previously stamped "MKR Job/Page Totals" box (ours or a
+    # manual one) must never be counted as field callouts. The same applies to a
+    # stamped Materials box now that cable output can be re-uploaded.
+    blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
+    rows, order = _aggregate_code_rows(blocks, catalog, excluded_lines, catalog_misses)
 
     if notes is not None:
         if skipped_total_boxes:
@@ -300,6 +314,34 @@ def derive_code_totals(
             else:
                 notes.append(message)
     return rows
+
+
+def derive_code_totals_by_page(
+    blocks: list[TextBlock],
+    code_catalog: dict[CodeKey, str] | None = None,
+) -> dict[int, list[str]]:
+    """Per-page billing-code totals for multi-page as-builts (Page Totals box).
+
+    Billing codes ONLY - no materials and no user-selected extras (those belong
+    to the page-1 Job Totals box). Reuses the same exclusion
+    (``field_evidence_blocks``) and the same aggregation (``_aggregate_code_rows``)
+    as the job totals, so a page total can never diverge from how the job total
+    counts the same callouts, and the per-page totals sum to the job total.
+
+    Returns ``{page: rows}`` keyed by the 1-based page number, for pages that
+    carry at least one billing code; pages with none are omitted.
+    """
+    catalog = code_catalog or {}
+    field_blocks, _skipped_total, _skipped_material = field_evidence_blocks(blocks)
+    by_page: dict[int, list[TextBlock]] = defaultdict(list)
+    for block in field_blocks:
+        by_page[block.page].append(block)
+    result: dict[int, list[str]] = {}
+    for page in sorted(by_page):
+        rows, _order = _aggregate_code_rows(by_page[page], catalog, None, [])
+        if rows:
+            result[page] = rows
+    return result
 
 
 def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int, int]:
