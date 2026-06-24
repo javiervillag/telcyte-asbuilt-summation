@@ -471,6 +471,52 @@ def test_split_title_existing_mkr_totals_box_is_not_counted() -> None:
     assert any("re-run detected" in n for n in notes)
 
 
+def test_flattened_mkr_totals_box_lines_not_double_counted() -> None:
+    # Nick, June-23 sync: an editor FLATTENED a previously stamped box so its title
+    # and EACH code line became separate, individually positioned page-text blocks
+    # (not one FreeText annotation). The title-only block was excluded but the
+    # orphaned code lines below leaked back in as field callouts, doubling several
+    # codes (29.76 vs 14.88). The whole box region must be excluded, not just the
+    # title line.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    # Real field callouts, in their own column on the drawing.
+    page.insert_text((600, 300), "UG-44 - 156")
+    page.insert_text((600, 340), "UG-06 - 4")
+    # The flattened box: title + each line as SEPARATE page-text blocks in one
+    # column (>= ~16pt apart so PyMuPDF does not regroup them into one block).
+    y = 60
+    for line in ["MKR Job Totals", "UG-44 - 156", "UG-06 - 4", "TL-20 - 2"]:
+        page.insert_text((60, y), line)
+        y += 18
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "UG-44 - 156" in totals      # not 312
+    assert "UG-06 - 4" in totals         # not 8
+    assert not any(t.startswith("TL-20") for t in totals)  # box-only line excluded
+    assert any("re-run detected" in n for n in notes)
+
+
+def test_flattened_box_does_not_eat_field_callouts_in_other_columns() -> None:
+    # Guard against over-eager region growth: a real field callout that shares a
+    # code with the flattened box but sits in a DIFFERENT column must still count.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((600, 300), "UG-06 - 4")   # genuine field callout (other column)
+    y = 60
+    for line in ["MKR Job Totals", "UG-06 - 4"]:  # flattened box in the left column
+        page.insert_text((60, y), line)
+        y += 18
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-06 - 4" in totals  # the real callout survives; the box copy is dropped
+
+
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:
     # Nick's editor auto-rotates the box on drag/copy-paste for some permit
     # drawings (2026-06-11); NoRotate pins the orientation.

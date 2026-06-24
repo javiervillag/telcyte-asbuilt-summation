@@ -299,34 +299,70 @@ def derive_code_totals(
 
 
 def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int, int]:
-    """Return field blocks with prior output boxes and flattened remnants removed."""
+    """Return field blocks with prior output boxes (and their flattened remnants) removed.
+
+    A stamped box that survives as a single text block - our live FreeText output, or a
+    PyMuPDF/Adobe ``bake``-style flatten - is caught by the title prefix alone. But some
+    editors re-flow the box so the title and EACH code line become separate, individually
+    positioned page-text blocks. The title-only block no longer geometrically contains the
+    code lines below it, so those lines used to leak back in as field callouts and double
+    the totals (Nick Evans, June-23 sync: 29.76 vs 14.88). To handle that, when the title
+    arrives as its own small block we absorb the contiguous column of remnant lines directly
+    beneath it (same page, overlapping the title's column, vertically adjacent), regardless
+    of source. A contiguous box (title + codes already in one block) is left untouched, so
+    the already-correct path does not change.
+    """
     skipped_total_boxes = 0
     skipped_material_boxes = 0
-    box_rects: list[tuple[int, tuple[float, float, float, float]]] = []
-    field_blocks: list[TextBlock] = []
-    for block in blocks:
+    anchors: list[int] = []
+    for i, block in enumerate(blocks):
         if _starts_with_totals_title(block.text):
             skipped_total_boxes += 1
-            box_rects.append((block.page, block.bbox))
+            anchors.append(i)
         elif _starts_with_materials_title(block.text):
             skipped_material_boxes += 1
-            box_rects.append((block.page, block.bbox))
-        else:
-            field_blocks.append(block)
+            anchors.append(i)
 
-    def _inside_box(block: TextBlock) -> bool:
+    excluded: set[int] = set(anchors)
+    regions: list[tuple[int, float, float, float, float]] = []
+    for i in anchors:
+        anchor = blocks[i]
+        x0, y0, x1, y1 = anchor.bbox
+        line_count = len([ln for ln in anchor.text.splitlines() if ln.strip()]) or 1
+        # Only a title-only remnant (the flattened case) needs region growth; a
+        # contiguous box already carries its code lines inside the one block.
+        if line_count <= 2:
+            line_h = max(6.0, (y1 - y0) / line_count)
+            grew = True
+            while grew:
+                grew = False
+                for j, b in enumerate(blocks):
+                    if j in excluded or b.page != anchor.page:
+                        continue
+                    bx0, by0, bx1, by1 = b.bbox
+                    if min(x1, bx1) - max(x0, bx0) <= 0:  # must share the box's column
+                        continue
+                    if by0 < y1 - line_h * 0.5 or by0 > y1 + line_h * 1.8:  # next row down only
+                        continue
+                    excluded.add(j)
+                    x0, x1 = min(x0, bx0), max(x1, bx1)
+                    y1 = max(y1, by1)
+                    grew = True
+        regions.append((anchor.page, x0, y0, x1, y1))
+
+    def _inside_region(block: TextBlock) -> bool:
         cx = (block.bbox[0] + block.bbox[2]) / 2
         cy = (block.bbox[1] + block.bbox[3]) / 2
-        for page, (x0, y0, x1, y1) in box_rects:
-            if block.page == page and x0 <= cx <= x1 and y0 <= cy <= y1 and (x1 - x0) > 1:
+        for page, rx0, ry0, rx1, ry1 in regions:
+            if block.page == page and rx0 <= cx <= rx1 and ry0 <= cy <= ry1 and (rx1 - rx0) > 1:
                 return True
         return False
 
-    return (
-        [b for b in field_blocks if not (b.source == "page" and _inside_box(b))],
-        skipped_total_boxes,
-        skipped_material_boxes,
-    )
+    field_blocks = [
+        b for k, b in enumerate(blocks)
+        if k not in excluded and not (b.source == "page" and _inside_region(b))
+    ]
+    return field_blocks, skipped_total_boxes, skipped_material_boxes
 
 
 def _display_code(raw_code: str, normalized_key: CodeKey) -> str:
