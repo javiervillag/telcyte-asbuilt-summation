@@ -47,6 +47,13 @@ FORCE = [
     "SMOKE-TEST-BI-829050",                             # stamped output, re-run case
     "materials-visual-check",                           # materials-only / zero codes edge
 ]
+# Real customer gold fixtures - always included verbatim by absolute path. Kept
+# LOCAL only (tmp/regression is gitignored). Nick's June-23 NR-996825 PRJ18
+# Segment 7 double-count: rotated (rot=270), with page-totals boxes on p3/p4.
+GOLD_FILES = [
+    os.path.expanduser("~/Downloads/FIBER-ASBUILT-(TelCyte)-NR-996825 PRJ18 - Segment 7 (2).pdf"),
+    os.path.expanduser("~/Downloads/FIBER-ASBUILT-(TelCyte)-NR-996825 PRJ18 - Segment 7-telcyte-summary (2).pdf"),
+]
 CAP = 22
 
 
@@ -76,7 +83,10 @@ def main():
     files = []
     for L in LOCATIONS:
         files += glob.glob(f"{L}/*.pdf") + glob.glob(f"{L}/**/*.pdf", recursive=True)
-    files = sorted(set(files))
+    # Exclude our own snapshot dir: the recursive scan from the parent working
+    # folder would otherwise re-ingest the corpus we are about to rebuild, making
+    # selection non-deterministic across runs.
+    files = sorted(f for f in set(files) if "/tmp/regression/" not in f)
 
     scanned = []
     for p in files:
@@ -123,6 +133,17 @@ def main():
             continue
         manifest.append({"file": dest, "origin": rec["path"], "sig": list(sig),
                          "codes": rec["codes"], "pages": rec["pages"]})
+
+    # Gold fixtures: copied verbatim by absolute path, never clustered away.
+    for g, src in enumerate(GOLD_FILES):
+        if not os.path.exists(src):
+            print(f"  gold MISSING: {src}")
+            continue
+        base = re.sub(r'[^A-Za-z0-9.-]+', '-', os.path.splitext(os.path.basename(src))[0])[:44]
+        dest = f"gold{g:02d}__{base}.pdf"
+        with open(src, "rb") as fsrc, open(os.path.join(CORPUS, dest), "wb") as fdst:
+            fdst.write(fsrc.read())
+        manifest.append({"file": dest, "origin": src, "sig": ["gold"], "codes": -1, "pages": -1})
 
     with open(os.path.join(CORPUS, "manifest.json"), "w") as fh:
         json.dump(manifest, fh, indent=1)
