@@ -53,6 +53,7 @@ FORCE = [
 GOLD_FILES = [
     os.path.expanduser("~/Downloads/FIBER-ASBUILT-(TelCyte)-NR-996825 PRJ18 - Segment 7 (2).pdf"),
     os.path.expanduser("~/Downloads/FIBER-ASBUILT-(TelCyte)-NR-996825 PRJ18 - Segment 7-telcyte-summary (2).pdf"),
+    os.path.expanduser("~/Downloads/FIBER-ASBUILT-(TelCyte)-NR-996825 PRJ17 - Segment 7.pdf"),
 ]
 CAP = 22
 
