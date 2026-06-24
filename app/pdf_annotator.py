@@ -571,7 +571,11 @@ def _box_metrics_for_font(
 
 
 def _starts_with_totals_title(text: str) -> bool:
-    return re.sub(r"\s+", " ", text.strip()).lower().startswith("mkr job totals")
+    # Mirror app.pdf_parser._starts_with_totals_title: recognize both the page-1
+    # "MKR Job Totals" box and per-page "MKR Page Totals" boxes so re-stamping
+    # finds and replaces either, instead of stacking a second box.
+    normalized = re.sub(r"\s+", " ", text.strip()).lower()
+    return normalized.startswith("mkr job totals") or normalized.startswith("mkr page totals")
 
 
 def _starts_with_materials_title(text: str) -> bool:

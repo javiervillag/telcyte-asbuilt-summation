@@ -130,7 +130,11 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
 
 
 def _starts_with_totals_title(text: str) -> bool:
-    return re.sub(r"\s+", " ", text.strip()).lower().startswith("mkr job totals")
+    # Both the page-1 "MKR Job Totals" box and the per-page "MKR Page Totals"
+    # boxes must be recognized so a re-run never re-counts either of them
+    # (Nick Evans, June-23 sync: NR-996825 page-totals boxes double-counted).
+    normalized = re.sub(r"\s+", " ", text.strip()).lower()
+    return normalized.startswith("mkr job totals") or normalized.startswith("mkr page totals")
 
 
 def _starts_with_materials_title(text: str) -> bool:
@@ -267,7 +271,7 @@ def derive_code_totals(
     if notes is not None:
         if skipped_total_boxes:
             notes.append(
-                f"Ignored {skipped_total_boxes} existing 'MKR Job Totals' box(es) already stamped "
+                f"Ignored {skipped_total_boxes} existing 'MKR Job/Page Totals' box(es) already stamped "
                 "on the drawing (re-run detected); totals were recomputed from the field callouts only."
             )
         if skipped_material_boxes:

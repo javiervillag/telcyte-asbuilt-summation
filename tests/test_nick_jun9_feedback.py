@@ -517,6 +517,28 @@ def test_flattened_box_does_not_eat_field_callouts_in_other_columns() -> None:
     assert "UG-06 - 4" in totals  # the real callout survives; the box copy is dropped
 
 
+def test_existing_mkr_page_totals_box_is_not_counted() -> None:
+    # Multi-page as-builts carry per-page "MKR Page Totals" boxes in addition to
+    # the page-1 "MKR Job Totals" box. A re-run must not re-count those either
+    # (Nick, June-23 sync: NR-996825 page-totals boxes drove the Comp-9 double).
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((600, 300), "Comp-9 - 430")  # genuine field callout
+    page.add_freetext_annot(
+        fitz.Rect(20, 20, 280, 160),
+        "MKR Page Totals\nComp-9 - 430\nUG-85 - 3",
+        fontsize=12,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "Comp-9 - 430" in totals  # not 860
+    assert not any(t.startswith("UG-85") for t in totals)  # box-only line excluded
+    assert any("re-run detected" in n for n in notes)
+
+
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:
     # Nick's editor auto-rotates the box on drag/copy-paste for some permit
     # drawings (2026-06-11); NoRotate pins the orientation.
