@@ -576,6 +576,53 @@ def test_per_page_totals_partition_and_sum_to_job() -> None:
     )
 
 
+def test_page_totals_boxes_stamped_on_later_pages_only_and_idempotent() -> None:
+    # F4: each page after the first gets its own "MKR Page Totals" box; page 1
+    # keeps Job Totals only; re-stamping the output replaces (never stacks) them.
+    import re as _re
+
+    doc = fitz.open()
+    p1 = doc.new_page(width=1224, height=792)
+    p1.insert_text((600, 300), "UG-44 - 100")
+    p2 = doc.new_page(width=1224, height=792)
+    p2.insert_text((600, 300), "UG-44 - 56")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=derive_code_totals(blocks),
+        page_totals=derive_code_totals_by_page(blocks),
+        model="t",
+    )
+
+    def box_titles(pdf: bytes) -> dict[int, list[str]]:
+        d = fitz.open(stream=pdf, filetype="pdf")
+        out: dict[int, list[str]] = {}
+        for i in range(d.page_count):
+            kinds = []
+            for a in d[i].annots() or []:
+                if a.type[1] != "FreeText":
+                    continue
+                norm = _re.sub(r"\s+", " ", (a.info.get("content") or "")).strip().lower()
+                if norm.startswith("mkr job totals"):
+                    kinds.append("job")
+                elif norm.startswith("mkr page totals"):
+                    kinds.append("page")
+            out[i] = kinds
+        d.close()
+        return out
+
+    once = box_titles(annotate_pdf(content, summary))
+    assert once[0] == ["job"]   # page 1: Job Totals only
+    assert once[1] == ["page"]  # page 2: its own Page Totals box
+
+    twice = box_titles(annotate_pdf(annotate_pdf(content, summary), summary))
+    assert twice[0] == ["job"]  # idempotent re-stamp: no duplicate boxes
+    assert twice[1] == ["page"]
+
+
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:
     # Nick's editor auto-rotates the box on drag/copy-paste for some permit
     # drawings (2026-06-11); NoRotate pins the orientation.

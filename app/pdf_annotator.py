@@ -491,11 +491,53 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             if material_lines or existing_material_boxes:
                 _force_summary_line_break_appearance(page, lines)
 
+        # Per-page "MKR Page Totals" boxes for multi-page as-builts. Page 1 (above)
+        # keeps the Job Totals + Materials boxes; every later page with billing
+        # codes gets its own page-totals box.
+        _stamp_page_totals(doc, summary)
+
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
         return buffer.getvalue()
     finally:
         doc.close()
+
+
+def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
+    """Stamp an "MKR Page Totals" box (billing codes only) on each page after the
+    first that carries per-page totals.
+
+    Page 1 keeps the Job Totals box (all pages + materials); page totals are never
+    stamped there. Existing page-totals boxes on a page are replaced so re-runs
+    stay idempotent. A page with no clear placement is skipped with a warning
+    rather than failing the whole job. This reuses the page-1 placement and
+    rendering path, so rotated sheets (e.g. NR-996825 rot=270) are handled
+    identically and the box stays a single movable FreeText annotation.
+    """
+    if not summary.page_totals:
+        return
+    for idx in range(1, doc.page_count):
+        lines = summary.page_totals_box_lines(idx + 1)  # page_totals keyed 1-based
+        if not lines:
+            continue
+        page = doc[idx]
+        existing = _existing_totals_boxes(page)
+        try:
+            if existing:
+                replacement = existing[0]
+                _delete_annotations_by_xref(page, [box.xref for box in existing])
+                _add_summary_annotation(
+                    page,
+                    _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
+                    lines,
+                    preferred_font_size=replacement.font_size,
+                )
+            else:
+                _add_summary_annotation(page, choose_box_rect(page, lines), lines)
+        except PlacementReviewRequired:
+            summary.warnings.append(
+                f"Page {idx + 1}: no clear open area for the MKR Page Totals box; left unstamped."
+            )
 
 
 def _existing_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
