@@ -578,17 +578,18 @@ def _replacement_rect_for_content(
     lines: list[str],
     preferred_font_size: float | None = None,
 ) -> fitz.Rect:
-    """Keep the old box location, but fit the new content.
+    """Keep the old box's POSITION, but size it to fit the new content.
 
-    Older/manual output boxes can be much larger than the new run needs. Reusing
-    the whole stale rectangle makes a tiny two-line total cover a large swath of
-    the drawing. The location is the re-run signal; the stale dimensions are not.
-    Rotated pages keep the existing rectangle because their authored dimensions
-    are part of the known-good movable annotation structure.
+    Reuses the exact rotation-aware sizing of a fresh stamp
+    (_placement_box_metrics_for_font, which swaps width/height on 90/270 sheets),
+    so a re-stamp and a fresh stamp produce identically-shaped boxes. The old box
+    location is the re-run signal; its stale dimensions are not. The previous code
+    returned the stale rectangle verbatim on rotated pages, which kept a too-narrow
+    box and wrapped the longer "MKR Page Totals" title onto two lines (NR-996825,
+    rot=270). On non-rotated pages _placement_box_metrics_for_font returns the same
+    dimensions as the old _box_metrics_for_font call, so that path is unchanged.
     """
-    if page.rotation:
-        return fitz.Rect(anchor)
-    width, height, _, _ = _box_metrics_for_font(page, lines, preferred_font_size)
+    width, height, _, _ = _placement_box_metrics_for_font(page, lines, font_size=preferred_font_size)
     rect = fitz.Rect(anchor.x0, anchor.y0, anchor.x0 + width, anchor.y0 + height)
     if rect.x1 > page.rect.x1:
         rect.x0 = max(page.rect.x0, page.rect.x1 - width)

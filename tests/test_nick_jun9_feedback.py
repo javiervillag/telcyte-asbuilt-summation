@@ -623,6 +623,71 @@ def test_page_totals_boxes_stamped_on_later_pages_only_and_idempotent() -> None:
     assert twice[1] == ["page"]
 
 
+def test_replacement_rect_resizes_for_content_on_rotated_pages() -> None:
+    # Isolated unit test: a re-stamp must size the box to fit the new content even
+    # on rotated sheets, not reuse a stale (possibly narrow) rectangle. On a
+    # rotated page the title's width maps to the rect HEIGHT, which must clear the
+    # title so it never wraps. (NR-996825, rot=270.)
+    from app.pdf_annotator import _replacement_rect_for_content
+
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=612)
+    page.set_rotation(270)
+    # narrow stale anchor, in-bounds for the rotated page (page.rect is 612x792)
+    stale_narrow = fitz.Rect(400, 10, 422, 130)  # 22pt wide - far too narrow for the title
+    lines = ["MKR Page Totals", "Comp-9 - 734", "Comp-6 - 734"]
+    rect = _replacement_rect_for_content(page, stale_narrow, lines, preferred_font_size=12)
+    doc.close()
+
+    title_w = fitz.get_text_length("MKR Page Totals", fontname="helv", fontsize=12)
+    assert rect.height >= title_w  # rotation swap -> title fits on one line
+    assert rect.width > stale_narrow.width  # not the stale narrow rectangle
+    assert (rect.x0, rect.y0) == (stale_narrow.x0, stale_narrow.y0)  # position preserved
+
+
+def test_restamp_rotated_existing_box_title_not_wrapped() -> None:
+    # End-to-end guard for NR-996825 (rot=270): re-stamping a rotated page that
+    # already has a NARROW totals box must produce a one-line title in the
+    # annotation /Contents (identical to a fresh stamp), not "MKR Page\nTotals".
+    # Covers both the page-1 Job box and a per-page Page Totals box replacement.
+    doc = fitz.open()
+    p1 = doc.new_page(width=792, height=612)
+    p1.set_rotation(270)
+    p1.insert_text((120, 300), "UG-44 - 5")
+    p1.add_freetext_annot(fitz.Rect(740, 10, 762, 90), "MKR Job Totals\nUG-44 - 5", fontsize=10)
+    p2 = doc.new_page(width=792, height=612)
+    p2.set_rotation(270)
+    p2.insert_text((120, 300), "UG-44 - 3")
+    p2.add_freetext_annot(fitz.Rect(740, 10, 762, 90), "MKR Page Totals\nUG-44 - 3", fontsize=10)
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=derive_code_totals(blocks),
+        page_totals=derive_code_totals_by_page(blocks),
+        model="t",
+    )
+    out = annotate_pdf(content, summary)
+
+    d = fitz.open(stream=out, filetype="pdf")
+    first_lines = []
+    for i in range(d.page_count):
+        for a in d[i].annots() or []:
+            if a.type[1] != "FreeText":
+                continue
+            first = (a.info.get("content") or "").replace("\r", "\n").split("\n")[0].strip()
+            if first.lower().startswith(("mkr job", "mkr page")):
+                first_lines.append(first)
+    d.close()
+
+    assert "MKR Job Totals" in first_lines   # one-line job title (re-stamped)
+    assert "MKR Page Totals" in first_lines  # one-line page title (re-stamped)
+    # the wrapped forms must NOT appear as any box's first line
+    assert "MKR Page" not in first_lines and "MKR Job" not in first_lines
+
+
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:
     # Nick's editor auto-rotates the box on drag/copy-paste for some permit
     # drawings (2026-06-11); NoRotate pins the orientation.

@@ -50,11 +50,17 @@ except Exception:  # pragma: no cover - cable module optional
     derive_cable_footage = None
     CableFootageResult = None
 
+# Same normalized box-title rule production uses, so the harness can't drift from
+# the parser/annotator and correctly tolerates whitespace/wrapped titles.
+from app.box_titles import starts_with_materials_title, starts_with_totals_title  # noqa: E402
+
 OUT_DIR = os.path.join(REPO, "tmp", "regression")
 BASELINE = os.path.join(OUT_DIR, "baseline.json")
 CORPUS = os.path.join(OUT_DIR, "corpus")  # frozen curated snapshot (see build_corpus.py)
 
-TOTALS_TITLE_PREFIXES = ("mkr job totals", "mkr page totals", "materials", "material")
+
+def _is_box_title(content: str) -> bool:
+    return starts_with_totals_title(content) or starts_with_materials_title(content)
 
 
 @dataclass
@@ -156,8 +162,7 @@ def _extract_boxes(pdf_bytes: bytes) -> list:
                 if a.type[1] != "FreeText":
                     continue
                 content = (a.info.get("content") or "").strip()
-                low = content.lower()
-                if any(low.startswith(p) for p in TOTALS_TITLE_PREFIXES):
+                if _is_box_title(content):
                     lines = [l.strip() for l in content.replace("\r", "\n").split("\n") if l.strip()]
                     boxes.append({"page": i, "title": lines[0] if lines else "", "lines": lines})
     finally:
@@ -180,8 +185,7 @@ def _flatten_boxes(pdf_bytes: bytes) -> bytes:
                 if a.type[1] != "FreeText":
                     continue
                 content = (a.info.get("content") or "").strip()
-                low = content.lower()
-                if not any(low.startswith(p) for p in TOTALS_TITLE_PREFIXES):
+                if not _is_box_title(content):
                     continue
                 rect = a.rect
                 lines = [l for l in content.replace("\r", "\n").split("\n")]
