@@ -14,7 +14,13 @@ from PIL import Image
 from app.cable_footage import CableFootageResult, derive_cable_footage
 from app.config import Settings
 from app.models import SummaryResult
-from app.pdf_parser import build_pdf_context, diagnose_extraction, derive_code_totals, extract_text_blocks
+from app.pdf_parser import (
+    build_pdf_context,
+    derive_code_totals,
+    derive_code_totals_by_page,
+    diagnose_extraction,
+    extract_text_blocks,
+)
 from app.rate_cards import CodeKey, code_key, load_code_catalog
 
 logger = logging.getLogger(__name__)
@@ -223,6 +229,9 @@ async def summarize_with_model(
         notes=parser_notes,
         warnings=parser_warnings,
     )
+    # Per-page billing totals for the "MKR Page Totals" boxes (multi-page sheets).
+    # Deterministic parser output - never routed through the LLM merge.
+    page_totals = derive_code_totals_by_page(blocks, code_catalog=code_catalog)
     cable_result = (
         derive_cable_footage(
             blocks,
@@ -347,6 +356,7 @@ async def summarize_with_model(
             summary.informational_notes.append(note)
     if not summary.job_totals and not summary.materials:
         summary.warnings.append("Unable to identify supported totals from the drawing.")
+    summary = summary.model_copy(update={"page_totals": page_totals})
     logger.info(
         "summary_complete model=%s totals=%s materials=%s confidence=%.2f",
         selected_model,

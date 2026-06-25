@@ -14,7 +14,12 @@ from PIL import Image
 
 from app.models import SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
-from app.pdf_parser import derive_code_totals, diagnose_extraction, extract_text_blocks
+from app.pdf_parser import (
+    derive_code_totals,
+    derive_code_totals_by_page,
+    diagnose_extraction,
+    extract_text_blocks,
+)
 from app.rate_cards import code_key, total_line_key
 
 
@@ -469,6 +474,153 @@ def test_split_title_existing_mkr_totals_box_is_not_counted() -> None:
     totals = derive_code_totals(extract_text_blocks(content), notes=notes)
     assert totals == ["UG-06 - 4"]
     assert any("re-run detected" in n for n in notes)
+
+
+def test_flattened_mkr_totals_box_lines_not_double_counted() -> None:
+    # Nick, June-23 sync: an editor FLATTENED a previously stamped box so its title
+    # and EACH code line became separate, individually positioned page-text blocks
+    # (not one FreeText annotation). The title-only block was excluded but the
+    # orphaned code lines below leaked back in as field callouts, doubling several
+    # codes (29.76 vs 14.88). The whole box region must be excluded, not just the
+    # title line.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    # Real field callouts, in their own column on the drawing.
+    page.insert_text((600, 300), "UG-44 - 156")
+    page.insert_text((600, 340), "UG-06 - 4")
+    # The flattened box: title + each line as SEPARATE page-text blocks in one
+    # column (>= ~16pt apart so PyMuPDF does not regroup them into one block).
+    y = 60
+    for line in ["MKR Job Totals", "UG-44 - 156", "UG-06 - 4", "TL-20 - 2"]:
+        page.insert_text((60, y), line)
+        y += 18
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "UG-44 - 156" in totals      # not 312
+    assert "UG-06 - 4" in totals         # not 8
+    assert not any(t.startswith("TL-20") for t in totals)  # box-only line excluded
+    assert any("re-run detected" in n for n in notes)
+
+
+def test_flattened_box_does_not_eat_field_callouts_in_other_columns() -> None:
+    # Guard against over-eager region growth: a real field callout that shares a
+    # code with the flattened box but sits in a DIFFERENT column must still count.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((600, 300), "UG-06 - 4")   # genuine field callout (other column)
+    y = 60
+    for line in ["MKR Job Totals", "UG-06 - 4"]:  # flattened box in the left column
+        page.insert_text((60, y), line)
+        y += 18
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-06 - 4" in totals  # the real callout survives; the box copy is dropped
+
+
+def test_existing_mkr_page_totals_box_is_not_counted() -> None:
+    # Multi-page as-builts carry per-page "MKR Page Totals" boxes in addition to
+    # the page-1 "MKR Job Totals" box. A re-run must not re-count those either
+    # (Nick, June-23 sync: NR-996825 page-totals boxes drove the Comp-9 double).
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((600, 300), "Comp-9 - 430")  # genuine field callout
+    page.add_freetext_annot(
+        fitz.Rect(20, 20, 280, 160),
+        "MKR Page Totals\nComp-9 - 430\nUG-85 - 3",
+        fontsize=12,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "Comp-9 - 430" in totals  # not 860
+    assert not any(t.startswith("UG-85") for t in totals)  # box-only line excluded
+    assert any("re-run detected" in n for n in notes)
+
+
+def test_per_page_totals_partition_and_sum_to_job() -> None:
+    # Page Totals (R1): each page totals only its own billing codes, reusing the
+    # same aggregation as the job total so the per-page totals sum to the job
+    # total. Validated against Nick's real NR-996825 (page totals 430 + 1058 =
+    # job 1488). Page numbering is 1-based; pages with no codes are omitted.
+    doc = fitz.open()
+    p1 = doc.new_page(width=1224, height=792)
+    p1.insert_text((600, 300), "UG-44 - 100")
+    p1.insert_text((600, 340), "Comp-9 - 5")
+    p2 = doc.new_page(width=1224, height=792)
+    p2.insert_text((600, 300), "UG-44 - 56")
+    p2.insert_text((600, 340), "Comp-6 - 2")
+    doc.new_page(width=1224, height=792)  # page 3: no codes -> omitted
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    job = derive_code_totals(blocks)
+    pages = derive_code_totals_by_page(blocks)
+
+    assert set(pages) == {1, 2}  # 1-based; the empty page 3 is omitted
+    assert "UG-44 - 100" in pages[1] and "Comp-9 - 5" in pages[1]
+    assert "UG-44 - 56" in pages[2] and "Comp-6 - 2" in pages[2]
+    assert "UG-44 - 156" in job  # job sums across pages (100 + 56)
+    # Page totals are billing codes only - never a materials/extras heading.
+    assert all(
+        not r.lower().startswith(("material", "user-"))
+        for rows in pages.values()
+        for r in rows
+    )
+
+
+def test_page_totals_boxes_stamped_on_later_pages_only_and_idempotent() -> None:
+    # F4: each page after the first gets its own "MKR Page Totals" box; page 1
+    # keeps Job Totals only; re-stamping the output replaces (never stacks) them.
+    import re as _re
+
+    doc = fitz.open()
+    p1 = doc.new_page(width=1224, height=792)
+    p1.insert_text((600, 300), "UG-44 - 100")
+    p2 = doc.new_page(width=1224, height=792)
+    p2.insert_text((600, 300), "UG-44 - 56")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=derive_code_totals(blocks),
+        page_totals=derive_code_totals_by_page(blocks),
+        model="t",
+    )
+
+    def box_titles(pdf: bytes) -> dict[int, list[str]]:
+        d = fitz.open(stream=pdf, filetype="pdf")
+        out: dict[int, list[str]] = {}
+        for i in range(d.page_count):
+            kinds = []
+            for a in d[i].annots() or []:
+                if a.type[1] != "FreeText":
+                    continue
+                norm = _re.sub(r"\s+", " ", (a.info.get("content") or "")).strip().lower()
+                if norm.startswith("mkr job totals"):
+                    kinds.append("job")
+                elif norm.startswith("mkr page totals"):
+                    kinds.append("page")
+            out[i] = kinds
+        d.close()
+        return out
+
+    once = box_titles(annotate_pdf(content, summary))
+    assert once[0] == ["job"]   # page 1: Job Totals only
+    assert once[1] == ["page"]  # page 2: its own Page Totals box
+
+    twice = box_titles(annotate_pdf(annotate_pdf(content, summary), summary))
+    assert twice[0] == ["job"]  # idempotent re-stamp: no duplicate boxes
+    assert twice[1] == ["page"]
 
 
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:
