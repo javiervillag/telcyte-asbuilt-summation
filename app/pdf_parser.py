@@ -267,8 +267,9 @@ def derive_code_totals(
     if notes is not None:
         if skipped_total_boxes:
             notes.append(
-                f"Ignored {skipped_total_boxes} existing 'MKR Job/Page Totals' box(es) already stamped "
-                "on the drawing (re-run detected); totals were recomputed from the field callouts only."
+                f"Ignored {skipped_total_boxes} existing 'MKR Job/Page/New Totals' summary box(es) on the "
+                "drawing (re-run detected, or a manual 'New Totals' box); totals were recomputed from the "
+                "field callouts only."
             )
         if skipped_material_boxes:
             notes.append(
