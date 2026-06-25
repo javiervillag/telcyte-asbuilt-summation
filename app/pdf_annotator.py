@@ -425,7 +425,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             existing_material_boxes and summary.cable_footage
         )
         force_summary_stream = should_update_material_box
-        existing_boxes = _existing_totals_boxes(page)
+        existing_boxes = _existing_job_totals_boxes(page)
         totals_font_size: float | None = None
         if existing_boxes:
             replacement = existing_boxes[0]
@@ -521,7 +521,7 @@ def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
         if not lines:
             continue
         page = doc[idx]
-        existing = _existing_totals_boxes(page)
+        existing = _existing_page_totals_boxes(page)
         try:
             if existing:
                 replacement = existing[0]
@@ -540,8 +540,12 @@ def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
             )
 
 
-def _existing_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, _starts_with_totals_title)
+def _existing_job_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    return _existing_output_boxes(page, _starts_with_job_totals_title)
+
+
+def _existing_page_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    return _existing_output_boxes(page, _starts_with_page_totals_title)
 
 
 def _existing_material_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
@@ -612,12 +616,23 @@ def _box_metrics_for_font(
     return width, height, font_size, padding
 
 
+def _normalized_title(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip()).lower()
+
+
+def _starts_with_job_totals_title(text: str) -> bool:
+    return _normalized_title(text).startswith("mkr job totals")
+
+
+def _starts_with_page_totals_title(text: str) -> bool:
+    return _normalized_title(text).startswith("mkr page totals")
+
+
 def _starts_with_totals_title(text: str) -> bool:
-    # Mirror app.pdf_parser._starts_with_totals_title: recognize both the page-1
-    # "MKR Job Totals" box and per-page "MKR Page Totals" boxes so re-stamping
-    # finds and replaces either, instead of stacking a second box.
-    normalized = re.sub(r"\s+", " ", text.strip()).lower()
-    return normalized.startswith("mkr job totals") or normalized.startswith("mkr page totals")
+    # Either box title. The JOB and PAGE replace paths use the specific predicates
+    # below so a Job re-stamp never grabs/collapses a Page Totals box (and vice
+    # versa). This "either" form is kept for callers that legitimately mean both.
+    return _starts_with_job_totals_title(text) or _starts_with_page_totals_title(text)
 
 
 def _starts_with_materials_title(text: str) -> bool:
@@ -781,7 +796,7 @@ def _add_summary_annotation(
 def _force_summary_line_break_appearance(page: fitz.Page, lines: list[str]) -> None:
     for annot in page.annots() or []:
         content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
-        if annot.type[1] != "FreeText" or not _starts_with_totals_title(content):
+        if annot.type[1] != "FreeText" or not _starts_with_job_totals_title(content):
             continue
         font_size = _annotation_font_size(page.parent, annot.xref)
         rendered_lines, font_size, _ = _summary_rendering(page, annot.rect, lines, font_size=font_size)

@@ -85,6 +85,11 @@ class Record:
                 "boxes": [
                     {"page": b["page"], "lines": sorted(b["lines"])} for b in self.boxes
                 ],
+                # Include idempotency status so a change that re-introduces the
+                # flattened double-count (without altering first-pass totals,
+                # materials, or boxes) still changes the digest and fails `check`.
+                "idem_contiguous": self.idem_contiguous,
+                "idem_flattened": self.idem_flattened,
             },
             sort_keys=True,
         )
