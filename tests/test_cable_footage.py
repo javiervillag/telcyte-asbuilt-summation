@@ -1,4 +1,5 @@
 from app.cable_footage import (
+    buffered_cable_footage,
     cable_material_key,
     canonicalize_cable_material_row,
     derive_cable_footage,
@@ -85,6 +86,9 @@ def test_merge_material_rows_replaces_each_cable_type_independently() -> None:
 
 
 def test_merge_material_rows_normalizes_preliminary_rows_without_computed_rows() -> None:
+    # Building the stamped Materials box, fiber cable rows are also given the order
+    # quantity: +10% buffer rounded up to the next 100' (Nick, BI-872022).
+    # 1192 -> 1400, 603 -> 700. Non-cable rows keep their exact value.
     existing = [
         "144ct - 1192'",
         "LockBox - 1",
@@ -98,12 +102,12 @@ def test_merge_material_rows_normalizes_preliminary_rows_without_computed_rows()
     merged = merge_material_rows(existing, [])
 
     assert merged == [
-        "605-1502 (144Ct) - 1192'",
+        "605-1502 (144Ct) - 1400'",
         "LockBox - 1",
         "EMT - 10'",
         'EMT 2" Fitting - 2',
         "470-9997 - 500'",
-        "605-3277 (48Ct) - 603'",
+        "605-3277 (48Ct) - 700'",
         "460-0008 - 1315'",
     ]
 
@@ -192,3 +196,90 @@ def test_resolved_cable_callouts_do_not_stay_unresolved() -> None:
     unresolved = _unresolved_callout_lines(blocks, resolved_callout_lines=result.handled_callout_lines)
 
     assert unresolved == []
+
+
+# ---------------------------------------------------------------------------
+# BI-872022: stamped Materials box must (1) remap the legacy 144ct part number to
+# the current one, (2) label the cable type, (3) add the 10% buffer + round up to
+# the next 100'. Single rounding rule lives in buffered_cable_footage().
+# ---------------------------------------------------------------------------
+
+
+def test_buffered_cable_footage_rule() -> None:
+    # fiber: +10% then ceil to next 100'
+    assert buffered_cable_footage(1810, "fiber") == 2000
+    assert buffered_cable_footage(4270, "fiber") == 4700
+    assert buffered_cable_footage(100, "fiber") == 200
+    assert buffered_cable_footage(2000, "fiber") == 2200  # exact multiples still buffer
+    # coax: +10% then ceil to the configured increment (default 10)
+    assert buffered_cable_footage(500, "coax", 10) == 550
+    assert buffered_cable_footage(118, "coax", 10) == 130
+
+
+def test_cable_material_key_recognizes_legacy_part_number() -> None:
+    # Cox's old printed 144ct part number must be recognized as a 144ct cable row.
+    assert cable_material_key("605-3324 - 1810'") == "144ct"
+    assert cable_material_key("605-3324 (144Ct) - 1810'") == "144ct"
+
+
+def test_canonicalize_remaps_legacy_part_default_preserves_footage() -> None:
+    # Default (no buffer) keeps the legacy-row footage but emits the CURRENT part #.
+    assert canonicalize_cable_material_row("605-3324 - 1810'") == "605-1502 (144Ct) - 1810'"
+
+
+def test_canonicalize_buffer_remaps_labels_and_rounds_bi872022() -> None:
+    # All three of Nick's concerns at once for the 144ct row, plus the 48ct buffer.
+    assert (
+        canonicalize_cable_material_row("605-3324 - 1810'", apply_buffer=True)
+        == "605-1502 (144Ct) - 2000'"
+    )
+    assert (
+        canonicalize_cable_material_row("605-3277 - 4270'", apply_buffer=True)
+        == "605-3277 (48Ct) - 4700'"
+    )
+    assert (
+        canonicalize_cable_material_row("144Ct - 1810'", apply_buffer=True)
+        == "605-1502 (144Ct) - 2000'"
+    )
+
+
+def test_canonicalize_buffer_is_idempotent_and_heals_old_outputs() -> None:
+    # A fully-finalized row (labeled + footage already a multiple of 100') is left
+    # alone, so re-running an output never re-buffers.
+    once = canonicalize_cable_material_row("605-3324 - 1810'", apply_buffer=True)
+    assert once == "605-1502 (144Ct) - 2000'"
+    assert canonicalize_cable_material_row(once, apply_buffer=True) == once
+    # A pre-fix output (labeled but NOT yet rounded) self-heals on the next run.
+    assert (
+        canonicalize_cable_material_row("605-3277 (48Ct) - 4270'", apply_buffer=True)
+        == "605-3277 (48Ct) - 4700'"
+    )
+
+
+def test_canonicalize_buffer_leaves_coax_and_non_cable_rows_untouched() -> None:
+    # Coax is relabeled but never auto-buffered (source path still needs validation).
+    assert (
+        canonicalize_cable_material_row(".625 - 140'", apply_buffer=True)
+        == "220-9236 (.625) - 140'"
+    )
+    # Non-cable hardware rows pass through verbatim even with the buffer flag on.
+    assert canonicalize_cable_material_row("470-9997 - 460'", apply_buffer=True) == "470-9997 - 460'"
+    assert canonicalize_cable_material_row("600-4013 - 54", apply_buffer=True) == "600-4013 - 54"
+
+
+def test_merge_material_rows_bi872022_remaps_labels_buffers_and_is_idempotent() -> None:
+    existing = [
+        "470-9997 - 460'",
+        "605-3277 - 4270'",
+        "605-3324 - 1810'",
+        "460-0008 - 5000'",
+    ]
+    merged = merge_material_rows(existing, [])
+    assert merged == [
+        "470-9997 - 460'",
+        "605-3277 (48Ct) - 4700'",
+        "605-1502 (144Ct) - 2000'",
+        "460-0008 - 5000'",
+    ]
+    # Re-running the stamped output through the same merge is a no-op.
+    assert merge_material_rows(merged, []) == merged

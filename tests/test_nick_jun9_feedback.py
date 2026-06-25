@@ -12,7 +12,7 @@ import fitz
 import pytest
 from PIL import Image
 
-from app.models import SummaryResult
+from app.models import CableFootageLine, SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
 from app.pdf_parser import (
     derive_code_totals,
@@ -805,3 +805,73 @@ def _top_totals_box_count(page: fitz.Page) -> int:
 def _is_totals_green(pixel: tuple[int, int, int]) -> bool:
     r, g, b = pixel
     return g > 220 and 170 <= r <= 230 and 130 <= b <= 210
+
+
+# --- Email: BI-872022 Materials box (144ct part #, cable-type label, 10% buffer) ---
+
+
+def _materials_box_lines(pdf_bytes: bytes) -> list[str]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for page in doc:
+            for annot in page.annots() or []:
+                if annot.type[1] != "FreeText":
+                    continue
+                content = (annot.info.get("content") or "").strip()
+                if content.lower().startswith("materials"):
+                    return [ln.strip() for ln in content.replace("\r", "\n").split("\n") if ln.strip()]
+        return []
+    finally:
+        doc.close()
+
+
+def _pdf_with_materials_box(rows: list[str]) -> bytes:
+    doc = fitz.open()
+    page = doc.new_page(width=1728, height=2592)
+    page.insert_text((100, 120), "Readable as-built notes for the text layer check.")
+    page.insert_text((100, 160), "Crew completed restoration per plan and verified quantities.")
+    rect = fitz.Rect(60, 200, 640, 200 + 26 * (len(rows) + 2))
+    page.add_freetext_annot(rect, "Materials\n" + "\n".join(rows), fontsize=10)
+    content = doc.tobytes()
+    doc.close()
+    return content
+
+
+def test_bi872022_materials_box_remaps_legacy_part_labels_and_buffers() -> None:
+    # Nick, BI-872022: the field-printed Materials box carries the OLD 144ct part number
+    # (605-3324), no cable-type label, and the exact footage. The stamped box must remap
+    # to the current 605-1502, add the (144Ct) label, and apply the 10% buffer rounded up
+    # to the next 100'. A non-empty cable_footage list mirrors production (it triggers the
+    # materials-box update even with INCLUDE_MATERIALS off).
+    pdf = _pdf_with_materials_box(["470-9997 - 460'", "605-3277 - 4270'", "605-3324 - 1810'"])
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=["UG-06 - 1"],
+        cable_footage=[CableFootageLine(callout="144ct", display_type="144Ct", family="fiber")],
+        model="parser-only",
+    )
+
+    lines = _materials_box_lines(annotate_pdf(pdf, summary))
+
+    assert "605-1502 (144Ct) - 2000'" in lines  # 605-3324 -> 605-1502, labeled, 1810 -> 2000
+    assert "605-3277 (48Ct) - 4700'" in lines  # 48ct labeled + 4270 -> 4700
+    assert "470-9997 - 460'" in lines  # non-cable hardware untouched
+    assert all("605-3324" not in line for line in lines)  # legacy part number is gone
+
+
+def test_bi872022_materials_box_rerun_is_idempotent() -> None:
+    pdf = _pdf_with_materials_box(["605-3277 - 4270'", "605-3324 - 1810'"])
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=["UG-06 - 1"],
+        cable_footage=[CableFootageLine(callout="144ct", display_type="144Ct", family="fiber")],
+        model="parser-only",
+    )
+
+    first = annotate_pdf(pdf, summary)
+    first_lines = _materials_box_lines(first)
+    # Re-stamping the tool's own output must not re-buffer (2000 -> stays 2000).
+    second_lines = _materials_box_lines(annotate_pdf(first, summary))
+
+    assert first_lines == second_lines
+    assert "605-1502 (144Ct) - 2000'" in second_lines
