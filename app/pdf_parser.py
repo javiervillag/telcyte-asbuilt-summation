@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import fitz
 
+from app.box_titles import starts_with_materials_title, starts_with_totals_title
 from app.rate_cards import (
     CODE_PATTERN,
     CODE_TEXT_PATTERN,
@@ -97,7 +98,7 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
                 # reviewer sees it) but must NOT feed the page-text dedup
                 # sets: a genuine field callout that happens to equal one of
                 # its lines would otherwise be silently dropped.
-                if not _starts_with_totals_title(cleaned):
+                if not starts_with_totals_title(cleaned):
                     annotation_texts.add(cleaned)
                     annotation_lines.update(line for line in cleaned.splitlines() if line)
                 blocks.append(TextBlock(page=page_index, bbox=bbox, text=cleaned, source="annotation"))
@@ -127,25 +128,6 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
         doc.close()
     blocks.sort(key=lambda block: (block.page, block.bbox[1], block.bbox[0], block.source))
     return blocks
-
-
-def _starts_with_totals_title(text: str) -> bool:
-    # Both the page-1 "MKR Job Totals" box and the per-page "MKR Page Totals"
-    # boxes must be recognized so a re-run never re-counts either of them
-    # (Nick Evans, June-23 sync: NR-996825 page-totals boxes double-counted).
-    normalized = re.sub(r"\s+", " ", text.strip()).lower()
-    return normalized.startswith("mkr job totals") or normalized.startswith("mkr page totals")
-
-
-def _starts_with_materials_title(text: str) -> bool:
-    for line in text.splitlines():
-        if line.strip():
-            return line.strip().lower() in {"material", "materials"}
-    return False
-
-
-def _starts_with_output_box_title(text: str) -> bool:
-    return _starts_with_totals_title(text) or _starts_with_materials_title(text)
 
 
 def _remove_duplicate_annotation_lines(text: str, annotation_lines: set[str]) -> str:
@@ -362,10 +344,10 @@ def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int
     skipped_material_boxes = 0
     anchors: list[int] = []
     for i, block in enumerate(blocks):
-        if _starts_with_totals_title(block.text):
+        if starts_with_totals_title(block.text):
             skipped_total_boxes += 1
             anchors.append(i)
-        elif _starts_with_materials_title(block.text):
+        elif starts_with_materials_title(block.text):
             skipped_material_boxes += 1
             anchors.append(i)
 
@@ -378,6 +360,17 @@ def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int
         # Only a title-only remnant (the flattened case) needs region growth; a
         # contiguous box already carries its code lines inside the one block.
         if line_count <= 2:
+            # Absorb the contiguous run of remnant lines directly beneath the
+            # title. The gap window (~1.8 line-heights) is deliberately tight: it
+            # matches the internal line spacing of a real flattened box and stops
+            # at the larger gap between the box and the field callouts below it.
+            # A wider window was tried and REGRESSED real rotated multi-page files
+            # (NR-1138768, NR-996825): the title-only baked block sits in an edge
+            # column and a greedy downward walk cascaded into genuine callouts,
+            # halving totals. Real-world flattens never space box lines that far
+            # apart, so the tight window is both correct and safe here; a
+            # hypothetical loose flatten would fall to manual review, not silent
+            # double-count, because its remnant lines stay visible field evidence.
             line_h = max(6.0, (y1 - y0) / line_count)
             grew = True
             while grew:

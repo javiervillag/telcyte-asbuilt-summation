@@ -9,6 +9,11 @@ import re
 import fitz
 from PIL import Image
 
+from app.box_titles import (
+    starts_with_job_totals_title,
+    starts_with_materials_title,
+    starts_with_page_totals_title,
+)
 from app.cable_footage import cable_material_key, extract_material_rows, merge_material_rows
 from app.models import SummaryResult
 from app.rate_cards import total_line_key
@@ -509,10 +514,11 @@ def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
 
     Page 1 keeps the Job Totals box (all pages + materials); page totals are never
     stamped there. Existing page-totals boxes on a page are replaced so re-runs
-    stay idempotent. A page with no clear placement is skipped with a warning
-    rather than failing the whole job. This reuses the page-1 placement and
-    rendering path, so rotated sheets (e.g. NR-996825 rot=270) are handled
-    identically and the box stays a single movable FreeText annotation.
+    stay idempotent. Reuses the page-1 placement and rendering path, so rotated
+    sheets (e.g. NR-996825 rot=270) are handled identically and the box stays a
+    single movable FreeText annotation. Placement always succeeds: choose_box_rect
+    falls back to the least-busy candidate (exactly like the page-1 box), so there
+    is no per-page skip path.
     """
     if not summary.page_totals:
         return
@@ -522,34 +528,29 @@ def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
             continue
         page = doc[idx]
         existing = _existing_page_totals_boxes(page)
-        try:
-            if existing:
-                replacement = existing[0]
-                _delete_annotations_by_xref(page, [box.xref for box in existing])
-                _add_summary_annotation(
-                    page,
-                    _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
-                    lines,
-                    preferred_font_size=replacement.font_size,
-                )
-            else:
-                _add_summary_annotation(page, choose_box_rect(page, lines), lines)
-        except PlacementReviewRequired:
-            summary.warnings.append(
-                f"Page {idx + 1}: no clear open area for the MKR Page Totals box; left unstamped."
+        if existing:
+            replacement = existing[0]
+            _delete_annotations_by_xref(page, [box.xref for box in existing])
+            _add_summary_annotation(
+                page,
+                _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
+                lines,
+                preferred_font_size=replacement.font_size,
             )
+        else:
+            _add_summary_annotation(page, choose_box_rect(page, lines), lines)
 
 
 def _existing_job_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, _starts_with_job_totals_title)
+    return _existing_output_boxes(page, starts_with_job_totals_title)
 
 
 def _existing_page_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, _starts_with_page_totals_title)
+    return _existing_output_boxes(page, starts_with_page_totals_title)
 
 
 def _existing_material_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, _starts_with_materials_title)
+    return _existing_output_boxes(page, starts_with_materials_title)
 
 
 def _existing_output_boxes(page: fitz.Page, predicate) -> list[ExistingTotalsBox]:
@@ -614,32 +615,6 @@ def _box_metrics_for_font(
     width = min(page.rect.width * 0.34, longest + padding * 2 + font_size * 0.8)
     height = min(page.rect.height * 0.82, len(lines) * line_height + padding * 2 + font_size * 0.4)
     return width, height, font_size, padding
-
-
-def _normalized_title(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip()).lower()
-
-
-def _starts_with_job_totals_title(text: str) -> bool:
-    return _normalized_title(text).startswith("mkr job totals")
-
-
-def _starts_with_page_totals_title(text: str) -> bool:
-    return _normalized_title(text).startswith("mkr page totals")
-
-
-def _starts_with_totals_title(text: str) -> bool:
-    # Either box title. The JOB and PAGE replace paths use the specific predicates
-    # below so a Job re-stamp never grabs/collapses a Page Totals box (and vice
-    # versa). This "either" form is kept for callers that legitimately mean both.
-    return _starts_with_job_totals_title(text) or _starts_with_page_totals_title(text)
-
-
-def _starts_with_materials_title(text: str) -> bool:
-    for line in text.splitlines():
-        if line.strip():
-            return line.strip().lower() in {"material", "materials"}
-    return False
 
 
 def _annotation_font_size(doc: fitz.Document, xref: int) -> float | None:
@@ -796,7 +771,7 @@ def _add_summary_annotation(
 def _force_summary_line_break_appearance(page: fitz.Page, lines: list[str]) -> None:
     for annot in page.annots() or []:
         content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
-        if annot.type[1] != "FreeText" or not _starts_with_job_totals_title(content):
+        if annot.type[1] != "FreeText" or not starts_with_job_totals_title(content):
             continue
         font_size = _annotation_font_size(page.parent, annot.xref)
         rendered_lines, font_size, _ = _summary_rendering(page, annot.rect, lines, font_size=font_size)
