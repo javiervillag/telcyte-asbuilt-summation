@@ -12,6 +12,7 @@ import fitz
 import pytest
 from PIL import Image
 
+from app.box_titles import starts_with_new_totals_title, starts_with_totals_title
 from app.models import CableFootageLine, SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
 from app.pdf_parser import (
@@ -875,3 +876,64 @@ def test_bi872022_materials_box_rerun_is_idempotent() -> None:
 
     assert first_lines == second_lines
     assert "605-1502 (144Ct) - 2000'" in second_lines
+
+
+# --- Email: NR-996825 PRJ10 partial as-built (green "Previously Billed" + yellow "MKR New Totals") ---
+
+
+def test_mkr_new_totals_title_predicate() -> None:
+    assert starts_with_new_totals_title("MKR New Totals\nAdd resto\nComp-9 - 144'")
+    assert not starts_with_new_totals_title("MKR Job Totals\nComp-9 - 144'")
+    # The combined predicate (the parser's exclusion-from-counting rule) covers all three.
+    assert starts_with_totals_title("MKR New Totals\nAdd resto")
+    assert starts_with_totals_title("MKR Job Totals")
+    assert starts_with_totals_title("MKR Page Totals")
+
+
+def test_mkr_new_totals_box_is_not_counted_as_field_callouts() -> None:
+    # Nick, PRJ10: a yellow "MKR New Totals - Add resto" summary box (the added-scope totals)
+    # must never be summed on top of the field callouts. Overall = field callouts only, since
+    # the field callouts already include every original + added segment.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((300, 300), "Comp-9 - 100'")
+    page.insert_text((300, 330), "Comp-9 - 60'")  # field callouts overall = 160
+    page.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 200),
+        "MKR New Totals\nAdd resto\nComp-9 - 60'\nComp-6 - 60'",  # summary -> must be ignored
+        fontsize=10,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+
+    assert "Comp-9 - 160" in totals  # 100 + 60; the box's own 60 is excluded
+    assert not any(t.startswith("Comp-9 - 220") for t in totals)  # would be the double-count
+    assert any("New Totals" in n for n in notes)
+
+
+def test_mkr_new_totals_box_is_preserved_not_replaced() -> None:
+    # The yellow box is the customer's annotation: excluded from counting but left on the page
+    # (only "MKR Job/Page Totals" boxes are replaced by the tool).
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((300, 300), "Comp-9 - 100'")
+    page.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 200), "MKR New Totals\nAdd resto\nComp-9 - 60'", fontsize=10
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    out = annotate_pdf(content, SummaryResult(title="MKR Job Totals", job_totals=["Comp-9 - 100"], model="x"))
+    d = fitz.open(stream=out, filetype="pdf")
+    titles = [
+        (a.info.get("content") or "").strip()
+        for a in (d[0].annots() or [])
+        if a.type[1] == "FreeText"
+    ]
+    d.close()
+
+    assert any(t.lower().startswith("mkr new totals") for t in titles)  # preserved
+    assert any(t.lower().startswith("mkr job totals") for t in titles)  # tool box still stamped
