@@ -256,6 +256,32 @@ def test_canonicalize_buffer_is_idempotent_and_heals_old_outputs() -> None:
     )
 
 
+def test_canonicalize_buffer_does_not_rebuffer_canonical_round_label() -> None:
+    # DELIBERATE TRADEOFF (reviewer edge case, 2026-06-25): a row that already looks
+    # exactly like THIS tool's canonical output - (NNCt) label AND a round multiple of
+    # 100' - is treated as a prior output and left unbuffered, so re-runs stay
+    # idempotent. The known cost is that a hypothetical RAW source callout printed in
+    # that exact format would not get its +10% buffer. We accept that: idempotency is a
+    # hard invariant, and field/Cox callouts use the legacy bare part or an unrounded
+    # measurement, not our finished label.
+    assert (
+        canonicalize_cable_material_row("605-1502 (144Ct) - 2000'", apply_buffer=True)
+        == "605-1502 (144Ct) - 2000'"
+    )
+    # The freeze is narrow: it requires BOTH the label AND the round-100 footage. A
+    # labeled-but-unrounded row still buffers (self-heals)...
+    assert (
+        canonicalize_cable_material_row("605-1502 (144Ct) - 1810'", apply_buffer=True)
+        == "605-1502 (144Ct) - 2000'"
+    )
+    # ...and a bare/legacy part with no canonical label always buffers, even at a round
+    # multiple of 100, because it is unmistakably a source row, not our output.
+    assert (
+        canonicalize_cable_material_row("605-3324 - 2000'", apply_buffer=True)
+        == "605-1502 (144Ct) - 2200'"
+    )
+
+
 def test_canonicalize_buffer_leaves_coax_and_non_cable_rows_untouched() -> None:
     # Coax is relabeled but never auto-buffered (source path still needs validation).
     assert (

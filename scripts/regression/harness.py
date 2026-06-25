@@ -39,6 +39,7 @@ from app.rate_cards import load_code_catalog  # noqa: E402
 from app.pdf_parser import (  # noqa: E402
     extract_text_blocks,
     derive_code_totals,
+    derive_code_totals_by_page,
     diagnose_extraction,
 )
 from app.pdf_annotator import annotate_pdf, PlacementReviewRequired  # noqa: E402
@@ -118,6 +119,9 @@ def _parse(pdf_bytes: bytes, settings, catalog):
     totals = derive_code_totals(
         blocks, code_catalog=catalog, excluded_lines=excluded, notes=notes, warnings=warnings
     )
+    # Per-page totals drive the "MKR Page Totals" boxes on multi-page sheets - the
+    # exact path that caused the June-23 NR-996825 double-count. Characterize it too.
+    page_totals = derive_code_totals_by_page(blocks, code_catalog=catalog)
     materials = []
     handled = []
     if settings.include_cable_footage and derive_cable_footage is not None:
@@ -146,6 +150,7 @@ def _parse(pdf_bytes: bytes, settings, catalog):
         "notes": list(notes),
         "review_required": bool(diag.review_required),
         "materials": materials,
+        "page_totals": {int(k): list(v) for k, v in (page_totals or {}).items()},
     }
 
 
@@ -235,6 +240,7 @@ def build_record(key: str, source: str, pdf_bytes: bytes, settings, catalog, his
             title="MKR Job Totals",
             job_totals=rec.parser_totals,
             materials=rec.materials,
+            page_totals=base.get("page_totals", {}),
             model="parser-only",
         ).with_eligible_cable_materials()
         try:

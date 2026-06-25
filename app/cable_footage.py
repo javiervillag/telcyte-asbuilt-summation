@@ -139,6 +139,16 @@ def canonicalize_cable_material_row(line: str, *, apply_buffer: bool = False) ->
     footage_text = match.group(1).strip()
     feet = _footage_feet(footage_text)
     if apply_buffer and family == "fiber" and feet is not None:
+        # Deliberate tradeoff: a row that already carries a (NNCt) label AND whose
+        # footage is a round multiple of 100' is assumed to be a prior tool output
+        # and is NOT re-buffered, so re-running an output is idempotent (a hard
+        # invariant - re-buffering would inflate footage on every pass). The known
+        # cost: a RAW source callout that happens to mimic our canonical output
+        # exactly (e.g. "605-1502 (144Ct) - 2000'") is left unbuffered. That format
+        # is what THIS tool emits, not how field/Cox callouts are printed (those
+        # carry the legacy bare part or an unrounded measurement), so the collision
+        # is unlikely; idempotency is the safer default. Pinned by
+        # test_canonicalize_buffer_does_not_rebuffer_canonical_round_label.
         already_buffered = (
             MATERIAL_PART_TYPE_ROW_PATTERN.match(text) is not None
             and feet % FIBER_ROUNDING_INCREMENT == 0
