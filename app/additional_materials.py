@@ -52,6 +52,11 @@ class AdditionalMaterialResult:
 _FOOTAGE_QTY = r"(?P<qty>[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)"
 _FOOTAGE_UNIT = r"(?:'|ft\.?\b|feet\b)"
 _SEPARATOR = r"\s*[-:]\s*"
+_MATERIAL_LIKE_CUE = re.compile(
+    rf"\b(?:Drop\s+F|RG11|RG6)\b.*(?:{_FOOTAGE_UNIT}|{_FOOTAGE_QTY})|"
+    rf"\b(?:EOL|Storage|Tie\s*Point|Splice)\s*-\s*(?:Drop\s+F|RG11|RG6)\b",
+    re.I,
+)
 
 ADDITIONAL_MATERIAL_RULES: tuple[MaterialRule, ...] = (
     MaterialRule(
@@ -62,7 +67,7 @@ ADDITIONAL_MATERIAL_RULES: tuple[MaterialRule, ...] = (
         trigger_kind="material_label",
         buffer=1.10,
         trigger_patterns=(
-            re.compile(rf"\bDrop\s+F\b{_SEPARATOR}{_FOOTAGE_QTY}\s*{_FOOTAGE_UNIT}", re.I),
+            re.compile(rf"^\s*Drop\s+F\b{_SEPARATOR}{_FOOTAGE_QTY}\s*{_FOOTAGE_UNIT}", re.I),
         ),
     ),
     MaterialRule(
@@ -73,7 +78,7 @@ ADDITIONAL_MATERIAL_RULES: tuple[MaterialRule, ...] = (
         trigger_kind="material_label",
         buffer=1.10,
         trigger_patterns=(
-            re.compile(rf"\bRG11\b{_SEPARATOR}{_FOOTAGE_QTY}\s*{_FOOTAGE_UNIT}", re.I),
+            re.compile(rf"^\s*RG11\b{_SEPARATOR}{_FOOTAGE_QTY}\s*{_FOOTAGE_UNIT}", re.I),
         ),
     ),
     MaterialRule(
@@ -84,7 +89,7 @@ ADDITIONAL_MATERIAL_RULES: tuple[MaterialRule, ...] = (
         trigger_kind="material_label",
         buffer=1.10,
         trigger_patterns=(
-            re.compile(rf"\bRG6\b{_SEPARATOR}{_FOOTAGE_QTY}\s*{_FOOTAGE_UNIT}", re.I),
+            re.compile(rf"^\s*RG6\b{_SEPARATOR}{_FOOTAGE_QTY}\s*{_FOOTAGE_UNIT}", re.I),
         ),
     ),
     MaterialRule(
@@ -157,6 +162,8 @@ def _derive_additional_materials(
         if line:
             result.lines.append(line)
             result.handled_callout_lines.update(line.source_lines)
+        elif rule.trigger_kind == "material_label":
+            _record_unparsed_label_warning(result, rule, field_blocks)
 
     return result
 
@@ -192,6 +199,32 @@ def _derive_code_material(
         return None
     source_lines = [f"{_display_code(key)} - {_format_source_quantity(totals_by_key[key])}" for key in rule.trigger_codes if key in totals_by_key]
     return _material_line(rule, source_quantity, source_lines)
+
+
+def _record_unparsed_label_warning(
+    result: AdditionalMaterialResult,
+    rule: MaterialRule,
+    blocks: list[TextBlock],
+) -> None:
+    possible_lines: list[str] = []
+    for block in blocks:
+        for raw_line in block.text.splitlines():
+            line = _clean_text(raw_line)
+            if not line or rule.display.lower() not in re.sub(r"\s+", " ", line).lower():
+                continue
+            if _MATERIAL_LIKE_CUE.search(line) and line not in possible_lines:
+                possible_lines.append(line)
+    if not possible_lines:
+        return
+    preview = "; ".join(possible_lines[:3])
+    if len(possible_lines) > 3:
+        preview += f"; plus {len(possible_lines) - 3} more"
+    warning = (
+        f"Possible {rule.display} material callout found, but it was not in a direct "
+        f"'{rule.display} - footage' row: {preview}. Verify the Materials box manually."
+    )
+    if warning not in result.warnings:
+        result.warnings.append(warning)
 
 
 def _material_line(rule: MaterialRule, source_quantity: float, source_lines: list[str]) -> DerivedMaterialLine:

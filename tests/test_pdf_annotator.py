@@ -328,6 +328,37 @@ def test_existing_materials_box_preserves_manual_rows_and_replaces_legacy_cable_
     assert any("Updated the existing Materials box" in note for note in summary.informational_notes)
 
 
+def test_existing_materials_box_keeps_tail_row_when_new_material_wraps() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=1224)
+    page.add_freetext_annot(
+        fitz.Rect(10, 1000, 150, 1150),
+        "Materials\n600-8403 - 1\nInnerduct - 160'\n240-0318 - 356'",
+        fontsize=14,
+    )
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["MDU-11 - 150"],
+        materials=["470-0349 (CD-02/MDU-11) - 165'"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert len(material_annotations) == 1
+    content = material_annotations[0]
+    assert "470-0349 (CD-02/MDU-11)" in content
+    assert "165'" in content
+    assert "240-0318 - 356'" in content
+
+
 def test_existing_materials_box_is_idempotent_with_parenthetical_cable_row() -> None:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)

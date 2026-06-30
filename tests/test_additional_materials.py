@@ -34,6 +34,17 @@ def test_drop_cable_detection_ignores_rg6_prose_without_footage() -> None:
     assert result.material_rows == []
 
 
+def test_fiber_style_drop_f_callouts_warn_without_computing_partial_material() -> None:
+    result = derive_additional_materials(
+        [
+            _block("EOL - Drop F - 40'\nStorage - Drop F - 4'\nTie Point - Drop F - 40'"),
+        ]
+    )
+
+    assert result.material_rows == []
+    assert any("Possible Drop F material callout" in warning for warning in result.warnings)
+
+
 def test_direct_drop_cable_does_not_depend_on_comp15_path_subtotal() -> None:
     result = derive_additional_materials([_block("RG11 - 200'")])
 
@@ -80,6 +91,12 @@ def test_stamped_no_100_round_rows_are_replaced_not_rebuffered() -> None:
     assert merge_material_rows(existing, computed) == [
         "240-0318 (Drop F) - 128'",
         "Manual Material - 1",
+    ]
+
+
+def test_existing_innerduct_alias_is_replaced_by_part_number_row() -> None:
+    assert merge_material_rows(["Innerduct - 160'"], ["470-0349 (CD-02/MDU-11) - 165'"]) == [
+        "470-0349 (CD-02/MDU-11) - 165'",
     ]
 
 

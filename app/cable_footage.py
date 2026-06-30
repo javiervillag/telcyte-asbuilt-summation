@@ -70,6 +70,12 @@ ADDITIONAL_MATERIAL_ROW_PATTERN = re.compile(
     rf"\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b|ea\b)?\s*$",
     re.I,
 )
+ADDITIONAL_MATERIAL_ALIAS_ROW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"^\s*innerduct\s*-\s*\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b)?\s*$", re.I),
+        "part:470-0349",
+    ),
+)
 
 
 @dataclass
@@ -122,9 +128,12 @@ def cable_material_key(line: str) -> str | None:
 def additional_material_key(line: str) -> str | None:
     text = re.sub(r"\s+", " ", line or "").strip()
     match = ADDITIONAL_MATERIAL_ROW_PATTERN.match(text)
-    if not match:
-        return None
-    return f"part:{match.group('part')}"
+    if match:
+        return f"part:{match.group('part')}"
+    for pattern, key in ADDITIONAL_MATERIAL_ALIAS_ROW_PATTERNS:
+        if pattern.match(text):
+            return key
+    return None
 
 
 def material_row_key(line: str) -> str | None:

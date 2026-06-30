@@ -124,7 +124,9 @@ def _box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float
     )
     # Tight fit around the measured text to minimize blank space in the box.
     width = min(page.rect.width * 0.34, longest + padding * 2 + font_size * 0.8)
-    height = min(page.rect.height * 0.82, len(lines) * line_height + padding * 2 + font_size * 0.4)
+    max_text_width = max(font_size * 4, width - padding * 2)
+    rendered_count = sum(len(_wrap_line(line, max_text_width, font_size)) for line in lines)
+    height = min(page.rect.height * 0.82, rendered_count * line_height + padding * 2 + font_size * 0.4)
     return width, height, font_size, padding
 
 
@@ -614,7 +616,9 @@ def _box_metrics_for_font(
         default=font_size * 10,
     )
     width = min(page.rect.width * 0.34, longest + padding * 2 + font_size * 0.8)
-    height = min(page.rect.height * 0.82, len(lines) * line_height + padding * 2 + font_size * 0.4)
+    max_text_width = max(font_size * 4, width - padding * 2)
+    rendered_count = sum(len(_wrap_line(line, max_text_width, font_size)) for line in lines)
+    height = min(page.rect.height * 0.82, rendered_count * line_height + padding * 2 + font_size * 0.4)
     return width, height, font_size, padding
 
 
