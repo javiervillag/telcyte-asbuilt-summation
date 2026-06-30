@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from app.additional_materials import ADDITIONAL_MATERIAL_PARTS
 from app.models import CableFootageItem, CableFootageLine
 from app.pdf_parser import TextBlock, _clean_text, _is_non_billing_context, field_evidence_blocks
 from app.rate_cards import CODE_TEXT_PATTERN, QTY_TEXT_PATTERN, code_key
@@ -63,6 +64,12 @@ CABLE_ROW_FOOTAGE_PATTERN = re.compile(
     r"(\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b)?)\s*$",
     re.I,
 )
+ADDITIONAL_MATERIAL_PART_TEXT = "|".join(re.escape(part) for part in sorted(ADDITIONAL_MATERIAL_PARTS)) or r"(?!x)x"
+ADDITIONAL_MATERIAL_ROW_PATTERN = re.compile(
+    rf"^\s*(?P<part>{ADDITIONAL_MATERIAL_PART_TEXT})\s*(?:\([^)]*\))?\s*-\s*"
+    rf"\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b|ea\b)?\s*$",
+    re.I,
+)
 
 
 @dataclass
@@ -110,6 +117,21 @@ def cable_material_key(line: str) -> str | None:
     if match:
         return normalize_cable_type(match.group("type"))
     return None
+
+
+def additional_material_key(line: str) -> str | None:
+    text = re.sub(r"\s+", " ", line or "").strip()
+    match = ADDITIONAL_MATERIAL_ROW_PATTERN.match(text)
+    if not match:
+        return None
+    return f"part:{match.group('part')}"
+
+
+def material_row_key(line: str) -> str | None:
+    cable_key = cable_material_key(line)
+    if cable_key:
+        return f"cable:{cable_key}"
+    return additional_material_key(line)
 
 
 def canonicalize_cable_material_row(line: str, *, apply_buffer: bool = False) -> str:
@@ -163,7 +185,7 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
     computed_other: list[str] = []
 
     for row in extract_material_rows("\n".join(computed_rows)):
-        key = cable_material_key(row)
+        key = material_row_key(row)
         if key:
             computed_by_key[key] = row
         else:
@@ -181,11 +203,11 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
             merged.append(clean)
 
     for row in extract_material_rows("\n".join(existing_rows)):
-        key = cable_material_key(row)
+        key = material_row_key(row)
         if key and key in computed_by_key:
             add(computed_by_key[key])
             used_keys.add(key)
-        elif key:
+        elif cable_material_key(row):
             add(canonicalize_cable_material_row(row, apply_buffer=True))
         else:
             add(row)

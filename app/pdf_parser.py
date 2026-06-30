@@ -166,10 +166,12 @@ def _aggregate_code_rows(
     catalog: dict[CodeKey, str],
     excluded_lines: list[str] | None,
     catalog_misses: list[str],
-) -> tuple[list[str], list[CodeKey]]:
+    *,
+    apply_catalog: bool = True,
+) -> tuple[list[str], list[CodeKey], dict[CodeKey, float]]:
     """Two-pass billing-code aggregation over already-filtered field blocks.
 
-    Returns ``(rows, ordered_keys)``. Shared by ``derive_code_totals`` (job
+    Returns ``(rows, ordered_keys, totals_by_key)``. Shared by ``derive_code_totals`` (job
     totals) and ``derive_code_totals_by_page`` (per-page totals) so the two can
     never diverge in how they read the same callouts. Callers own exclusion
     (``field_evidence_blocks``) and notes; this is pure aggregation.
@@ -203,7 +205,7 @@ def _aggregate_code_rows(
                 normalized_key = code_key(raw_code)
                 if not normalized_key:
                     continue
-                if catalog and normalized_key not in catalog:
+                if apply_catalog and catalog and normalized_key not in catalog:
                     _record_catalog_miss(line)
                     continue
                 if _is_non_billing_context(line, match.start()):
@@ -225,7 +227,7 @@ def _aggregate_code_rows(
                 normalized_key = code_key(raw_code)
                 if not normalized_key:
                     continue
-                if catalog and normalized_key not in catalog:
+                if apply_catalog and catalog and normalized_key not in catalog:
                     _record_catalog_miss(line)
                     continue
                 key = normalized_key
@@ -237,7 +239,7 @@ def _aggregate_code_rows(
                 totals[key] += float(raw_qty.replace(",", ""))
 
     rows = [f"{display[key]} - {_format_number(totals[key])}" for key in order]
-    return rows, order
+    return rows, order, dict(totals)
 
 
 def derive_code_totals(
@@ -262,7 +264,7 @@ def derive_code_totals(
     # manual one) must never be counted as field callouts. The same applies to a
     # stamped Materials box now that cable output can be re-uploaded.
     blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
-    rows, order = _aggregate_code_rows(blocks, catalog, excluded_lines, catalog_misses)
+    rows, order, _totals = _aggregate_code_rows(blocks, catalog, excluded_lines, catalog_misses)
 
     if notes is not None:
         if skipped_total_boxes:
@@ -321,10 +323,36 @@ def derive_code_totals_by_page(
         by_page[block.page].append(block)
     result: dict[int, list[str]] = {}
     for page in sorted(by_page):
-        rows, _order = _aggregate_code_rows(by_page[page], catalog, None, [])
+        rows, _order, _totals = _aggregate_code_rows(by_page[page], catalog, None, [])
         if rows:
             result[page] = rows
     return result
+
+
+def derive_code_total_map(
+    blocks: list[TextBlock],
+    code_catalog: dict[CodeKey, str] | None = None,
+    *,
+    apply_catalog: bool = True,
+) -> dict[CodeKey, float]:
+    """Return parser-backed billing totals keyed by normalized code.
+
+    This uses the same field-evidence filtering and aggregation as the visible
+    totals rows, but exposes the structured quantities for downstream business
+    rules. ``apply_catalog=False`` is intentionally narrow-use: it lets allowlisted
+    material trigger codes be read even when the loaded rate-card catalog omits
+    them, without changing the public Job/Page Totals behavior.
+    """
+    catalog = code_catalog or {}
+    field_blocks, _skipped_total, _skipped_material = field_evidence_blocks(blocks)
+    _rows, _order, totals = _aggregate_code_rows(
+        field_blocks,
+        catalog,
+        None,
+        [],
+        apply_catalog=apply_catalog,
+    )
+    return totals
 
 
 def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int, int]:

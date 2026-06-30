@@ -11,11 +11,13 @@ import fitz
 import httpx
 from PIL import Image
 
+from app.additional_materials import AdditionalMaterialResult, derive_additional_materials
 from app.cable_footage import CableFootageResult, derive_cable_footage
 from app.config import Settings
 from app.models import SummaryResult
 from app.pdf_parser import (
     build_pdf_context,
+    derive_code_total_map,
     derive_code_totals,
     derive_code_totals_by_page,
     diagnose_extraction,
@@ -38,12 +40,14 @@ class ManualReviewRequired(OpenRouterError):
         unresolved_callouts: list[str] | None = None,
         informational_notes: list[str] | None = None,
         cable_footage: list | None = None,
+        materials: list[str] | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
         self.unresolved_callouts = unresolved_callouts or []
         self.informational_notes = informational_notes or []
         self.cable_footage = cable_footage or []
+        self.materials = materials or []
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -232,6 +236,7 @@ async def summarize_with_model(
     # Per-page billing totals for the "MKR Page Totals" boxes (multi-page sheets).
     # Deterministic parser output - never routed through the LLM merge.
     page_totals = derive_code_totals_by_page(blocks, code_catalog=code_catalog)
+    material_code_totals = derive_code_total_map(blocks, code_catalog=code_catalog, apply_catalog=False)
     cable_result = (
         derive_cable_footage(
             blocks,
@@ -242,13 +247,19 @@ async def summarize_with_model(
         if settings.include_cable_footage
         else CableFootageResult()
     )
+    additional_materials = (
+        derive_additional_materials(blocks, code_totals_by_key=material_code_totals)
+        if settings.include_cable_footage and settings.auto_stamp_cable_footage
+        else AdditionalMaterialResult()
+    )
+    resolved_callout_lines = set(cable_result.handled_callout_lines) | set(additional_materials.handled_callout_lines)
     diagnostics = diagnose_extraction(
         blocks,
         parser_totals,
         excluded_context_lines=excluded_context_lines,
         parser_notes=parser_notes,
         parser_warnings=parser_warnings,
-        resolved_callout_lines=cable_result.handled_callout_lines,
+        resolved_callout_lines=resolved_callout_lines,
         total_pages=total_pages,
     )
     if diagnostics.review_required and (
@@ -260,6 +271,7 @@ async def summarize_with_model(
             unresolved_callouts=diagnostics.unresolved_callouts,
             informational_notes=diagnostics.informational_notes,
             cable_footage=cable_result.lines,
+            materials=additional_materials.material_rows,
         )
 
     if not settings.openrouter_api_key:
@@ -325,6 +337,7 @@ async def summarize_with_model(
                 unresolved_callouts=diagnostics.unresolved_callouts,
                 informational_notes=diagnostics.informational_notes,
                 cable_footage=cable_result.lines,
+                materials=additional_materials.material_rows,
             ) from exc
         if parser_totals:
             # The deterministic parser is the source of truth (its totals
@@ -348,6 +361,7 @@ async def summarize_with_model(
             raise
     summary = _merge_parser_and_model(parser_totals, model_summary, settings)
     summary = _with_cable_footage(summary, cable_result, settings)
+    summary = _with_additional_materials(summary, additional_materials)
     for warning in diagnostics.warnings:
         if warning not in summary.warnings:
             summary.warnings.append(warning)
@@ -394,6 +408,37 @@ def _with_cable_footage(
             "informational_notes": informational_notes,
         }
     ).with_eligible_cable_materials()
+
+
+def _with_additional_materials(
+    summary: SummaryResult,
+    additional_materials: AdditionalMaterialResult,
+) -> SummaryResult:
+    materials = list(summary.materials)
+    for row in additional_materials.material_rows:
+        if row not in materials:
+            materials.append(row)
+    warnings = list(summary.warnings)
+    for warning in additional_materials.warnings:
+        if warning not in warnings:
+            warnings.append(warning)
+    informational_notes = list(summary.informational_notes)
+    for note in additional_materials.informational_notes:
+        if note not in informational_notes:
+            informational_notes.append(note)
+    if (
+        materials == summary.materials
+        and warnings == summary.warnings
+        and informational_notes == summary.informational_notes
+    ):
+        return summary
+    return summary.model_copy(
+        update={
+            "materials": materials,
+            "warnings": warnings,
+            "informational_notes": informational_notes,
+        }
+    )
 
 
 async def try_models(

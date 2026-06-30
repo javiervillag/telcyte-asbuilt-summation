@@ -14,7 +14,7 @@ from app.box_titles import (
     starts_with_materials_title,
     starts_with_page_totals_title,
 )
-from app.cable_footage import cable_material_key, extract_material_rows, merge_material_rows
+from app.cable_footage import extract_material_rows, material_row_key, merge_material_rows
 from app.models import SummaryResult
 from app.rate_cards import total_line_key
 
@@ -663,28 +663,34 @@ def _record_material_merge_note(
     old_by_key = {
         key: row
         for row in existing_rows
-        if (key := cable_material_key(row))
+        if (key := material_row_key(row))
     }
     new_by_key = {
         key: row
         for row in merged_rows
-        if (key := cable_material_key(row))
+        if (key := material_row_key(row))
     }
     changed: list[str] = []
+    changed_keys: list[str] = []
     added: list[str] = []
+    added_keys: list[str] = []
     for key, new_row in sorted(new_by_key.items()):
         old_row = old_by_key.get(key)
         if old_row and old_row != new_row:
             changed.append(f"{old_row} -> {new_row}")
+            changed_keys.append(key)
         elif not old_row:
             added.append(new_row)
+            added_keys.append(key)
 
-    preserved_count = sum(1 for row in existing_rows if not cable_material_key(row))
+    preserved_count = sum(1 for row in existing_rows if not material_row_key(row))
     parts: list[str] = []
     if changed:
-        parts.append(f"normalized {len(changed)} cable material row(s)")
+        label = "cable material" if all(key.startswith("cable:") for key in changed_keys) else "material"
+        parts.append(f"normalized {len(changed)} {label} row(s)")
     if added:
-        parts.append("added cable footage " + "; ".join(added))
+        label = "cable footage" if all(key.startswith("cable:") for key in added_keys) else "material"
+        parts.append(f"added {label} " + "; ".join(added))
     if preserved_count:
         parts.append(f"kept {preserved_count} existing material line(s)")
     if not parts:

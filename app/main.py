@@ -177,6 +177,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 SummaryResult(
                     title="MKR Job Totals",
                     job_totals=exc.supported_totals,
+                    materials=exc.materials,
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
@@ -212,6 +213,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 review_summary = _finalize_summary_for_output(SummaryResult(
                     title="MKR Job Totals",
                     job_totals=[],
+                    materials=exc.materials,
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
@@ -243,6 +245,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             summary = _finalize_summary_for_output(SummaryResult(
                 title="MKR Job Totals",
                 job_totals=exc.supported_totals,
+                materials=exc.materials,
                 cable_footage=exc.cable_footage,
                 warnings=exc.warnings,
                 informational_notes=exc.informational_notes,
