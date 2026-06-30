@@ -12,9 +12,15 @@ import fitz
 import pytest
 from PIL import Image
 
-from app.models import SummaryResult
+from app.box_titles import starts_with_new_totals_title, starts_with_totals_title
+from app.models import CableFootageLine, SummaryResult
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
-from app.pdf_parser import derive_code_totals, diagnose_extraction, extract_text_blocks
+from app.pdf_parser import (
+    derive_code_totals,
+    derive_code_totals_by_page,
+    diagnose_extraction,
+    extract_text_blocks,
+)
 from app.rate_cards import code_key, total_line_key
 
 
@@ -471,6 +477,218 @@ def test_split_title_existing_mkr_totals_box_is_not_counted() -> None:
     assert any("re-run detected" in n for n in notes)
 
 
+def test_flattened_mkr_totals_box_lines_not_double_counted() -> None:
+    # Nick, June-23 sync: an editor FLATTENED a previously stamped box so its title
+    # and EACH code line became separate, individually positioned page-text blocks
+    # (not one FreeText annotation). The title-only block was excluded but the
+    # orphaned code lines below leaked back in as field callouts, doubling several
+    # codes (29.76 vs 14.88). The whole box region must be excluded, not just the
+    # title line.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    # Real field callouts, in their own column on the drawing.
+    page.insert_text((600, 300), "UG-44 - 156")
+    page.insert_text((600, 340), "UG-06 - 4")
+    # The flattened box: title + each line as SEPARATE page-text blocks in one
+    # column (>= ~16pt apart so PyMuPDF does not regroup them into one block).
+    y = 60
+    for line in ["MKR Job Totals", "UG-44 - 156", "UG-06 - 4", "TL-20 - 2"]:
+        page.insert_text((60, y), line)
+        y += 18
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "UG-44 - 156" in totals      # not 312
+    assert "UG-06 - 4" in totals         # not 8
+    assert not any(t.startswith("TL-20") for t in totals)  # box-only line excluded
+    assert any("re-run detected" in n for n in notes)
+
+
+def test_flattened_box_does_not_eat_field_callouts_in_other_columns() -> None:
+    # Guard against over-eager region growth: a real field callout that shares a
+    # code with the flattened box but sits in a DIFFERENT column must still count.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((600, 300), "UG-06 - 4")   # genuine field callout (other column)
+    y = 60
+    for line in ["MKR Job Totals", "UG-06 - 4"]:  # flattened box in the left column
+        page.insert_text((60, y), line)
+        y += 18
+    content = doc.tobytes()
+    doc.close()
+
+    totals = derive_code_totals(extract_text_blocks(content))
+    assert "UG-06 - 4" in totals  # the real callout survives; the box copy is dropped
+
+
+def test_existing_mkr_page_totals_box_is_not_counted() -> None:
+    # Multi-page as-builts carry per-page "MKR Page Totals" boxes in addition to
+    # the page-1 "MKR Job Totals" box. A re-run must not re-count those either
+    # (Nick, June-23 sync: NR-996825 page-totals boxes drove the Comp-9 double).
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((600, 300), "Comp-9 - 430")  # genuine field callout
+    page.add_freetext_annot(
+        fitz.Rect(20, 20, 280, 160),
+        "MKR Page Totals\nComp-9 - 430\nUG-85 - 3",
+        fontsize=12,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+    assert "Comp-9 - 430" in totals  # not 860
+    assert not any(t.startswith("UG-85") for t in totals)  # box-only line excluded
+    assert any("re-run detected" in n for n in notes)
+
+
+def test_per_page_totals_partition_and_sum_to_job() -> None:
+    # Page Totals (R1): each page totals only its own billing codes, reusing the
+    # same aggregation as the job total so the per-page totals sum to the job
+    # total. Validated against Nick's real NR-996825 (page totals 430 + 1058 =
+    # job 1488). Page numbering is 1-based; pages with no codes are omitted.
+    doc = fitz.open()
+    p1 = doc.new_page(width=1224, height=792)
+    p1.insert_text((600, 300), "UG-44 - 100")
+    p1.insert_text((600, 340), "Comp-9 - 5")
+    p2 = doc.new_page(width=1224, height=792)
+    p2.insert_text((600, 300), "UG-44 - 56")
+    p2.insert_text((600, 340), "Comp-6 - 2")
+    doc.new_page(width=1224, height=792)  # page 3: no codes -> omitted
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    job = derive_code_totals(blocks)
+    pages = derive_code_totals_by_page(blocks)
+
+    assert set(pages) == {1, 2}  # 1-based; the empty page 3 is omitted
+    assert "UG-44 - 100" in pages[1] and "Comp-9 - 5" in pages[1]
+    assert "UG-44 - 56" in pages[2] and "Comp-6 - 2" in pages[2]
+    assert "UG-44 - 156" in job  # job sums across pages (100 + 56)
+    # Page totals are billing codes only - never a materials/extras heading.
+    assert all(
+        not r.lower().startswith(("material", "user-"))
+        for rows in pages.values()
+        for r in rows
+    )
+
+
+def test_page_totals_boxes_stamped_on_later_pages_only_and_idempotent() -> None:
+    # F4: each page after the first gets its own "MKR Page Totals" box; page 1
+    # keeps Job Totals only; re-stamping the output replaces (never stacks) them.
+    import re as _re
+
+    doc = fitz.open()
+    p1 = doc.new_page(width=1224, height=792)
+    p1.insert_text((600, 300), "UG-44 - 100")
+    p2 = doc.new_page(width=1224, height=792)
+    p2.insert_text((600, 300), "UG-44 - 56")
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=derive_code_totals(blocks),
+        page_totals=derive_code_totals_by_page(blocks),
+        model="t",
+    )
+
+    def box_titles(pdf: bytes) -> dict[int, list[str]]:
+        d = fitz.open(stream=pdf, filetype="pdf")
+        out: dict[int, list[str]] = {}
+        for i in range(d.page_count):
+            kinds = []
+            for a in d[i].annots() or []:
+                if a.type[1] != "FreeText":
+                    continue
+                norm = _re.sub(r"\s+", " ", (a.info.get("content") or "")).strip().lower()
+                if norm.startswith("mkr job totals"):
+                    kinds.append("job")
+                elif norm.startswith("mkr page totals"):
+                    kinds.append("page")
+            out[i] = kinds
+        d.close()
+        return out
+
+    once = box_titles(annotate_pdf(content, summary))
+    assert once[0] == ["job"]   # page 1: Job Totals only
+    assert once[1] == ["page"]  # page 2: its own Page Totals box
+
+    twice = box_titles(annotate_pdf(annotate_pdf(content, summary), summary))
+    assert twice[0] == ["job"]  # idempotent re-stamp: no duplicate boxes
+    assert twice[1] == ["page"]
+
+
+def test_replacement_rect_resizes_for_content_on_rotated_pages() -> None:
+    # Isolated unit test: a re-stamp must size the box to fit the new content even
+    # on rotated sheets, not reuse a stale (possibly narrow) rectangle. On a
+    # rotated page the title's width maps to the rect HEIGHT, which must clear the
+    # title so it never wraps. (NR-996825, rot=270.)
+    from app.pdf_annotator import _replacement_rect_for_content
+
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=612)
+    page.set_rotation(270)
+    # narrow stale anchor, in-bounds for the rotated page (page.rect is 612x792)
+    stale_narrow = fitz.Rect(400, 10, 422, 130)  # 22pt wide - far too narrow for the title
+    lines = ["MKR Page Totals", "Comp-9 - 734", "Comp-6 - 734"]
+    rect = _replacement_rect_for_content(page, stale_narrow, lines, preferred_font_size=12)
+    doc.close()
+
+    title_w = fitz.get_text_length("MKR Page Totals", fontname="helv", fontsize=12)
+    assert rect.height >= title_w  # rotation swap -> title fits on one line
+    assert rect.width > stale_narrow.width  # not the stale narrow rectangle
+    assert (rect.x0, rect.y0) == (stale_narrow.x0, stale_narrow.y0)  # position preserved
+
+
+def test_restamp_rotated_existing_box_title_not_wrapped() -> None:
+    # End-to-end guard for NR-996825 (rot=270): re-stamping a rotated page that
+    # already has a NARROW totals box must produce a one-line title in the
+    # annotation /Contents (identical to a fresh stamp), not "MKR Page\nTotals".
+    # Covers both the page-1 Job box and a per-page Page Totals box replacement.
+    doc = fitz.open()
+    p1 = doc.new_page(width=792, height=612)
+    p1.set_rotation(270)
+    p1.insert_text((120, 300), "UG-44 - 5")
+    p1.add_freetext_annot(fitz.Rect(740, 10, 762, 90), "MKR Job Totals\nUG-44 - 5", fontsize=10)
+    p2 = doc.new_page(width=792, height=612)
+    p2.set_rotation(270)
+    p2.insert_text((120, 300), "UG-44 - 3")
+    p2.add_freetext_annot(fitz.Rect(740, 10, 762, 90), "MKR Page Totals\nUG-44 - 3", fontsize=10)
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=derive_code_totals(blocks),
+        page_totals=derive_code_totals_by_page(blocks),
+        model="t",
+    )
+    out = annotate_pdf(content, summary)
+
+    d = fitz.open(stream=out, filetype="pdf")
+    first_lines = []
+    for i in range(d.page_count):
+        for a in d[i].annots() or []:
+            if a.type[1] != "FreeText":
+                continue
+            first = (a.info.get("content") or "").replace("\r", "\n").split("\n")[0].strip()
+            if first.lower().startswith(("mkr job", "mkr page")):
+                first_lines.append(first)
+    d.close()
+
+    assert "MKR Job Totals" in first_lines   # one-line job title (re-stamped)
+    assert "MKR Page Totals" in first_lines  # one-line page title (re-stamped)
+    # the wrapped forms must NOT appear as any box's first line
+    assert "MKR Page" not in first_lines and "MKR Job" not in first_lines
+
+
 def test_box_has_norotate_flag_on_unrotated_pages() -> None:
     # Nick's editor auto-rotates the box on drag/copy-paste for some permit
     # drawings (2026-06-11); NoRotate pins the orientation.
@@ -588,3 +806,134 @@ def _top_totals_box_count(page: fitz.Page) -> int:
 def _is_totals_green(pixel: tuple[int, int, int]) -> bool:
     r, g, b = pixel
     return g > 220 and 170 <= r <= 230 and 130 <= b <= 210
+
+
+# --- Email: BI-872022 Materials box (144ct part #, cable-type label, 10% buffer) ---
+
+
+def _materials_box_lines(pdf_bytes: bytes) -> list[str]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for page in doc:
+            for annot in page.annots() or []:
+                if annot.type[1] != "FreeText":
+                    continue
+                content = (annot.info.get("content") or "").strip()
+                if content.lower().startswith("materials"):
+                    return [ln.strip() for ln in content.replace("\r", "\n").split("\n") if ln.strip()]
+        return []
+    finally:
+        doc.close()
+
+
+def _pdf_with_materials_box(rows: list[str]) -> bytes:
+    doc = fitz.open()
+    page = doc.new_page(width=1728, height=2592)
+    page.insert_text((100, 120), "Readable as-built notes for the text layer check.")
+    page.insert_text((100, 160), "Crew completed restoration per plan and verified quantities.")
+    rect = fitz.Rect(60, 200, 640, 200 + 26 * (len(rows) + 2))
+    page.add_freetext_annot(rect, "Materials\n" + "\n".join(rows), fontsize=10)
+    content = doc.tobytes()
+    doc.close()
+    return content
+
+
+def test_bi872022_materials_box_remaps_legacy_part_labels_and_buffers() -> None:
+    # Nick, BI-872022: the field-printed Materials box carries the OLD 144ct part number
+    # (605-3324), no cable-type label, and the exact footage. The stamped box must remap
+    # to the current 605-1502, add the (144Ct) label, and apply the 10% buffer rounded up
+    # to the next 100'. A non-empty cable_footage list mirrors production (it triggers the
+    # materials-box update even with INCLUDE_MATERIALS off).
+    pdf = _pdf_with_materials_box(["470-9997 - 460'", "605-3277 - 4270'", "605-3324 - 1810'"])
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=["UG-06 - 1"],
+        cable_footage=[CableFootageLine(callout="144ct", display_type="144Ct", family="fiber")],
+        model="parser-only",
+    )
+
+    lines = _materials_box_lines(annotate_pdf(pdf, summary))
+
+    assert "605-1502 (144Ct) - 2000'" in lines  # 605-3324 -> 605-1502, labeled, 1810 -> 2000
+    assert "605-3277 (48Ct) - 4700'" in lines  # 48ct labeled + 4270 -> 4700
+    assert "470-9997 - 460'" in lines  # non-cable hardware untouched
+    assert all("605-3324" not in line for line in lines)  # legacy part number is gone
+
+
+def test_bi872022_materials_box_rerun_is_idempotent() -> None:
+    pdf = _pdf_with_materials_box(["605-3277 - 4270'", "605-3324 - 1810'"])
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=["UG-06 - 1"],
+        cable_footage=[CableFootageLine(callout="144ct", display_type="144Ct", family="fiber")],
+        model="parser-only",
+    )
+
+    first = annotate_pdf(pdf, summary)
+    first_lines = _materials_box_lines(first)
+    # Re-stamping the tool's own output must not re-buffer (2000 -> stays 2000).
+    second_lines = _materials_box_lines(annotate_pdf(first, summary))
+
+    assert first_lines == second_lines
+    assert "605-1502 (144Ct) - 2000'" in second_lines
+
+
+# --- Email: NR-996825 PRJ10 partial as-built (green "Previously Billed" + yellow "MKR New Totals") ---
+
+
+def test_mkr_new_totals_title_predicate() -> None:
+    assert starts_with_new_totals_title("MKR New Totals\nAdd resto\nComp-9 - 144'")
+    assert not starts_with_new_totals_title("MKR Job Totals\nComp-9 - 144'")
+    # The combined predicate (the parser's exclusion-from-counting rule) covers all three.
+    assert starts_with_totals_title("MKR New Totals\nAdd resto")
+    assert starts_with_totals_title("MKR Job Totals")
+    assert starts_with_totals_title("MKR Page Totals")
+
+
+def test_mkr_new_totals_box_is_not_counted_as_field_callouts() -> None:
+    # Nick, PRJ10: a yellow "MKR New Totals - Add resto" summary box (the added-scope totals)
+    # must never be summed on top of the field callouts. Overall = field callouts only, since
+    # the field callouts already include every original + added segment.
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((300, 300), "Comp-9 - 100'")
+    page.insert_text((300, 330), "Comp-9 - 60'")  # field callouts overall = 160
+    page.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 200),
+        "MKR New Totals\nAdd resto\nComp-9 - 60'\nComp-6 - 60'",  # summary -> must be ignored
+        fontsize=10,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    notes: list[str] = []
+    totals = derive_code_totals(extract_text_blocks(content), notes=notes)
+
+    assert "Comp-9 - 160" in totals  # 100 + 60; the box's own 60 is excluded
+    assert not any(t.startswith("Comp-9 - 220") for t in totals)  # would be the double-count
+    assert any("New Totals" in n for n in notes)
+
+
+def test_mkr_new_totals_box_is_preserved_not_replaced() -> None:
+    # The yellow box is the customer's annotation: excluded from counting but left on the page
+    # (only "MKR Job/Page Totals" boxes are replaced by the tool).
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.insert_text((300, 300), "Comp-9 - 100'")
+    page.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 200), "MKR New Totals\nAdd resto\nComp-9 - 60'", fontsize=10
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    out = annotate_pdf(content, SummaryResult(title="MKR Job Totals", job_totals=["Comp-9 - 100"], model="x"))
+    d = fitz.open(stream=out, filetype="pdf")
+    titles = [
+        (a.info.get("content") or "").strip()
+        for a in (d[0].annots() or [])
+        if a.type[1] == "FreeText"
+    ]
+    d.close()
+
+    assert any(t.lower().startswith("mkr new totals") for t in titles)  # preserved
+    assert any(t.lower().startswith("mkr job totals") for t in titles)  # tool box still stamped

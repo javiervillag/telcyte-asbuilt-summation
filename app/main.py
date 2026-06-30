@@ -167,11 +167,17 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
         output = annotate_pdf(content, summary, source_name=source_filename)
     except ManualReviewRequired as exc:
         logger.warning("manual_review_required filename=%s warnings=%s", source_filename, exc.warnings)
+        # NOTE: per-page "MKR Page Totals" boxes are intentionally NOT stamped on the
+        # manual-review path. These runs are flagged as uncertain, so we stamp only
+        # the page-1 Job Totals (from parser-supported totals) and leave per-page
+        # boxes to a confirmed re-run rather than auto-placing totals a human still
+        # needs to verify.
         if selected_extras:
             summary = _finalize_summary_for_output(_with_user_selected_extras(
                 SummaryResult(
                     title="MKR Job Totals",
                     job_totals=exc.supported_totals,
+                    materials=exc.materials,
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
@@ -207,6 +213,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 review_summary = _finalize_summary_for_output(SummaryResult(
                     title="MKR Job Totals",
                     job_totals=[],
+                    materials=exc.materials,
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
@@ -238,6 +245,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             summary = _finalize_summary_for_output(SummaryResult(
                 title="MKR Job Totals",
                 job_totals=exc.supported_totals,
+                materials=exc.materials,
                 cable_footage=exc.cable_footage,
                 warnings=exc.warnings,
                 informational_notes=exc.informational_notes,

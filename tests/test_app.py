@@ -331,6 +331,67 @@ def test_manual_review_with_supported_totals_returns_review_pdf(monkeypatch: pyt
     ]
 
 
+def test_manual_review_with_supported_totals_preserves_derived_materials(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, SummaryResult] = {}
+
+    async def fake_summarize(content, settings, source_name=None):
+        raise ManualReviewRequired(
+            ["Unresolved callouts require review."],
+            supported_totals=["UG-06 - 13"],
+            unresolved_callouts=["EOL - 48Ct - 66'"],
+            materials=["470-0349 (CD-02/MDU-11) - 110'"],
+        )
+
+    def fake_annotate(content, summary, source_name=None):
+        captured["summary"] = summary
+        return b"%PDF-1.4 fake"
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", fake_annotate)
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("review-materials.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert captured["summary"].materials == ["470-0349 (CD-02/MDU-11) - 110'"]
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert result_summary["materials"] == ["470-0349 (CD-02/MDU-11) - 110'"]
+    assert result_summary["result_lines"] == [
+        "MKR Job Totals",
+        "UG-06 - 13",
+        "Material",
+        "470-0349 (CD-02/MDU-11) - 110'",
+    ]
+
+
+def test_manual_review_without_supported_totals_preserves_material_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_summarize(content, settings, source_name=None):
+        raise ManualReviewRequired(
+            ["Readable materials but no supported billing totals."],
+            supported_totals=[],
+            unresolved_callouts=[],
+            materials=["450-0323 (UG-28) - 2"],
+        )
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("review-material-only.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["result_summary"]["materials"] == ["450-0323 (UG-28) - 2"]
+    assert body["result_summary"]["result_lines"] == [
+        "MKR Job Totals",
+        "Material",
+        "450-0323 (UG-28) - 2",
+    ]
+
+
 def test_manual_review_with_eligible_cable_still_adds_materials(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, SummaryResult] = {}
 

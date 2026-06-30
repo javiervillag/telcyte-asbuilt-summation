@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from app.additional_materials import ADDITIONAL_MATERIAL_PARTS
 from app.models import CableFootageItem, CableFootageLine
 from app.pdf_parser import TextBlock, _clean_text, _is_non_billing_context, field_evidence_blocks
 from app.rate_cards import CODE_TEXT_PATTERN, QTY_TEXT_PATTERN, code_key
@@ -34,7 +35,17 @@ DIRECT_CODE_PATTERN = re.compile(
     rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
     re.I,
 )
-MATERIAL_PART_TO_KEY = {part: key for key, (_family, _display, part) in PART_MAP.items() if part}
+# Cox renumbered cable parts in MCA Rate Card Amendment 3 (~2026-06-09); field as-builts
+# still print the OLD part number. Map each legacy part to its current cable type so
+# canonicalize_cable_material_row re-emits the CURRENT PART_MAP number. Extend as Nick
+# confirms more old->new pairs (source: Nick email, BI-872022).
+LEGACY_PART_TO_KEY = {
+    "605-3324": "144ct",  # old Cox 144Ct fiber part -> current 605-1502
+}
+MATERIAL_PART_TO_KEY = {
+    **{part: key for key, (_family, _display, part) in PART_MAP.items() if part},
+    **LEGACY_PART_TO_KEY,
+}
 MATERIAL_PART_TEXT = "|".join(re.escape(part) for part in MATERIAL_PART_TO_KEY) or r"(?!x)x"
 MATERIAL_PART_TYPE_ROW_PATTERN = re.compile(
     rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*\(\s*(?P<type>{TYPE_TEXT})\s*\)\s*-\s*"
@@ -51,6 +62,12 @@ MATERIAL_BARE_TYPE_ROW_PATTERN = re.compile(
 )
 CABLE_ROW_FOOTAGE_PATTERN = re.compile(
     r"(\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b)?)\s*$",
+    re.I,
+)
+ADDITIONAL_MATERIAL_PART_TEXT = "|".join(re.escape(part) for part in sorted(ADDITIONAL_MATERIAL_PARTS)) or r"(?!x)x"
+ADDITIONAL_MATERIAL_ROW_PATTERN = re.compile(
+    rf"^\s*(?P<part>{ADDITIONAL_MATERIAL_PART_TEXT})\s*(?:\([^)]*\))?\s*-\s*"
+    rf"\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b|ea\b)?\s*$",
     re.I,
 )
 
@@ -102,22 +119,65 @@ def cable_material_key(line: str) -> str | None:
     return None
 
 
-def canonicalize_cable_material_row(line: str) -> str:
-    """Normalize a recognized cable material row while preserving its footage."""
+def additional_material_key(line: str) -> str | None:
+    text = re.sub(r"\s+", " ", line or "").strip()
+    match = ADDITIONAL_MATERIAL_ROW_PATTERN.match(text)
+    if not match:
+        return None
+    return f"part:{match.group('part')}"
+
+
+def material_row_key(line: str) -> str | None:
+    cable_key = cable_material_key(line)
+    if cable_key:
+        return f"cable:{cable_key}"
+    return additional_material_key(line)
+
+
+def canonicalize_cable_material_row(line: str, *, apply_buffer: bool = False) -> str:
+    """Normalize a recognized cable material row to the CURRENT part number + cable-type
+    label (e.g. legacy "605-3324 - 1810'" -> "605-1502 (144Ct) - 1810'").
+
+    With apply_buffer=True (used when building the stamped Materials box) the fiber
+    footage is also turned into an order quantity: +10% buffer rounded UP to the next
+    100' (Nick, BI-872022). Idempotent - a row already carrying a (NNCt) label whose
+    footage is already a multiple of 100' is treated as a prior tool output and left as
+    is, so re-running an output never re-buffers. Coax is relabeled but never
+    auto-buffered (its source path still needs validation; see _build_line).
+    """
     key = cable_material_key(line)
     if not key:
         return line
     entry = PART_MAP.get(key)
     if not entry:
         return line
-    _family, display_type, part_number = entry
+    family, display_type, part_number = entry
     if not part_number:
         return line
     text = re.sub(r"\s+", " ", line or "").strip()
     match = CABLE_ROW_FOOTAGE_PATTERN.search(text)
     if not match:
         return line
-    return f"{part_number} ({display_type}) - {match.group(1).strip()}"
+    footage_text = match.group(1).strip()
+    feet = _footage_feet(footage_text)
+    if apply_buffer and family == "fiber" and feet is not None:
+        # Deliberate tradeoff: a row that already carries a (NNCt) label AND whose
+        # footage is a round multiple of 100' is assumed to be a prior tool output
+        # and is NOT re-buffered, so re-running an output is idempotent (a hard
+        # invariant - re-buffering would inflate footage on every pass). The known
+        # cost: a RAW source callout that happens to mimic our canonical output
+        # exactly (e.g. "605-1502 (144Ct) - 2000'") is left unbuffered. That format
+        # is what THIS tool emits, not how field/Cox callouts are printed (those
+        # carry the legacy bare part or an unrounded measurement), so the collision
+        # is unlikely; idempotency is the safer default. Pinned by
+        # test_canonicalize_buffer_does_not_rebuffer_canonical_round_label.
+        already_buffered = (
+            MATERIAL_PART_TYPE_ROW_PATTERN.match(text) is not None
+            and feet % FIBER_ROUNDING_INCREMENT == 0
+        )
+        if not already_buffered:
+            return f"{part_number} ({display_type}) - {buffered_cable_footage(feet, family)}'"
+    return f"{part_number} ({display_type}) - {footage_text}"
 
 
 def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> list[str]:
@@ -125,7 +185,7 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
     computed_other: list[str] = []
 
     for row in extract_material_rows("\n".join(computed_rows)):
-        key = cable_material_key(row)
+        key = material_row_key(row)
         if key:
             computed_by_key[key] = row
         else:
@@ -143,12 +203,12 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
             merged.append(clean)
 
     for row in extract_material_rows("\n".join(existing_rows)):
-        key = cable_material_key(row)
+        key = material_row_key(row)
         if key and key in computed_by_key:
             add(computed_by_key[key])
             used_keys.add(key)
-        elif key:
-            add(canonicalize_cable_material_row(row))
+        elif cable_material_key(row):
+            add(canonicalize_cable_material_row(row, apply_buffer=True))
         else:
             add(row)
 
@@ -321,8 +381,7 @@ def _build_line(
     total_ft: int | None = None
     material_line = ""
     if path_subtotal > 0 and part_number and family:
-        increment = 100 if family == "fiber" else max(1, int(coax_rounding_increment))
-        total_ft = _ceil_to_increment(subtotal * 1.10, increment)
+        total_ft = buffered_cable_footage(subtotal, family, coax_rounding_increment)
         material_line = f"{part_number} ({display_type}) - {total_ft}'"
     source_pages = sorted({item.page for item in [*path_segments, *storage_items] if item.page})
     return CableFootageLine(
@@ -334,7 +393,7 @@ def _build_line(
         storage_items=storage_items if family != "coax" else [],
         path_subtotal=path_subtotal,
         storage_subtotal=storage_subtotal,
-        buffer=1.10,
+        buffer=CABLE_BUFFER,
         rounding=rounding,
         total_ft=total_ft,
         material_line=material_line,
@@ -356,6 +415,25 @@ def _number(value: str) -> float:
 def _ceil_to_increment(value: float, increment: int) -> int:
     increment = max(1, int(increment))
     return int(math.ceil(value / increment) * increment)
+
+
+CABLE_BUFFER = 1.10
+FIBER_ROUNDING_INCREMENT = 100
+
+
+def buffered_cable_footage(feet: float, family: str, coax_increment: int = 10) -> int:
+    """Cable order quantity = field footage + 10% buffer, rounded UP to the family's
+    increment (fiber -> next 100'; coax -> COAX_ROUNDING_INCREMENT). Single source of
+    truth for the buffer rule, shared by the cable-footage derive path (_build_line) and
+    the Materials-box canonicalizer (Nick, BI-872022)."""
+    increment = FIBER_ROUNDING_INCREMENT if family == "fiber" else max(1, int(coax_increment))
+    return _ceil_to_increment(feet * CABLE_BUFFER, increment)
+
+
+def _footage_feet(text: str) -> float | None:
+    """Leading footage number from a possibly unit-suffixed string ("1,810'" -> 1810.0)."""
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", text or "")
+    return float(match.group(0).replace(",", "")) if match else None
 
 
 def _is_explicitly_not_pulled(line: str) -> bool:

@@ -9,7 +9,12 @@ import re
 import fitz
 from PIL import Image
 
-from app.cable_footage import cable_material_key, extract_material_rows, merge_material_rows
+from app.box_titles import (
+    starts_with_job_totals_title,
+    starts_with_materials_title,
+    starts_with_page_totals_title,
+)
+from app.cable_footage import extract_material_rows, material_row_key, merge_material_rows
 from app.models import SummaryResult
 from app.rate_cards import total_line_key
 
@@ -425,7 +430,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             existing_material_boxes and summary.cable_footage
         )
         force_summary_stream = should_update_material_box
-        existing_boxes = _existing_totals_boxes(page)
+        existing_boxes = _existing_job_totals_boxes(page)
         totals_font_size: float | None = None
         if existing_boxes:
             replacement = existing_boxes[0]
@@ -491,6 +496,11 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             if material_lines or existing_material_boxes:
                 _force_summary_line_break_appearance(page, lines)
 
+        # Per-page "MKR Page Totals" boxes for multi-page as-builts. Page 1 (above)
+        # keeps the Job Totals + Materials boxes; every later page with billing
+        # codes gets its own page-totals box.
+        _stamp_page_totals(doc, summary)
+
         buffer = BytesIO()
         doc.save(buffer, garbage=4, deflate=True)
         return buffer.getvalue()
@@ -498,12 +508,49 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
         doc.close()
 
 
-def _existing_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, _starts_with_totals_title)
+def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
+    """Stamp an "MKR Page Totals" box (billing codes only) on each page after the
+    first that carries per-page totals.
+
+    Page 1 keeps the Job Totals box (all pages + materials); page totals are never
+    stamped there. Existing page-totals boxes on a page are replaced so re-runs
+    stay idempotent. Reuses the page-1 placement and rendering path, so rotated
+    sheets (e.g. NR-996825 rot=270) are handled identically and the box stays a
+    single movable FreeText annotation. Placement always succeeds: choose_box_rect
+    falls back to the least-busy candidate (exactly like the page-1 box), so there
+    is no per-page skip path.
+    """
+    if not summary.page_totals:
+        return
+    for idx in range(1, doc.page_count):
+        lines = summary.page_totals_box_lines(idx + 1)  # page_totals keyed 1-based
+        if not lines:
+            continue
+        page = doc[idx]
+        existing = _existing_page_totals_boxes(page)
+        if existing:
+            replacement = existing[0]
+            _delete_annotations_by_xref(page, [box.xref for box in existing])
+            _add_summary_annotation(
+                page,
+                _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
+                lines,
+                preferred_font_size=replacement.font_size,
+            )
+        else:
+            _add_summary_annotation(page, choose_box_rect(page, lines), lines)
+
+
+def _existing_job_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    return _existing_output_boxes(page, starts_with_job_totals_title)
+
+
+def _existing_page_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    return _existing_output_boxes(page, starts_with_page_totals_title)
 
 
 def _existing_material_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, _starts_with_materials_title)
+    return _existing_output_boxes(page, starts_with_materials_title)
 
 
 def _existing_output_boxes(page: fitz.Page, predicate) -> list[ExistingTotalsBox]:
@@ -531,17 +578,18 @@ def _replacement_rect_for_content(
     lines: list[str],
     preferred_font_size: float | None = None,
 ) -> fitz.Rect:
-    """Keep the old box location, but fit the new content.
+    """Keep the old box's POSITION, but size it to fit the new content.
 
-    Older/manual output boxes can be much larger than the new run needs. Reusing
-    the whole stale rectangle makes a tiny two-line total cover a large swath of
-    the drawing. The location is the re-run signal; the stale dimensions are not.
-    Rotated pages keep the existing rectangle because their authored dimensions
-    are part of the known-good movable annotation structure.
+    Reuses the exact rotation-aware sizing of a fresh stamp
+    (_placement_box_metrics_for_font, which swaps width/height on 90/270 sheets),
+    so a re-stamp and a fresh stamp produce identically-shaped boxes. The old box
+    location is the re-run signal; its stale dimensions are not. The previous code
+    returned the stale rectangle verbatim on rotated pages, which kept a too-narrow
+    box and wrapped the longer "MKR Page Totals" title onto two lines (NR-996825,
+    rot=270). On non-rotated pages _placement_box_metrics_for_font returns the same
+    dimensions as the old _box_metrics_for_font call, so that path is unchanged.
     """
-    if page.rotation:
-        return fitz.Rect(anchor)
-    width, height, _, _ = _box_metrics_for_font(page, lines, preferred_font_size)
+    width, height, _, _ = _placement_box_metrics_for_font(page, lines, font_size=preferred_font_size)
     rect = fitz.Rect(anchor.x0, anchor.y0, anchor.x0 + width, anchor.y0 + height)
     if rect.x1 > page.rect.x1:
         rect.x0 = max(page.rect.x0, page.rect.x1 - width)
@@ -568,17 +616,6 @@ def _box_metrics_for_font(
     width = min(page.rect.width * 0.34, longest + padding * 2 + font_size * 0.8)
     height = min(page.rect.height * 0.82, len(lines) * line_height + padding * 2 + font_size * 0.4)
     return width, height, font_size, padding
-
-
-def _starts_with_totals_title(text: str) -> bool:
-    return re.sub(r"\s+", " ", text.strip()).lower().startswith("mkr job totals")
-
-
-def _starts_with_materials_title(text: str) -> bool:
-    for line in text.splitlines():
-        if line.strip():
-            return line.strip().lower() in {"material", "materials"}
-    return False
 
 
 def _annotation_font_size(doc: fitz.Document, xref: int) -> float | None:
@@ -626,28 +663,34 @@ def _record_material_merge_note(
     old_by_key = {
         key: row
         for row in existing_rows
-        if (key := cable_material_key(row))
+        if (key := material_row_key(row))
     }
     new_by_key = {
         key: row
         for row in merged_rows
-        if (key := cable_material_key(row))
+        if (key := material_row_key(row))
     }
     changed: list[str] = []
+    changed_keys: list[str] = []
     added: list[str] = []
+    added_keys: list[str] = []
     for key, new_row in sorted(new_by_key.items()):
         old_row = old_by_key.get(key)
         if old_row and old_row != new_row:
             changed.append(f"{old_row} -> {new_row}")
+            changed_keys.append(key)
         elif not old_row:
             added.append(new_row)
+            added_keys.append(key)
 
-    preserved_count = sum(1 for row in existing_rows if not cable_material_key(row))
+    preserved_count = sum(1 for row in existing_rows if not material_row_key(row))
     parts: list[str] = []
     if changed:
-        parts.append(f"normalized {len(changed)} cable material row(s)")
+        label = "cable material" if all(key.startswith("cable:") for key in changed_keys) else "material"
+        parts.append(f"normalized {len(changed)} {label} row(s)")
     if added:
-        parts.append("added cable footage " + "; ".join(added))
+        label = "cable footage" if all(key.startswith("cable:") for key in added_keys) else "material"
+        parts.append(f"added {label} " + "; ".join(added))
     if preserved_count:
         parts.append(f"kept {preserved_count} existing material line(s)")
     if not parts:
@@ -735,7 +778,7 @@ def _add_summary_annotation(
 def _force_summary_line_break_appearance(page: fitz.Page, lines: list[str]) -> None:
     for annot in page.annots() or []:
         content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
-        if annot.type[1] != "FreeText" or not _starts_with_totals_title(content):
+        if annot.type[1] != "FreeText" or not starts_with_job_totals_title(content):
             continue
         font_size = _annotation_font_size(page.parent, annot.xref)
         rendered_lines, font_size, _ = _summary_rendering(page, annot.rect, lines, font_size=font_size)

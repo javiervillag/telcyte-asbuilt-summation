@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import fitz
 
+from app.box_titles import starts_with_materials_title, starts_with_totals_title
 from app.rate_cards import (
     CODE_PATTERN,
     CODE_TEXT_PATTERN,
@@ -97,7 +98,7 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
                 # reviewer sees it) but must NOT feed the page-text dedup
                 # sets: a genuine field callout that happens to equal one of
                 # its lines would otherwise be silently dropped.
-                if not _starts_with_totals_title(cleaned):
+                if not starts_with_totals_title(cleaned):
                     annotation_texts.add(cleaned)
                     annotation_lines.update(line for line in cleaned.splitlines() if line)
                 blocks.append(TextBlock(page=page_index, bbox=bbox, text=cleaned, source="annotation"))
@@ -127,21 +128,6 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
         doc.close()
     blocks.sort(key=lambda block: (block.page, block.bbox[1], block.bbox[0], block.source))
     return blocks
-
-
-def _starts_with_totals_title(text: str) -> bool:
-    return re.sub(r"\s+", " ", text.strip()).lower().startswith("mkr job totals")
-
-
-def _starts_with_materials_title(text: str) -> bool:
-    for line in text.splitlines():
-        if line.strip():
-            return line.strip().lower() in {"material", "materials"}
-    return False
-
-
-def _starts_with_output_box_title(text: str) -> bool:
-    return _starts_with_totals_title(text) or _starts_with_materials_title(text)
 
 
 def _remove_duplicate_annotation_lines(text: str, annotation_lines: set[str]) -> str:
@@ -175,20 +161,20 @@ def _format_number(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
-def derive_code_totals(
+def _aggregate_code_rows(
     blocks: list[TextBlock],
-    code_catalog: dict[CodeKey, str] | None = None,
-    excluded_lines: list[str] | None = None,
-    notes: list[str] | None = None,
-    warnings: list[str] | None = None,
-) -> list[str]:
-    """Aggregate billing-code totals from text blocks.
+    catalog: dict[CodeKey, str],
+    excluded_lines: list[str] | None,
+    catalog_misses: list[str],
+    *,
+    apply_catalog: bool = True,
+) -> tuple[list[str], list[CodeKey], dict[CodeKey, float]]:
+    """Two-pass billing-code aggregation over already-filtered field blocks.
 
-    Unit markers (' and sqft) are consumed but ignored: per Nick Evans
-    (email 2026-06-09, BI-304069) quantities for the same code always total
-    together and the output rows carry no unit suffix ("UG-80 - 258").
-    Lines skipped as non-billing context are appended to ``excluded_lines``
-    (when provided) so exclusions are never silent.
+    Returns ``(rows, ordered_keys, totals_by_key)``. Shared by ``derive_code_totals`` (job
+    totals) and ``derive_code_totals_by_page`` (per-page totals) so the two can
+    never diverge in how they read the same callouts. Callers own exclusion
+    (``field_evidence_blocks``) and notes; this is pure aggregation.
     """
     direct_pattern = re.compile(
         rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
@@ -198,7 +184,6 @@ def derive_code_totals(
         rf"\b({QTY_TEXT_PATTERN})\s*x\s*({CODE_TEXT_PATTERN})\b",
         re.I,
     )
-    catalog = code_catalog or {}
     totals: dict[CodeKey, float] = defaultdict(float)
     display: dict[CodeKey, str] = {}
     order: list[CodeKey] = []
@@ -208,17 +193,10 @@ def derive_code_totals(
         if excluded_lines is not None and cleaned and cleaned not in excluded_lines:
             excluded_lines.append(cleaned)
 
-    catalog_misses: list[str] = []
-
     def _record_catalog_miss(line: str) -> None:
         cleaned = line.strip()
         if cleaned and cleaned not in catalog_misses:
             catalog_misses.append(cleaned)
-
-    # Re-run safety: a previously stamped "MKR Job Totals" box (ours or a
-    # manual one) must never be counted as field callouts. The same applies to
-    # a stamped Materials box now that cable output can be re-uploaded.
-    blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
 
     for block in blocks:
         for line in block.text.splitlines():
@@ -227,7 +205,7 @@ def derive_code_totals(
                 normalized_key = code_key(raw_code)
                 if not normalized_key:
                     continue
-                if catalog and normalized_key not in catalog:
+                if apply_catalog and catalog and normalized_key not in catalog:
                     _record_catalog_miss(line)
                     continue
                 if _is_non_billing_context(line, match.start()):
@@ -249,7 +227,7 @@ def derive_code_totals(
                 normalized_key = code_key(raw_code)
                 if not normalized_key:
                     continue
-                if catalog and normalized_key not in catalog:
+                if apply_catalog and catalog and normalized_key not in catalog:
                     _record_catalog_miss(line)
                     continue
                 key = normalized_key
@@ -260,15 +238,40 @@ def derive_code_totals(
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
                 totals[key] += float(raw_qty.replace(",", ""))
 
-    rows: list[str] = []
-    for key in order:
-        rows.append(f"{display[key]} - {_format_number(totals[key])}")
+    rows = [f"{display[key]} - {_format_number(totals[key])}" for key in order]
+    return rows, order, dict(totals)
+
+
+def derive_code_totals(
+    blocks: list[TextBlock],
+    code_catalog: dict[CodeKey, str] | None = None,
+    excluded_lines: list[str] | None = None,
+    notes: list[str] | None = None,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """Aggregate billing-code totals from text blocks.
+
+    Unit markers (' and sqft) are consumed but ignored: per Nick Evans
+    (email 2026-06-09, BI-304069) quantities for the same code always total
+    together and the output rows carry no unit suffix ("UG-80 - 258").
+    Lines skipped as non-billing context are appended to ``excluded_lines``
+    (when provided) so exclusions are never silent.
+    """
+    catalog = code_catalog or {}
+    catalog_misses: list[str] = []
+
+    # Re-run safety: a previously stamped "MKR Job/Page Totals" box (ours or a
+    # manual one) must never be counted as field callouts. The same applies to a
+    # stamped Materials box now that cable output can be re-uploaded.
+    blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
+    rows, order, _totals = _aggregate_code_rows(blocks, catalog, excluded_lines, catalog_misses)
 
     if notes is not None:
         if skipped_total_boxes:
             notes.append(
-                f"Ignored {skipped_total_boxes} existing 'MKR Job Totals' box(es) already stamped "
-                "on the drawing (re-run detected); totals were recomputed from the field callouts only."
+                f"Ignored {skipped_total_boxes} existing 'MKR Job/Page/New Totals' summary box(es) on the "
+                "drawing (re-run detected, or a manual 'New Totals' box); totals were recomputed from the "
+                "field callouts only."
             )
         if skipped_material_boxes:
             notes.append(
@@ -298,35 +301,136 @@ def derive_code_totals(
     return rows
 
 
+def derive_code_totals_by_page(
+    blocks: list[TextBlock],
+    code_catalog: dict[CodeKey, str] | None = None,
+) -> dict[int, list[str]]:
+    """Per-page billing-code totals for multi-page as-builts (Page Totals box).
+
+    Billing codes ONLY - no materials and no user-selected extras (those belong
+    to the page-1 Job Totals box). Reuses the same exclusion
+    (``field_evidence_blocks``) and the same aggregation (``_aggregate_code_rows``)
+    as the job totals, so a page total can never diverge from how the job total
+    counts the same callouts, and the per-page totals sum to the job total.
+
+    Returns ``{page: rows}`` keyed by the 1-based page number, for pages that
+    carry at least one billing code; pages with none are omitted.
+    """
+    catalog = code_catalog or {}
+    field_blocks, _skipped_total, _skipped_material = field_evidence_blocks(blocks)
+    by_page: dict[int, list[TextBlock]] = defaultdict(list)
+    for block in field_blocks:
+        by_page[block.page].append(block)
+    result: dict[int, list[str]] = {}
+    for page in sorted(by_page):
+        rows, _order, _totals = _aggregate_code_rows(by_page[page], catalog, None, [])
+        if rows:
+            result[page] = rows
+    return result
+
+
+def derive_code_total_map(
+    blocks: list[TextBlock],
+    code_catalog: dict[CodeKey, str] | None = None,
+    *,
+    apply_catalog: bool = True,
+) -> dict[CodeKey, float]:
+    """Return parser-backed billing totals keyed by normalized code.
+
+    This uses the same field-evidence filtering and aggregation as the visible
+    totals rows, but exposes the structured quantities for downstream business
+    rules. ``apply_catalog=False`` is intentionally narrow-use: it lets allowlisted
+    material trigger codes be read even when the loaded rate-card catalog omits
+    them, without changing the public Job/Page Totals behavior.
+    """
+    catalog = code_catalog or {}
+    field_blocks, _skipped_total, _skipped_material = field_evidence_blocks(blocks)
+    _rows, _order, totals = _aggregate_code_rows(
+        field_blocks,
+        catalog,
+        None,
+        [],
+        apply_catalog=apply_catalog,
+    )
+    return totals
+
+
 def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int, int]:
-    """Return field blocks with prior output boxes and flattened remnants removed."""
+    """Return field blocks with prior output boxes (and their flattened remnants) removed.
+
+    A stamped box that survives as a single text block - our live FreeText output, or a
+    PyMuPDF/Adobe ``bake``-style flatten - is caught by the title prefix alone. But some
+    editors re-flow the box so the title and EACH code line become separate, individually
+    positioned page-text blocks. The title-only block no longer geometrically contains the
+    code lines below it, so those lines used to leak back in as field callouts and double
+    the totals (Nick Evans, June-23 sync: 29.76 vs 14.88). To handle that, when the title
+    arrives as its own small block we absorb the contiguous column of remnant lines directly
+    beneath it (same page, overlapping the title's column, vertically adjacent), regardless
+    of source. A contiguous box (title + codes already in one block) is left untouched, so
+    the already-correct path does not change.
+    """
     skipped_total_boxes = 0
     skipped_material_boxes = 0
-    box_rects: list[tuple[int, tuple[float, float, float, float]]] = []
-    field_blocks: list[TextBlock] = []
-    for block in blocks:
-        if _starts_with_totals_title(block.text):
+    anchors: list[int] = []
+    for i, block in enumerate(blocks):
+        if starts_with_totals_title(block.text):
             skipped_total_boxes += 1
-            box_rects.append((block.page, block.bbox))
-        elif _starts_with_materials_title(block.text):
+            anchors.append(i)
+        elif starts_with_materials_title(block.text):
             skipped_material_boxes += 1
-            box_rects.append((block.page, block.bbox))
-        else:
-            field_blocks.append(block)
+            anchors.append(i)
 
-    def _inside_box(block: TextBlock) -> bool:
+    excluded: set[int] = set(anchors)
+    regions: list[tuple[int, float, float, float, float]] = []
+    for i in anchors:
+        anchor = blocks[i]
+        x0, y0, x1, y1 = anchor.bbox
+        line_count = len([ln for ln in anchor.text.splitlines() if ln.strip()]) or 1
+        # Only a title-only remnant (the flattened case) needs region growth; a
+        # contiguous box already carries its code lines inside the one block.
+        if line_count <= 2:
+            # Absorb the contiguous run of remnant lines directly beneath the
+            # title. The gap window (~1.8 line-heights) is deliberately tight: it
+            # matches the internal line spacing of a real flattened box and stops
+            # at the larger gap between the box and the field callouts below it.
+            # A wider window was tried and REGRESSED real rotated multi-page files
+            # (NR-1138768, NR-996825): the title-only baked block sits in an edge
+            # column and a greedy downward walk cascaded into genuine callouts,
+            # halving totals. Real-world flattens never space box lines that far
+            # apart, so the tight window is both correct and safe here; a
+            # hypothetical loose flatten would fall to manual review, not silent
+            # double-count, because its remnant lines stay visible field evidence.
+            line_h = max(6.0, (y1 - y0) / line_count)
+            grew = True
+            while grew:
+                grew = False
+                for j, b in enumerate(blocks):
+                    if j in excluded or b.page != anchor.page:
+                        continue
+                    bx0, by0, bx1, by1 = b.bbox
+                    if min(x1, bx1) - max(x0, bx0) <= 0:  # must share the box's column
+                        continue
+                    if by0 < y1 - line_h * 0.5 or by0 > y1 + line_h * 1.8:  # next row down only
+                        continue
+                    excluded.add(j)
+                    x0, x1 = min(x0, bx0), max(x1, bx1)
+                    y1 = max(y1, by1)
+                    grew = True
+        regions.append((anchor.page, x0, y0, x1, y1))
+
+    def _inside_region(block: TextBlock) -> bool:
         cx = (block.bbox[0] + block.bbox[2]) / 2
         cy = (block.bbox[1] + block.bbox[3]) / 2
-        for page, (x0, y0, x1, y1) in box_rects:
-            if block.page == page and x0 <= cx <= x1 and y0 <= cy <= y1 and (x1 - x0) > 1:
+        for page, rx0, ry0, rx1, ry1 in regions:
+            if block.page == page and rx0 <= cx <= rx1 and ry0 <= cy <= ry1 and (rx1 - rx0) > 1:
                 return True
         return False
 
-    return (
-        [b for b in field_blocks if not (b.source == "page" and _inside_box(b))],
-        skipped_total_boxes,
-        skipped_material_boxes,
-    )
+    field_blocks = [
+        b for k, b in enumerate(blocks)
+        if k not in excluded and not (b.source == "page" and _inside_region(b))
+    ]
+    return field_blocks, skipped_total_boxes, skipped_material_boxes
 
 
 def _display_code(raw_code: str, normalized_key: CodeKey) -> str:

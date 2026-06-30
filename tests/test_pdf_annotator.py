@@ -471,8 +471,10 @@ def test_preliminary_cable_evidence_normalizes_existing_materials_rows_only() ->
 
     assert len(material_annotations) == 1
     content = material_annotations[0]
-    assert content.count("605-1502 (144Ct) - 1192'") == 1
-    assert content.count("605-3277 (48Ct) - 603'") == 1
+    # Cable rows are remapped/labeled AND given the 10% order buffer rounded up to the
+    # next 100' (Nick, BI-872022): 1192 -> 1400, 603 -> 700. Stamping twice is idempotent.
+    assert content.count("605-1502 (144Ct) - 1400'") == 1
+    assert content.count("605-3277 (48Ct) - 700'") == 1
     assert "144ct - 1192'" not in content
     assert "605-3277 - 603'" not in content
     assert "LockBox - 1" in content

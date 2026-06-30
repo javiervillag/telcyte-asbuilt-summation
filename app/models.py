@@ -43,6 +43,9 @@ class SummaryResult(BaseModel):
     informational_notes: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     model: str
+    # Per-page billing-code totals for multi-page as-builts (the "MKR Page Totals"
+    # boxes). Keyed by 1-based page number; billing codes only - no materials/extras.
+    page_totals: dict[int, list[str]] = Field(default_factory=dict)
 
     def with_eligible_cable_materials(self) -> "SummaryResult":
         materials = list(self.materials)
@@ -70,6 +73,14 @@ class SummaryResult(BaseModel):
         if not self.materials:
             return []
         return ["Materials", *[line.strip() for line in self.materials if line.strip()]]
+
+    def page_totals_box_lines(self, page: int) -> list[str]:
+        # Page Totals box for a single page: billing codes only, titled distinctly
+        # from the page-1 Job Totals box. Empty when the page carries no codes.
+        rows = [line.strip() for line in self.page_totals.get(page, []) if line.strip()]
+        if not rows:
+            return []
+        return ["MKR Page Totals", *rows]
 
     def display_lines(self) -> list[str]:
         lines = self.totals_box_lines()
