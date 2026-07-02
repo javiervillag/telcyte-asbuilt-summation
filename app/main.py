@@ -178,6 +178,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     title="MKR Job Totals",
                     job_totals=exc.supported_totals,
                     materials=exc.materials,
+                    new_totals=exc.new_totals,
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
@@ -214,6 +215,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     title="MKR Job Totals",
                     job_totals=[],
                     materials=exc.materials,
+                    new_totals=exc.new_totals,
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
@@ -246,6 +248,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 title="MKR Job Totals",
                 job_totals=exc.supported_totals,
                 materials=exc.materials,
+                new_totals=exc.new_totals,
                 cable_footage=exc.cable_footage,
                 warnings=exc.warnings,
                 informational_notes=exc.informational_notes,
@@ -451,6 +454,7 @@ def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) 
         "detected_totals": summary.job_totals[:20],
         "extra_billing_codes": summary.extra_totals[:20],
         "materials": summary.materials[:10],
+        "new_totals": summary.new_totals[:20],
         "cable_footage": [
             _compact_cable_footage(line)
             for line in summary.cable_footage[:10]
@@ -475,6 +479,7 @@ def _compact_cable_footage(line) -> dict:
         "rounding": line.rounding,
         "total_ft": line.total_ft,
         "material_line": line.material_line,
+        "review_material_line": line.review_material_line,
         "eligible_for_stamp": line.eligible_for_stamp,
         "source_pages": line.source_pages,
         "path_segment_count": len(line.path_segments),

@@ -25,6 +25,7 @@ class CableFootageLine(BaseModel):
     rounding: str = "ceil_100"
     total_ft: Optional[int] = None
     material_line: str = ""
+    review_material_line: str = ""
     eligible_for_stamp: bool = False
     source_pages: list[int] = Field(default_factory=list)
     confidence: float = 0.0
@@ -38,6 +39,7 @@ class SummaryResult(BaseModel):
     extra_totals: list[str] = Field(default_factory=list)
     extra_notes: list[str] = Field(default_factory=list)
     materials: list[str] = Field(default_factory=list)
+    new_totals: list[str] = Field(default_factory=list)
     cable_footage: list[CableFootageLine] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     informational_notes: list[str] = Field(default_factory=list)
@@ -53,6 +55,9 @@ class SummaryResult(BaseModel):
         for line in self.cable_footage:
             if line.eligible_for_stamp and line.material_line and line.material_line not in materials:
                 materials.append(line.material_line)
+                changed = True
+            if line.review_material_line and line.review_material_line not in materials:
+                materials.append(line.review_material_line)
                 changed = True
         if not changed:
             return self
@@ -74,6 +79,12 @@ class SummaryResult(BaseModel):
             return []
         return ["Materials", *[line.strip() for line in self.materials if line.strip()]]
 
+    def new_totals_box_lines(self) -> list[str]:
+        rows = [line.strip() for line in self.new_totals if line.strip()]
+        if not rows:
+            return []
+        return ["MKR New Totals", "Additions", *rows]
+
     def page_totals_box_lines(self, page: int) -> list[str]:
         # Page Totals box for a single page: billing codes only, titled distinctly
         # from the page-1 Job Totals box. Empty when the page carries no codes.
@@ -84,6 +95,9 @@ class SummaryResult(BaseModel):
 
     def display_lines(self) -> list[str]:
         lines = self.totals_box_lines()
+        new_totals = self.new_totals_box_lines()
+        if new_totals:
+            lines.extend(new_totals)
         material_heading = "Materials" if len(self.materials) != 1 else "Material"
         if self.materials:
             lines.append(material_heading)

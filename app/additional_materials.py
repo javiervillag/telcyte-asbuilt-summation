@@ -212,6 +212,8 @@ def _record_unparsed_label_warning(
             line = _clean_text(raw_line)
             if not line or rule.display.lower() not in re.sub(r"\s+", " ", line).lower():
                 continue
+            if rule.rule_id == "drop_f" and _is_prefixed_drop_f_callout(line):
+                continue
             if _MATERIAL_LIKE_CUE.search(line) and line not in possible_lines:
                 possible_lines.append(line)
     if not possible_lines:
@@ -225,6 +227,10 @@ def _record_unparsed_label_warning(
     )
     if warning not in result.warnings:
         result.warnings.append(warning)
+
+
+def _is_prefixed_drop_f_callout(line: str) -> bool:
+    return bool(re.search(r"\b(?:EOL|Storage|Tie\s*Point|Splice)\s*-\s*Drop\s+F\b", line, re.I))
 
 
 def _material_line(rule: MaterialRule, source_quantity: float, source_lines: list[str]) -> DerivedMaterialLine:
@@ -247,12 +253,12 @@ def _material_line(rule: MaterialRule, source_quantity: float, source_lines: lis
 def _material_quantity(source_quantity: float, rule: MaterialRule) -> int:
     if rule.unit == "ea":
         return int(math.ceil(source_quantity))
-    return _ceil_to_increment(source_quantity * rule.buffer, rule.rounding_increment)
+    return round_half_up_to_increment(source_quantity * rule.buffer, rule.rounding_increment)
 
 
-def _ceil_to_increment(value: float, increment: int) -> int:
+def round_half_up_to_increment(value: float, increment: int = 1) -> int:
     increment = max(1, int(increment))
-    return int(math.ceil((value - 1e-9) / increment) * increment)
+    return int(math.floor((value / increment) + 0.5 + 1e-9) * increment)
 
 
 def _number(value: str) -> float:

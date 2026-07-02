@@ -33,6 +33,15 @@ def starts_with_new_totals_title(text: str) -> bool:
     return normalized_title(text).startswith("mkr new totals")
 
 
+def is_tool_new_totals_box(text: str) -> bool:
+    lines = [line.strip().lower() for line in str(text or "").splitlines() if line.strip()]
+    return len(lines) >= 2 and lines[0] == "mkr new totals" and lines[1] == "additions"
+
+
+def is_previously_billed_totals_box(text: str) -> bool:
+    return starts_with_totals_title(text) and "previously billed" in normalized_title(text)
+
+
 def starts_with_totals_title(text: str) -> bool:
     """Any MKR totals SUMMARY box - Job, Page, or New - all of which must be excluded
     from field-evidence counting so their lines are never summed as callouts. The

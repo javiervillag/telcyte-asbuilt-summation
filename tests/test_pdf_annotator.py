@@ -118,8 +118,33 @@ def test_materials_box_is_separate_bottom_left_and_sample_styled() -> None:
         assert material.rect.y1 > page.rect.height * 0.75
         assert "0 0 0 rg" in (doc.xref_get_key(material.xref, "DA")[1] or "")
         assert b"0 0 1 RG" in _appearance_stream(doc, material)
+        assert "/Helv" in _appearance_resources(doc, material)
+        assert "/Helvetica" in _appearance_resources(doc, material)
     finally:
         doc.close()
+
+
+def test_materials_box_preserves_logical_rows_when_visual_text_wraps() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=360, height=420)
+    source = doc.tobytes()
+    doc.close()
+    long_row = "470-0349 (CD-02/MDU-11) - 165'"
+    summary = SummaryResult(
+        model="parser-test",
+        confidence=1.0,
+        job_totals=["UG-56 - 170'"],
+        materials=[long_row],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        material_annotations = _material_annotations(doc[0])
+    finally:
+        doc.close()
+
+    assert material_annotations == [f"Materials\n{long_row}"]
 
 
 def test_unrotated_mkr_box_without_materials_is_movable_and_visible() -> None:
@@ -641,6 +666,75 @@ def test_summary_box_stays_in_top_left_or_top_right_section() -> None:
         doc.close()
 
 
+def test_rotated_replacement_clamps_in_annotation_space_without_dropping_lines() -> None:
+    from app.pdf_annotator import _annotation_bounds
+
+    doc = fitz.open()
+    p1 = doc.new_page(width=792, height=612)
+    p1.set_rotation(270)
+    p2 = doc.new_page(width=792, height=612)
+    p2.set_rotation(270)
+    p2.add_freetext_annot(fitz.Rect(740, 10, 762, 90), "MKR Page Totals\nUG-44 - 3", fontsize=12)
+    source = doc.tobytes()
+    doc.close()
+    rows = [f"UG-{i:02d} - {i}" for i in range(1, 22)]
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=["UG-01 - 1"],
+        page_totals={2: rows},
+        model="parser-test",
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[1]
+        bounds = _annotation_bounds(page)
+        page_total = [
+            annot for annot in page.annots() or []
+            if (annot.info.get("content") or "").startswith("MKR Page Totals")
+        ][0]
+        rect = fitz.Rect(page_total.rect)
+        content_lines = [line for line in (page_total.info.get("content") or "").splitlines() if line.strip()]
+        stream = _appearance_stream(doc, page_total).decode("latin-1")
+    finally:
+        doc.close()
+
+    assert bounds.contains(rect)
+    assert len(re.findall(r"\)\s*(?:Tj|')", stream)) == len(content_lines)
+    assert content_lines == ["MKR Page Totals", *rows]
+
+
+def test_rotated_tool_new_totals_uses_custom_appearance_resources() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=1224)
+    page.set_rotation(270)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        new_totals=["Comp-9 - 328", "Comp-6 - 328", "UG-38 - 1312"],
+        model="parser-test",
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        new_totals = [
+            annot for annot in doc[0].annots() or []
+            if (annot.info.get("content") or "").startswith("MKR New Totals\nAdditions")
+        ][0]
+        stream = _appearance_stream(doc, new_totals).decode("latin-1")
+        resources = _appearance_resources(doc, new_totals)
+    finally:
+        doc.close()
+
+    assert "/Helv" in resources
+    assert "/Helvetica" in resources
+    assert "(MKR New Totals) Tj" in stream
+    assert "(Additions) '" in stream
+    assert "(Comp-9 - 328) '" in stream
+
+
 def _annotation_snapshot(page: fitz.Page) -> list[tuple[str, tuple[float, float, float, float], str]]:
     rows = []
     for annot in page.annots() or []:
@@ -678,6 +772,14 @@ def _appearance_stream(doc: fitz.Document, annot: fitz.Annot) -> bytes:
     if not match:
         return b""
     return doc.xref_stream(int(match.group(1))) or b""
+
+
+def _appearance_resources(doc: fitz.Document, annot: fitz.Annot) -> str:
+    ap_ref = doc.xref_get_key(annot.xref, "AP")[1] or ""
+    match = re.search(r"(\d+) 0 R", ap_ref)
+    if not match:
+        return ""
+    return doc.xref_get_key(int(match.group(1)), "Resources")[1] or ""
 
 
 def _page_text_with_annotations(page: fitz.Page) -> str:

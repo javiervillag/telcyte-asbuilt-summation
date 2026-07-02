@@ -223,6 +223,51 @@ def test_selected_extras_allow_supported_totals_pdf_after_manual_review(monkeypa
     ]
 
 
+def test_manual_review_with_extras_preserves_new_totals_and_review_materials(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, SummaryResult] = {}
+
+    async def fake_summarize(content, settings, source_name=None):
+        raise ManualReviewRequired(
+            ["Cable material needs review for 48Ct."],
+            supported_totals=["Comp-9 - 1160"],
+            unresolved_callouts=[],
+            cable_footage=[
+                CableFootageLine(
+                    callout="48ct",
+                    display_type="48Ct",
+                    part_number="605-3277",
+                    family="fiber",
+                    storage_subtotal=236,
+                    review_material_line="605-3277 (48Ct) - VERIFY",
+                    review_flags=["No supported pulled-path footage was found for 48Ct."],
+                )
+            ],
+            new_totals=["Comp-9 - 328"],
+        )
+
+    def fake_annotate(content, summary, source_name=None):
+        captured["summary"] = summary
+        return b"%PDF-1.4 fake"
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", fake_annotate)
+
+    extras = [{"code": "FB-04", "quantity": "6", "note": "Confirmed 48-count splice group."}]
+    client = TestClient(app)
+    response = client.post(
+        "/api/summarize",
+        data={"extra_billing_codes": json.dumps(extras)},
+        files={"file": ("sample.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert captured["summary"].new_totals == ["Comp-9 - 328"]
+    assert captured["summary"].materials == ["605-3277 (48Ct) - VERIFY"]
+    result_summary = json.loads(response.headers["x-telcyte-result-summary"])
+    assert result_summary["new_totals"] == ["Comp-9 - 328"]
+    assert result_summary["materials"] == ["605-3277 (48Ct) - VERIFY"]
+
+
 def test_summarize_endpoint_accepts_manual_extra_code(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, SummaryResult] = {}
 

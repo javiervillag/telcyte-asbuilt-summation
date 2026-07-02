@@ -12,14 +12,21 @@ import fitz
 import pytest
 from PIL import Image
 
-from app.box_titles import starts_with_new_totals_title, starts_with_totals_title
+from app.box_titles import (
+    is_previously_billed_totals_box,
+    is_tool_new_totals_box,
+    starts_with_new_totals_title,
+    starts_with_totals_title,
+)
 from app.models import CableFootageLine, SummaryResult
+from app.partial_asbuilt import derive_new_totals, extract_previously_billed_job_totals
 from app.pdf_annotator import BORDER_WIDTH, annotate_pdf
 from app.pdf_parser import (
     derive_code_totals,
     derive_code_totals_by_page,
     diagnose_extraction,
     extract_text_blocks,
+    TextBlock,
 )
 from app.rate_cards import code_key, total_line_key
 
@@ -47,6 +54,7 @@ def test_unit_variants_total_together_and_render_unitless() -> None:
 def test_total_line_key_ignores_units() -> None:
     assert total_line_key("UG-80 - 258'") == total_line_key("UG-80 - 258")
     assert total_line_key("UG-80 - 258sqft") == total_line_key("UG-80 - 258")
+    assert total_line_key("UG-85 - 5 (Due to PH depths)") == (("UG", "85"), "5", "")
 
 
 # --- Sync @50:20-56:55: DIRT-UG6-2 must be counted like CONCRETE-UG85-2 ---
@@ -937,3 +945,122 @@ def test_mkr_new_totals_box_is_preserved_not_replaced() -> None:
 
     assert any(t.lower().startswith("mkr new totals") for t in titles)  # preserved
     assert any(t.lower().startswith("mkr job totals") for t in titles)  # tool box still stamped
+
+
+def test_previously_billed_job_delta_ignores_page_level_reference_boxes() -> None:
+    doc = fitz.open()
+    page1 = doc.new_page(width=1224, height=792)
+    page1.insert_text((300, 300), "Comp-9 - 1160'")
+    page1.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 210),
+        "MKR Job Totals\nPreviously Billed\nComp-9 - 832'",
+        fontsize=10,
+    )
+    page2 = doc.new_page(width=1224, height=792)
+    page2.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 230),
+        "MKR Page Totals\nPreviously Billed\nComp-9 - 832'\nUG-85 - 5 (Due to PH depths)",
+        fontsize=10,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    blocks = extract_text_blocks(content)
+    previous = extract_previously_billed_job_totals(blocks)
+    rows, warnings = derive_new_totals(["Comp-9 - 1160"], previous)
+
+    assert previous == {("COMP", "9"): 832.0}
+    assert rows == ["Comp-9 - 328"]
+    assert warnings == []
+
+
+def test_previously_billed_job_delta_ignores_duplicate_page_text_copy() -> None:
+    content = "MKR Job Totals\nPreviously Billed\nComp-9 - 832'"
+    blocks = [
+        TextBlock(page=1, bbox=(0, 0, 200, 100), text=content, source="annotation"),
+        TextBlock(page=1, bbox=(0, 0, 200, 100), text=content, source="page"),
+    ]
+
+    previous = extract_previously_billed_job_totals(blocks)
+    rows, warnings = derive_new_totals(["Comp-9 - 1160"], previous)
+
+    assert previous == {("COMP", "9"): 832.0}
+    assert rows == ["Comp-9 - 328"]
+    assert warnings == []
+
+
+def test_negative_previously_billed_delta_warns_without_new_total() -> None:
+    rows, warnings = derive_new_totals(["Comp-9 - 1160"], {("COMP", "9"): 1664.0})
+
+    assert rows == []
+    assert any("higher than the recomputed total" in warning for warning in warnings)
+
+
+def test_previously_billed_boxes_are_preserved_and_tool_new_totals_replace_on_rerun() -> None:
+    doc = fitz.open()
+    page1 = doc.new_page(width=1224, height=792)
+    page1.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 210),
+        "MKR Job Totals\nPreviously Billed\nComp-9 - 832'",
+        fontsize=10,
+    )
+    page2 = doc.new_page(width=1224, height=792)
+    page2.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 230),
+        "MKR Page Totals\nPreviously Billed\nComp-9 - 832'",
+        fontsize=10,
+    )
+    content = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        title="MKR Job Totals",
+        job_totals=["Comp-9 - 1160"],
+        new_totals=["Comp-9 - 328"],
+        page_totals={2: ["Comp-9 - 832"]},
+        model="x",
+    )
+
+    out = annotate_pdf(content, summary)
+    again = annotate_pdf(out, summary)
+    d = fitz.open(stream=again, filetype="pdf")
+    try:
+        contents = [
+            (a.info.get("content") or "").replace("\r", "\n").strip()
+            for page in d
+            for a in (page.annots() or [])
+            if a.type[1] == "FreeText"
+        ]
+    finally:
+        d.close()
+
+    assert sum(is_previously_billed_totals_box(content) for content in contents) == 2
+    assert sum(is_tool_new_totals_box(content) for content in contents) == 1
+    assert any(content == "MKR New Totals\nAdditions\nComp-9 - 328" for content in contents)
+    assert not any(content == "MKR Job Totals\nComp-9 - 1160" for content in contents)
+    assert not any(content == "MKR Page Totals\nComp-9 - 832" for content in contents)
+
+
+def test_nick_authored_new_totals_box_is_preserved_when_tool_stamps_its_own() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=1224, height=792)
+    page.add_freetext_annot(
+        fitz.Rect(60, 60, 360, 200),
+        "MKR New Totals\nAdd resto\nComp-9 - 60'",
+        fontsize=10,
+    )
+    content = doc.tobytes()
+    doc.close()
+
+    out = annotate_pdf(content, SummaryResult(model="x", new_totals=["Comp-9 - 328"]))
+    d = fitz.open(stream=out, filetype="pdf")
+    try:
+        contents = [
+            (a.info.get("content") or "").replace("\r", "\n").strip()
+            for a in (d[0].annots() or [])
+            if a.type[1] == "FreeText"
+        ]
+    finally:
+        d.close()
+
+    assert any(content.startswith("MKR New Totals\nAdd resto") for content in contents)
+    assert sum(is_tool_new_totals_box(content) for content in contents) == 1

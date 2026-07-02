@@ -19,6 +19,7 @@ def test_normalize_cable_type_variants() -> None:
     assert normalize_cable_type("048 count") == "48ct"
     assert normalize_cable_type(".625") == ".625"
     assert normalize_cable_type(".875") == ".875"
+    assert normalize_cable_type("Drop F") == "drop_f"
     assert normalize_cable_type("PWR-625") is None
 
 
@@ -196,6 +197,63 @@ def test_resolved_cable_callouts_do_not_stay_unresolved() -> None:
     unresolved = _unresolved_callout_lines(blocks, resolved_callout_lines=result.handled_callout_lines)
 
     assert unresolved == []
+
+
+def test_drop_f_station_markers_derive_base_without_double_counting_storage() -> None:
+    blocks = [
+        _block(
+            "EOL - Drop F - 40'\n"
+            "D11444 - T11404\n"
+            "Storage - Drop F - 4'\n"
+            "D11558 - D11554\n"
+            "Tie Point - Drop F - 40'\n"
+            "D11688 - T11728\n"
+            "EOL - 48Ct - 100'\n"
+            "D34116 - T34166"
+        )
+    ]
+
+    result = derive_cable_footage(blocks, auto_stamp=True)
+    drop = next(line for line in result.lines if line.callout == "drop_f")
+
+    assert drop.path_subtotal == 324
+    assert drop.storage_subtotal == 0
+    assert drop.total_ft == 356
+    assert drop.material_line == "240-0318 (Drop F) - 356'"
+    assert drop.eligible_for_stamp is True
+
+
+def test_drop_f_station_marker_mismatch_warns_without_stamping_bad_quantity() -> None:
+    result = derive_cable_footage(
+        [_block("EOL - Drop F - 100'\nD11444 - T11404\nTie Point - Drop F - 40'\nD11688 - T11728")],
+        auto_stamp=True,
+    )
+    drop = next(line for line in result.lines if line.callout == "drop_f")
+
+    assert drop.material_line == ""
+    assert drop.review_material_line == "240-0318 (Drop F) - VERIFY"
+    assert any("does not match" in warning for warning in result.warnings)
+
+
+def test_fiber_storage_without_supported_path_gets_visible_verify_material() -> None:
+    result = derive_cable_footage(
+        [_block("EOL - 48Ct - 30'\nTie Point - 48Ct - 100'\nStorage - 48Ct - 106'")],
+        auto_stamp=True,
+    )
+    line = result.lines[0]
+
+    assert line.material_line == ""
+    assert line.review_material_line == "605-3277 (48Ct) - VERIFY"
+    assert line.eligible_for_stamp is False
+
+
+def test_verify_material_row_is_keyed_and_replaced_by_numeric_row() -> None:
+    assert merge_material_rows(["605-3277 (48Ct) - VERIFY"], ["605-3277 (48Ct) - 600'"]) == [
+        "605-3277 (48Ct) - 600'",
+    ]
+    assert merge_material_rows(["605-3277 (48Ct) - 1000'"], ["605-3277 (48Ct) - VERIFY"]) == [
+        "605-3277 (48Ct) - 1000'",
+    ]
 
 
 # ---------------------------------------------------------------------------

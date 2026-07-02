@@ -5,7 +5,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from app.additional_materials import ADDITIONAL_MATERIAL_PARTS
+from app.additional_materials import ADDITIONAL_MATERIAL_PARTS, round_half_up_to_increment
 from app.models import CableFootageItem, CableFootageLine
 from app.pdf_parser import TextBlock, _clean_text, _is_non_billing_context, field_evidence_blocks
 from app.rate_cards import CODE_TEXT_PATTERN, QTY_TEXT_PATTERN, code_key
@@ -17,9 +17,10 @@ PART_MAP = {
     "48ct": ("fiber", "48Ct", "605-3277"),
     "144ct": ("fiber", "144Ct", "605-1502"),
     "288ct": ("fiber", "288Ct", "605-1503"),
+    "drop_f": ("drop_fiber", "Drop F", "240-0318"),
 }
 
-TYPE_TEXT = r"(?:\.\s*(?:625|875)|0?(?:48|144|288)\s*(?:ct|count))"
+TYPE_TEXT = r"(?:Drop\s+F|\.\s*(?:625|875)|0?(?:48|144|288)\s*(?:ct|count))"
 TYPE_PATTERN = re.compile(TYPE_TEXT, re.I)
 MATERIALS_TITLE_PATTERN = re.compile(r"^\s*materials?\s*:?\s*$", re.I)
 STORAGE_PATTERN = re.compile(
@@ -35,6 +36,7 @@ DIRECT_CODE_PATTERN = re.compile(
     rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
     re.I,
 )
+MARKER_PAIR_PATTERN = re.compile(r"\b(?P<a>[DT]\d{4,6})\s*-\s*(?P<b>[DT]\d{4,6})\b", re.I)
 # Cox renumbered cable parts in MCA Rate Card Amendment 3 (~2026-06-09); field as-builts
 # still print the OLD part number. Map each legacy part to its current cable type so
 # canonicalize_cable_material_row re-emits the CURRENT PART_MAP number. Extend as Nick
@@ -47,17 +49,18 @@ MATERIAL_PART_TO_KEY = {
     **LEGACY_PART_TO_KEY,
 }
 MATERIAL_PART_TEXT = "|".join(re.escape(part) for part in MATERIAL_PART_TO_KEY) or r"(?!x)x"
+MATERIAL_ROW_QTY_TEXT = r"(?:\d[\d,]*(?:\.\d+)?|VERIFY)"
 MATERIAL_PART_TYPE_ROW_PATTERN = re.compile(
     rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*\(\s*(?P<type>{TYPE_TEXT})\s*\)\s*-\s*"
-    rf"\d[\d,]*\s*(?:'|ft\b|feet\b)?\s*$",
+    rf"{MATERIAL_ROW_QTY_TEXT}\s*(?:'|ft\b|feet\b)?\s*$",
     re.I,
 )
 MATERIAL_PART_ONLY_ROW_PATTERN = re.compile(
-    rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*-\s*\d[\d,]*\s*(?:'|ft\b|feet\b)?\s*$",
+    rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*-\s*{MATERIAL_ROW_QTY_TEXT}\s*(?:'|ft\b|feet\b)?\s*$",
     re.I,
 )
 MATERIAL_BARE_TYPE_ROW_PATTERN = re.compile(
-    rf"^\s*(?P<type>{TYPE_TEXT})\s*-\s*\d[\d,]*\s*(?:'|ft\b|feet\b)?\s*$",
+    rf"^\s*(?P<type>{TYPE_TEXT})\s*-\s*{MATERIAL_ROW_QTY_TEXT}\s*(?:'|ft\b|feet\b)?\s*$",
     re.I,
 )
 CABLE_ROW_FOOTAGE_PATTERN = re.compile(
@@ -67,7 +70,7 @@ CABLE_ROW_FOOTAGE_PATTERN = re.compile(
 ADDITIONAL_MATERIAL_PART_TEXT = "|".join(re.escape(part) for part in sorted(ADDITIONAL_MATERIAL_PARTS)) or r"(?!x)x"
 ADDITIONAL_MATERIAL_ROW_PATTERN = re.compile(
     rf"^\s*(?P<part>{ADDITIONAL_MATERIAL_PART_TEXT})\s*(?:\([^)]*\))?\s*-\s*"
-    rf"\d[\d,]*(?:\.\d+)?\s*(?:'|ft\b|feet\b|ea\b)?\s*$",
+    rf"{MATERIAL_ROW_QTY_TEXT}\s*(?:'|ft\b|feet\b|ea\b)?\s*$",
     re.I,
 )
 ADDITIONAL_MATERIAL_ALIAS_ROW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -94,6 +97,8 @@ def normalize_cable_type(value: str) -> str | None:
     fiber = re.search(r"^(0?48|144|288)(?:ct|count)$", text)
     if fiber:
         return f"{int(fiber.group(1))}ct"
+    if text in {"dropf", "dropfiber"}:
+        return "drop_f"
     return None
 
 
@@ -139,6 +144,9 @@ def additional_material_key(line: str) -> str | None:
 def material_row_key(line: str) -> str | None:
     cable_key = cable_material_key(line)
     if cable_key:
+        entry = PART_MAP.get(cable_key)
+        if entry and entry[2] in ADDITIONAL_MATERIAL_PARTS:
+            return f"part:{entry[2]}"
         return f"cable:{cable_key}"
     return additional_material_key(line)
 
@@ -196,7 +204,9 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
     for row in extract_material_rows("\n".join(computed_rows)):
         key = material_row_key(row)
         if key:
-            computed_by_key[key] = row
+            existing = computed_by_key.get(key)
+            if existing is None or (_is_verify_material_row(existing) and not _is_verify_material_row(row)):
+                computed_by_key[key] = row
         else:
             computed_other.append(row)
 
@@ -214,9 +224,14 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
     for row in extract_material_rows("\n".join(existing_rows)):
         key = material_row_key(row)
         if key and key in computed_by_key:
-            add(computed_by_key[key])
+            computed = computed_by_key[key]
+            if _is_verify_material_row(computed):
+                cable_key = cable_material_key(row)
+                add(canonicalize_cable_material_row(row, apply_buffer=True) if _should_canonicalize_cable_key(cable_key) else row)
+            else:
+                add(computed)
             used_keys.add(key)
-        elif cable_material_key(row):
+        elif _should_canonicalize_cable_key(cable_material_key(row)):
             add(canonicalize_cable_material_row(row, apply_buffer=True))
         else:
             add(row)
@@ -229,6 +244,17 @@ def merge_material_rows(existing_rows: list[str], computed_rows: list[str]) -> l
         add(row)
 
     return merged
+
+
+def _is_verify_material_row(line: str) -> bool:
+    return bool(re.search(r"\s-\s*VERIFY\s*(?:'|ft\b|feet\b|ea\b)?\s*$", line or "", re.I))
+
+
+def _should_canonicalize_cable_key(key: str | None) -> bool:
+    if not key:
+        return False
+    entry = PART_MAP.get(key)
+    return bool(entry and entry[2] not in ADDITIONAL_MATERIAL_PARTS)
 
 
 def derive_cable_footage(
@@ -270,11 +296,13 @@ def _derive_cable_footage(
     handled_callout_lines: set[str] = set()
     type_evidence: dict[str, set[str]] = defaultdict(set)
     storage_by_type: dict[str, list[CableFootageItem]] = defaultdict(list)
+    marker_evidence_by_type: dict[str, list[tuple[CableFootageItem, str]]] = defaultdict(list)
+    marker_warnings_by_type: dict[str, list[str]] = defaultdict(list)
     path_segments: list[CableFootageItem] = []
 
     for block in field_blocks:
-        for raw_line in block.text.splitlines():
-            line = _clean_text(raw_line)
+        block_lines = [_clean_text(raw_line) for raw_line in block.text.splitlines()]
+        for index, line in enumerate(block_lines):
             if not line:
                 continue
             for match in STORAGE_PATTERN.finditer(line):
@@ -290,6 +318,12 @@ def _derive_cable_footage(
                 storage_by_type[key].append(item)
                 type_evidence[key].add(line)
                 handled_callout_lines.add(line)
+                marker_line = block_lines[index + 1] if index + 1 < len(block_lines) else ""
+                if marker_line:
+                    marker = MARKER_PAIR_PATTERN.search(marker_line)
+                    if marker:
+                        marker_evidence_by_type[key].append((item, marker.group(0)))
+                        handled_callout_lines.add(marker_line)
             for match in DESIGNATION_PATTERN.finditer(line):
                 key = normalize_cable_type(match.group("type"))
                 if key:
@@ -313,6 +347,15 @@ def _derive_cable_footage(
                     )
                 )
 
+    marker_segments_by_type: dict[str, CableFootageItem] = {}
+    for key, evidence in marker_evidence_by_type.items():
+        if key != "drop_f":
+            continue
+        marker_segment, marker_warnings = _station_marker_path_segment(key, evidence)
+        marker_warnings_by_type[key].extend(marker_warnings)
+        if marker_segment:
+            marker_segments_by_type[key] = marker_segment
+
     if not path_segments and not storage_by_type and not type_evidence:
         return CableFootageResult()
 
@@ -333,9 +376,13 @@ def _derive_cable_footage(
         family, display_type, part_number = PART_MAP.get(key, ("", key, ""))
         storage_items = storage_by_type.get(key, [])
         assigned_segments = path_segments if key == assigned_path_type else []
+        if key in marker_segments_by_type:
+            assigned_segments = [marker_segments_by_type[key]]
+            storage_items = []
         if not assigned_segments and not storage_items:
             continue
         review_flags: list[str] = []
+        review_flags.extend(marker_warnings_by_type.get(key, []))
         if not family:
             review_flags.append(f"No material part mapping found for cable type {display_type}.")
         if not assigned_segments:
@@ -389,9 +436,12 @@ def _build_line(
     subtotal = path_subtotal + storage_subtotal
     total_ft: int | None = None
     material_line = ""
+    review_material_line = ""
     if path_subtotal > 0 and part_number and family:
         total_ft = buffered_cable_footage(subtotal, family, coax_rounding_increment)
         material_line = f"{part_number} ({display_type}) - {total_ft}'"
+    elif part_number and family in {"fiber", "drop_fiber"} and storage_subtotal > 0:
+        review_material_line = f"{part_number} ({display_type}) - VERIFY"
     source_pages = sorted({item.page for item in [*path_segments, *storage_items] if item.page})
     return CableFootageLine(
         callout=key,
@@ -406,6 +456,7 @@ def _build_line(
         rounding=rounding,
         total_ft=total_ft,
         material_line=material_line,
+        review_material_line=review_material_line,
         eligible_for_stamp=bool(auto_stamp and material_line and not review_flags),
         source_pages=source_pages,
         confidence=0.92 if material_line and not review_flags else 0.55,
@@ -419,6 +470,58 @@ def _clean_label(value: str) -> str:
 
 def _number(value: str) -> float:
     return float(value.replace(",", ""))
+
+
+def _station_marker_path_segment(
+    key: str,
+    evidence: list[tuple[CableFootageItem, str]],
+) -> tuple[CableFootageItem | None, list[str]]:
+    d_values: list[int] = []
+    terminal_slack = 0.0
+    warnings: list[str] = []
+    sources: list[str] = []
+    pages: list[int] = []
+    for item, marker_text in evidence:
+        marker = MARKER_PAIR_PATTERN.search(marker_text)
+        if not marker:
+            continue
+        a_type, a_value = _station_marker_parts(marker.group("a"))
+        b_type, b_value = _station_marker_parts(marker.group("b"))
+        if a_type == "D":
+            d_values.append(a_value)
+        if b_type == "D":
+            d_values.append(b_value)
+        if {a_type, b_type} == {"D", "T"}:
+            diff = abs(a_value - b_value)
+            if abs(diff - item.feet) > 0.51:
+                warnings.append(
+                    f"Station marker distance for {item.source} ({marker_text}) does not match the labeled footage."
+                )
+            terminal_slack += diff
+        sources.append(f"{item.source} / {marker_text}")
+        if item.page:
+            pages.append(item.page)
+    if warnings:
+        return None, warnings
+    if len(d_values) < 2:
+        return None, [f"Station markers for {key} did not include enough design markers to calculate cable footage."]
+    feet = (max(d_values) - min(d_values)) + terminal_slack
+    if feet <= 0:
+        return None, [f"Station markers for {key} did not produce a positive cable footage."]
+    return (
+        CableFootageItem(
+            label="Station markers",
+            page=min(pages) if pages else 0,
+            feet=feet,
+            source="; ".join(sources),
+        ),
+        [],
+    )
+
+
+def _station_marker_parts(value: str) -> tuple[str, int]:
+    text = value.strip().upper()
+    return text[0], int(text[1:])
 
 
 def _ceil_to_increment(value: float, increment: int) -> int:
@@ -435,6 +538,8 @@ def buffered_cable_footage(feet: float, family: str, coax_increment: int = 10) -
     increment (fiber -> next 100'; coax -> COAX_ROUNDING_INCREMENT). Single source of
     truth for the buffer rule, shared by the cable-footage derive path (_build_line) and
     the Materials-box canonicalizer (Nick, BI-872022)."""
+    if family == "drop_fiber":
+        return round_half_up_to_increment(feet * CABLE_BUFFER, 1)
     increment = FIBER_ROUNDING_INCREMENT if family == "fiber" else max(1, int(coax_increment))
     return _ceil_to_increment(feet * CABLE_BUFFER, increment)
 

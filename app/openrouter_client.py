@@ -12,9 +12,10 @@ import httpx
 from PIL import Image
 
 from app.additional_materials import AdditionalMaterialResult, derive_additional_materials
-from app.cable_footage import CableFootageResult, derive_cable_footage
+from app.cable_footage import CableFootageResult, derive_cable_footage, material_row_key
 from app.config import Settings
 from app.models import SummaryResult
+from app.partial_asbuilt import derive_new_totals, extract_previously_billed_job_totals
 from app.pdf_parser import (
     build_pdf_context,
     derive_code_total_map,
@@ -41,6 +42,7 @@ class ManualReviewRequired(OpenRouterError):
         informational_notes: list[str] | None = None,
         cable_footage: list | None = None,
         materials: list[str] | None = None,
+        new_totals: list[str] | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
@@ -48,6 +50,7 @@ class ManualReviewRequired(OpenRouterError):
         self.informational_notes = informational_notes or []
         self.cable_footage = cable_footage or []
         self.materials = materials or []
+        self.new_totals = new_totals or []
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -236,6 +239,11 @@ async def summarize_with_model(
     # Per-page billing totals for the "MKR Page Totals" boxes (multi-page sheets).
     # Deterministic parser output - never routed through the LLM merge.
     page_totals = derive_code_totals_by_page(blocks, code_catalog=code_catalog)
+    previous_billed_totals = extract_previously_billed_job_totals(blocks)
+    new_totals, delta_warnings = derive_new_totals(parser_totals, previous_billed_totals)
+    parser_warnings.extend(delta_warnings)
+    if new_totals:
+        page_totals = {}
     material_code_totals = derive_code_total_map(blocks, code_catalog=code_catalog, apply_catalog=False)
     cable_result = (
         derive_cable_footage(
@@ -272,6 +280,7 @@ async def summarize_with_model(
             informational_notes=diagnostics.informational_notes,
             cable_footage=cable_result.lines,
             materials=additional_materials.material_rows,
+            new_totals=new_totals,
         )
 
     if not settings.openrouter_api_key:
@@ -338,6 +347,7 @@ async def summarize_with_model(
                 informational_notes=diagnostics.informational_notes,
                 cable_footage=cable_result.lines,
                 materials=additional_materials.material_rows,
+                new_totals=new_totals,
             ) from exc
         if parser_totals:
             # The deterministic parser is the source of truth (its totals
@@ -360,6 +370,7 @@ async def summarize_with_model(
         else:
             raise
     summary = _merge_parser_and_model(parser_totals, model_summary, settings)
+    summary = summary.model_copy(update={"new_totals": new_totals})
     summary = _with_cable_footage(summary, cable_result, settings)
     summary = _with_additional_materials(summary, additional_materials)
     for warning in diagnostics.warnings:
@@ -368,7 +379,7 @@ async def summarize_with_model(
     for note in diagnostics.informational_notes:
         if note not in summary.informational_notes:
             summary.informational_notes.append(note)
-    if not summary.job_totals and not summary.materials:
+    if not summary.job_totals and not summary.materials and not summary.new_totals:
         summary.warnings.append("Unable to identify supported totals from the drawing.")
     summary = summary.model_copy(update={"page_totals": page_totals})
     logger.info(
@@ -392,6 +403,8 @@ def _with_cable_footage(
     for line in cable_result.lines:
         if line.eligible_for_stamp and line.material_line and line.material_line not in materials:
             materials.append(line.material_line)
+        if line.review_material_line and line.review_material_line not in materials:
+            materials.append(line.review_material_line)
     warnings = list(summary.warnings)
     for warning in cable_result.warnings:
         if warning not in warnings:
@@ -416,7 +429,7 @@ def _with_additional_materials(
 ) -> SummaryResult:
     materials = list(summary.materials)
     for row in additional_materials.material_rows:
-        if row not in materials:
+        if _material_row_absent(materials, row):
             materials.append(row)
     warnings = list(summary.warnings)
     for warning in additional_materials.warnings:
@@ -439,6 +452,16 @@ def _with_additional_materials(
             "informational_notes": informational_notes,
         }
     )
+
+
+def _material_row_absent(rows: list[str], candidate: str) -> bool:
+    candidate_key = material_row_key(candidate)
+    for row in rows:
+        if candidate_key and material_row_key(row) == candidate_key:
+            return False
+        if row == candidate:
+            return False
+    return True
 
 
 async def try_models(

@@ -23,6 +23,12 @@ def test_drop_cable_types_buffer_without_100_rounding() -> None:
     ]
 
 
+def test_drop_f_rounds_to_nearest_whole_foot_not_ceiling() -> None:
+    result = derive_additional_materials([_block("Drop F - 324'")])
+
+    assert result.material_rows == ["240-0318 (Drop F) - 356'"]
+
+
 def test_drop_cable_detection_ignores_rg6_prose_without_footage() -> None:
     result = derive_additional_materials(
         [
@@ -34,7 +40,7 @@ def test_drop_cable_detection_ignores_rg6_prose_without_footage() -> None:
     assert result.material_rows == []
 
 
-def test_fiber_style_drop_f_callouts_warn_without_computing_partial_material() -> None:
+def test_fiber_style_drop_f_callouts_are_left_to_cable_marker_logic() -> None:
     result = derive_additional_materials(
         [
             _block("EOL - Drop F - 40'\nStorage - Drop F - 4'\nTie Point - Drop F - 40'"),
@@ -42,7 +48,7 @@ def test_fiber_style_drop_f_callouts_warn_without_computing_partial_material() -
     )
 
     assert result.material_rows == []
-    assert any("Possible Drop F material callout" in warning for warning in result.warnings)
+    assert result.warnings == []
 
 
 def test_direct_drop_cable_does_not_depend_on_comp15_path_subtotal() -> None:

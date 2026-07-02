@@ -10,6 +10,8 @@ import fitz
 from PIL import Image
 
 from app.box_titles import (
+    is_previously_billed_totals_box,
+    is_tool_new_totals_box,
     starts_with_job_totals_title,
     starts_with_materials_title,
     starts_with_page_totals_title,
@@ -22,6 +24,7 @@ BOX_FILL = (0.78, 1.0, 0.63)
 TEXT_RED = (1.0, 0.0, 0.0)
 MATERIAL_TEXT = (0.0, 0.0, 0.0)
 MATERIAL_BORDER_BLUE = (0.0, 0.0, 1.0)
+NEW_TOTALS_FILL = (1.0, 1.0, 0.45)
 REGULAR_FONT_ENV = "TELCYTE_PDF_REGULAR_FONT_PATH"
 BOLD_NARROW_FONT_ENV = "TELCYTE_PDF_BOLD_NARROW_FONT_PATH"
 MAX_SAFE_PLACEMENT_SCORE = 1.35
@@ -83,6 +86,12 @@ class ExistingTotalsBox:
     rect: fitz.Rect
     content: str
     font_size: float | None = None
+
+
+@dataclass(frozen=True)
+class AddedFreeTextBox:
+    xref: int
+    font_size: float
 
 
 def _render_page_for_density(page: fitz.Page, scale: float = 0.12) -> Image.Image:
@@ -424,6 +433,8 @@ def _rect_area(rect: fitz.Rect) -> float:
 def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | None = None) -> bytes:
     lines = summary.totals_box_lines()
     material_lines = summary.material_box_lines()
+    new_total_lines = summary.new_totals_box_lines()
+    touched_xrefs: set[int] = set()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         page = doc[0]
@@ -434,17 +445,21 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
         force_summary_stream = should_update_material_box
         existing_boxes = _existing_job_totals_boxes(page)
         totals_font_size: float | None = None
-        if existing_boxes:
+        if new_total_lines:
+            totals_font_size = None
+        elif existing_boxes:
             replacement = existing_boxes[0]
             _record_replaced_total_deltas(summary, replacement.content)
             _delete_annotations_by_xref(page, [box.xref for box in existing_boxes])
-            totals_font_size = _add_summary_annotation(
+            added = _add_summary_annotation(
                 page,
                 _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
                 lines,
                 preferred_font_size=replacement.font_size,
                 force_custom_stream=force_summary_stream,
             )
+            totals_font_size = added.font_size
+            touched_xrefs.add(added.xref)
         else:
             rect = choose_box_rect(page, lines)
             # Single FreeText annotation: movable in PDF editors, with no
@@ -454,12 +469,17 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
             # Rotated sheets deliberately stay in this annotation path: NR-1138768
             # had a working movable /Rotate 90 FreeText box, while baking made
             # the new box invisible to Adobe's Comments pane and impossible to drag.
-            totals_font_size = _add_summary_annotation(
+            added = _add_summary_annotation(
                 page,
                 rect,
                 lines,
                 force_custom_stream=force_summary_stream,
             )
+            totals_font_size = added.font_size
+            touched_xrefs.add(added.xref)
+
+        if new_total_lines:
+            _stamp_new_totals(page, new_total_lines, touched_xrefs)
 
         if should_update_material_box:
             if existing_material_boxes:
@@ -472,7 +492,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                 merged_material_lines = ["Materials", *merged_material_rows]
                 _record_material_merge_note(summary, existing_material_rows, merged_material_rows)
                 _delete_annotations_by_xref(page, [box.xref for box in existing_material_boxes])
-                _add_material_annotation(
+                added = _add_material_annotation(
                     page,
                     _replacement_rect_for_content(
                         page,
@@ -483,34 +503,36 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                     merged_material_lines,
                     preferred_font_size=totals_font_size,
                 )
+                touched_xrefs.add(added.xref)
             else:
                 material_rect = choose_material_box_rect(
                     page,
                     material_lines,
                     preferred_font_size=totals_font_size,
                 )
-                _add_material_annotation(
+                added = _add_material_annotation(
                     page,
                     material_rect,
                     material_lines,
                     preferred_font_size=totals_font_size,
                 )
-            if material_lines or existing_material_boxes:
-                _force_summary_line_break_appearance(page, lines)
+                touched_xrefs.add(added.xref)
 
         # Per-page "MKR Page Totals" boxes for multi-page as-builts. Page 1 (above)
         # keeps the Job Totals + Materials boxes; every later page with billing
         # codes gets its own page-totals box.
-        _stamp_page_totals(doc, summary)
+        if not new_total_lines:
+            _stamp_page_totals(doc, summary, touched_xrefs)
 
         buffer = BytesIO()
+        _force_tracked_output_box_appearances(doc, touched_xrefs)
         doc.save(buffer, garbage=4, deflate=True)
         return buffer.getvalue()
     finally:
         doc.close()
 
 
-def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
+def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult, touched_xrefs: set[int]) -> None:
     """Stamp an "MKR Page Totals" box (billing codes only) on each page after the
     first that carries per-page totals.
 
@@ -533,22 +555,66 @@ def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult) -> None:
         if existing:
             replacement = existing[0]
             _delete_annotations_by_xref(page, [box.xref for box in existing])
-            _add_summary_annotation(
+            added = _add_summary_annotation(
                 page,
                 _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
                 lines,
                 preferred_font_size=replacement.font_size,
             )
+            touched_xrefs.add(added.xref)
         else:
-            _add_summary_annotation(page, choose_box_rect(page, lines), lines)
+            added = _add_summary_annotation(page, choose_box_rect(page, lines), lines)
+            touched_xrefs.add(added.xref)
+
+
+def _stamp_new_totals(page: fitz.Page, lines: list[str], touched_xrefs: set[int]) -> None:
+    existing = _existing_tool_new_totals_boxes(page)
+    if existing:
+        replacement = existing[0]
+        _delete_annotations_by_xref(page, [box.xref for box in existing])
+        added = _add_new_totals_annotation(
+            page,
+            _new_totals_rect(
+                page,
+                _replacement_rect_for_content(page, replacement.rect, lines, replacement.font_size),
+            ),
+            lines,
+            preferred_font_size=replacement.font_size,
+        )
+        touched_xrefs.add(added.xref)
+        return
+    added = _add_new_totals_annotation(page, _new_totals_rect(page, choose_box_rect(page, lines)), lines)
+    touched_xrefs.add(added.xref)
+
+
+def _new_totals_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+    if page.rotation not in {90, 270}:
+        return rect
+    bounds = _annotation_bounds(page)
+    min_width = min(bounds.width * 0.32, 230.0)
+    if rect.width >= min_width:
+        return _clamp_annotation_rect(page, rect)
+    expanded = fitz.Rect(rect)
+    expanded.x1 = expanded.x0 + min_width
+    return _clamp_annotation_rect(page, expanded)
 
 
 def _existing_job_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, starts_with_job_totals_title)
+    return _existing_output_boxes(
+        page,
+        lambda content: starts_with_job_totals_title(content) and not is_previously_billed_totals_box(content),
+    )
 
 
 def _existing_page_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
-    return _existing_output_boxes(page, starts_with_page_totals_title)
+    return _existing_output_boxes(
+        page,
+        lambda content: starts_with_page_totals_title(content) and not is_previously_billed_totals_box(content),
+    )
+
+
+def _existing_tool_new_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
+    return _existing_output_boxes(page, is_tool_new_totals_box)
 
 
 def _existing_material_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
@@ -593,13 +659,41 @@ def _replacement_rect_for_content(
     """
     width, height, _, _ = _placement_box_metrics_for_font(page, lines, font_size=preferred_font_size)
     rect = fitz.Rect(anchor.x0, anchor.y0, anchor.x0 + width, anchor.y0 + height)
-    if rect.x1 > page.rect.x1:
-        rect.x0 = max(page.rect.x0, page.rect.x1 - width)
-        rect.x1 = page.rect.x1
-    if rect.y1 > page.rect.y1:
-        rect.y0 = max(page.rect.y0, page.rect.y1 - height)
-        rect.y1 = page.rect.y1
-    return rect
+    return _clamp_annotation_rect(page, rect)
+
+
+def _annotation_bounds(page: fitz.Page) -> fitz.Rect:
+    bounds = fitz.Rect(page.rect) * page.derotation_matrix
+    bounds.normalize()
+    return bounds
+
+
+def _clamp_annotation_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+    bounds = _annotation_bounds(page)
+    out = fitz.Rect(rect)
+    if out.width > bounds.width:
+        out.x0, out.x1 = bounds.x0, bounds.x1
+    else:
+        if out.x0 < bounds.x0:
+            out.x1 += bounds.x0 - out.x0
+            out.x0 = bounds.x0
+        if out.x1 > bounds.x1:
+            out.x0 -= out.x1 - bounds.x1
+            out.x1 = bounds.x1
+    if out.height > bounds.height:
+        out.y0, out.y1 = bounds.y0, bounds.y1
+    else:
+        if out.y0 < bounds.y0:
+            out.y1 += bounds.y0 - out.y0
+            out.y0 = bounds.y0
+        if out.y1 > bounds.y1:
+            out.y0 -= out.y1 - bounds.y1
+            out.y1 = bounds.y1
+    out.x0 = max(bounds.x0, out.x0)
+    out.y0 = max(bounds.y0, out.y0)
+    out.x1 = min(bounds.x1, out.x1)
+    out.y1 = min(bounds.y1, out.y1)
+    return out
 
 
 def _box_metrics_for_font(
@@ -766,7 +860,7 @@ def _add_summary_annotation(
     lines: list[str],
     preferred_font_size: float | None = None,
     force_custom_stream: bool = False,
-) -> float:
+) -> AddedFreeTextBox:
     return _add_freetext_box(
         page,
         rect,
@@ -779,27 +873,43 @@ def _add_summary_annotation(
     )
 
 
-def _force_summary_line_break_appearance(page: fitz.Page, lines: list[str]) -> None:
-    for annot in page.annots() or []:
-        content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
-        if annot.type[1] != "FreeText" or not starts_with_job_totals_title(content):
-            continue
-        font_size = _annotation_font_size(page.parent, annot.xref)
-        rendered_lines, font_size, _ = _summary_rendering(page, annot.rect, lines, font_size=font_size)
-        _repair_freetext_appearance(
-            page,
-            annot,
-            annot.rect,
-            rendered_lines,
-            font_size,
-            text_color=TEXT_RED,
-            border_color=TEXT_RED,
-            fill_color=BOX_FILL,
-            force_custom_stream=True,
-        )
-        _set_editor_text_style(page, annot, rendered_lines, font_size, TEXT_RED)
-        _pin_annotation_orientation(page, annot)
+def _force_tracked_output_box_appearances(doc: fitz.Document, touched_xrefs: set[int]) -> None:
+    if not touched_xrefs:
         return
+    for page in doc:
+        for annot in page.annots() or []:
+            if annot.type[1] != "FreeText":
+                continue
+            content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
+            if annot.xref not in touched_xrefs and not is_tool_new_totals_box(content):
+                continue
+            lines = [line for line in content.splitlines() if line.strip()]
+            if not lines:
+                continue
+            text_color, border_color, fill_color = _style_for_output_box(content)
+            font_size = _annotation_font_size(doc, annot.xref)
+            rendered_lines, font_size, _ = _summary_rendering(page, annot.rect, lines, font_size=font_size)
+            _repair_freetext_appearance(
+                page,
+                annot,
+                annot.rect,
+                rendered_lines,
+                font_size,
+                text_color=text_color,
+                border_color=border_color,
+                fill_color=fill_color,
+                force_custom_stream=True,
+            )
+            _set_editor_text_style(page, annot, rendered_lines, font_size, text_color)
+            _pin_annotation_orientation(page, annot)
+
+
+def _style_for_output_box(content: str) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    if starts_with_materials_title(content):
+        return MATERIAL_TEXT, MATERIAL_BORDER_BLUE, BOX_FILL
+    if is_tool_new_totals_box(content):
+        return TEXT_RED, TEXT_RED, NEW_TOTALS_FILL
+    return TEXT_RED, TEXT_RED, BOX_FILL
 
 
 def _add_material_annotation(
@@ -807,7 +917,7 @@ def _add_material_annotation(
     rect: fitz.Rect,
     lines: list[str],
     preferred_font_size: float | None = None,
-) -> float:
+) -> AddedFreeTextBox:
     return _add_freetext_box(
         page,
         rect,
@@ -816,6 +926,24 @@ def _add_material_annotation(
         text_color=MATERIAL_TEXT,
         border_color=MATERIAL_BORDER_BLUE,
         fill_color=BOX_FILL,
+        force_custom_stream=True,
+    )
+
+
+def _add_new_totals_annotation(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    lines: list[str],
+    preferred_font_size: float | None = None,
+) -> AddedFreeTextBox:
+    return _add_freetext_box(
+        page,
+        rect,
+        lines,
+        preferred_font_size=preferred_font_size,
+        text_color=TEXT_RED,
+        border_color=TEXT_RED,
+        fill_color=NEW_TOTALS_FILL,
         force_custom_stream=True,
     )
 
@@ -829,11 +957,12 @@ def _add_freetext_box(
     border_color: tuple[float, float, float] = TEXT_RED,
     fill_color: tuple[float, float, float] = BOX_FILL,
     force_custom_stream: bool = False,
-) -> float:
+) -> AddedFreeTextBox:
+    logical_lines = [line for line in lines if line.strip()]
     rendered_lines, font_size, _ = _summary_rendering(page, rect, lines, font_size=preferred_font_size)
     annot = page.add_freetext_annot(
         rect,
-        "\n".join(rendered_lines),
+        "\n".join(logical_lines),
         fontsize=font_size,
         fontname="helv",
         text_color=text_color,
@@ -870,7 +999,7 @@ def _add_freetext_box(
     )
     _set_editor_text_style(page, annot, rendered_lines, font_size, text_color)
     _pin_annotation_orientation(page, annot)
-    return font_size
+    return AddedFreeTextBox(xref=annot.xref, font_size=font_size)
 
 
 def _write_freetext_appearance(
@@ -903,6 +1032,11 @@ def _write_freetext_appearance(
 
     doc.xref_set_key(ap_xref, "BBox", f"[0 0 {_pdf_num(bbox_width)} {_pdf_num(bbox_height)}]")
     doc.xref_set_key(ap_xref, "Matrix", "[" + " ".join(_pdf_num(value) for value in matrix) + "]")
+    doc.xref_set_key(
+        ap_xref,
+        "Resources",
+        "<< /Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>",
+    )
     doc.update_stream(
         ap_xref,
         _freetext_appearance_stream(
@@ -1040,6 +1174,8 @@ def _set_editor_text_style(
         back to black text on move (Nick, BI-945043, 2026-06-10). Write all three
         in standard form with the intended color.
     """
+    if page.rotation != 0:
+        return
     doc = page.parent
     size = round(float(font_size), 2)
     doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(f"/Helv {size} Tf {_rgb_operator(text_color)} rg"))
@@ -1073,19 +1209,18 @@ def _summary_rendering(
 ) -> tuple[list[str], float, float]:
     _, _, default_font_size, _ = _box_metrics(page, lines)
     font_size = font_size or default_font_size
-    padding = font_size * 0.5
-    text_width, text_height = _annotation_text_space(page, rect)
-    line_height = font_size * 1.16
-    max_lines = max(1, int((text_height - padding * 2) / line_height))
-    rendered_lines: list[str] = []
-    remaining = max_lines
-    max_width = max(font_size * 4, text_width - padding * 2)
-    for line in lines:
-        if remaining <= 0:
-            break
-        wrapped = _wrap_line(line, max_width, font_size)
-        rendered_lines.extend(wrapped[:remaining])
-        remaining -= len(wrapped[:remaining])
+    for _ in range(16):
+        padding = font_size * 0.5
+        text_width, text_height = _annotation_text_space(page, rect)
+        line_height = font_size * 1.16
+        max_lines = max(1, int((text_height - padding * 2) / line_height))
+        max_width = max(font_size * 4, text_width - padding * 2)
+        rendered_lines: list[str] = []
+        for line in lines:
+            rendered_lines.extend(_wrap_line(line, max_width, font_size))
+        if len(rendered_lines) <= max_lines or font_size <= 8.01:
+            return rendered_lines, font_size, padding
+        font_size = max(8.0, font_size * 0.9)
     return rendered_lines, font_size, padding
 
 
