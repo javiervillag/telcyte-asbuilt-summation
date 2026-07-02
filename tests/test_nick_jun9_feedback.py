@@ -996,6 +996,44 @@ def test_negative_previously_billed_delta_warns_without_new_total() -> None:
     assert any("higher than the recomputed total" in warning for warning in warnings)
 
 
+def test_previously_billed_delta_includes_brand_new_codes() -> None:
+    rows, warnings = derive_new_totals(
+        [
+            "UG-06 - 5",
+            "UG-80 - 924",
+            "UG-03 - 2049",
+            "UG-44 - 899",
+            "Comp-9 - 1160",
+            "Comp-6 - 1160",
+            "UG-38 - 4640",
+            "UG-60 - 780",
+            "UG-85 - 12",
+        ],
+        {
+            ("COMP", "9"): 832.0,
+            ("COMP", "6"): 832.0,
+            ("UG", "38"): 3328.0,
+            ("UG", "85"): 12.0,
+            ("UG", "80"): 269.0,
+            ("UG", "3"): 1139.0,
+            ("UG", "44"): 443.0,
+            ("UG", "60"): 414.0,
+        },
+    )
+
+    assert rows == [
+        "UG-06 - 5",
+        "UG-80 - 655",
+        "UG-03 - 910",
+        "UG-44 - 456",
+        "Comp-9 - 328",
+        "Comp-6 - 328",
+        "UG-38 - 1312",
+        "UG-60 - 366",
+    ]
+    assert warnings == []
+
+
 def test_previously_billed_boxes_are_preserved_and_tool_new_totals_replace_on_rerun() -> None:
     doc = fitz.open()
     page1 = doc.new_page(width=1224, height=792)

@@ -38,9 +38,7 @@ def derive_new_totals(
         if not parsed:
             continue
         key, cumulative_qty_text, _unit = parsed
-        previous_qty = previous_totals.get(key)
-        if previous_qty is None:
-            continue
+        previous_qty = previous_totals.get(key, 0.0)
         seen_previous.discard(key)
         cumulative_qty = float(cumulative_qty_text.replace(",", ""))
         delta = cumulative_qty - previous_qty
