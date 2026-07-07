@@ -158,6 +158,66 @@ def test_bi_942102_fiber_material_rounds_to_1700() -> None:
     assert line.eligible_for_stamp is True
 
 
+def test_fiber_fallback_pull_codes_use_path_only_without_storage() -> None:
+    blocks = [
+        _block("EOL - 48Ct - 30'"),
+        _block("UG-56 - 8'\nUG-56 - 102'\nUG-56 - 358'"),
+        _block("Tie Point - 48Ct - 100'\nStorage - 48Ct - 106'"),
+    ]
+
+    result = derive_cable_footage(
+        blocks,
+        auto_stamp=True,
+        fallback_path_codes=["UG-54", "UG-55", "UG-56", "UG-57", "DP-11"],
+    )
+
+    assert result.warnings == []
+    line = result.lines[0]
+    assert line.path_subtotal == 468
+    assert line.storage_subtotal == 236
+    assert line.total_ft == 600
+    assert line.material_line == "605-3277 (48Ct) - 600'"
+    assert line.eligible_for_stamp is True
+
+
+def test_comp15_takes_precedence_over_fallback_pull_codes() -> None:
+    blocks = [
+        _block("Comp-15 - 582'\nUG-56 - 70'\nDP-11 - 134'"),
+        _block("EOL - 48Ct - 100'\nStorage - 48Ct - 50'\nStorage - 48Ct - 50'\nTie Point - 48Ct - 50'"),
+    ]
+
+    result = derive_cable_footage(
+        blocks,
+        auto_stamp=True,
+        fallback_path_codes=["UG-56", "DP-11"],
+    )
+
+    line = result.lines[0]
+    assert line.path_subtotal == 582
+    assert line.storage_subtotal == 250
+    assert line.total_ft == 1000
+    assert line.material_line == "605-3277 (48Ct) - 1000'"
+
+
+def test_fallback_pull_codes_stay_verify_when_multiple_cable_types_present() -> None:
+    blocks = [
+        _block("UG-56 - 468'"),
+        _block("EOL - 48Ct - 30'\nStorage - 48Ct - 106'"),
+        _block("EOL - Drop F - 40'\nStorage - Drop F - 4'"),
+    ]
+
+    result = derive_cable_footage(
+        blocks,
+        auto_stamp=True,
+        fallback_path_codes=["UG-56"],
+    )
+
+    fiber = next(line for line in result.lines if line.callout == "48ct")
+    assert fiber.material_line == ""
+    assert fiber.review_material_line == "605-3277 (48Ct) - VERIFY"
+    assert any("path ownership needs review" in warning for warning in result.warnings)
+
+
 def test_cable_path_is_independent_of_rate_card_filtering() -> None:
     blocks = [_block("Storage - 48Ct - 100'\nComp-15 - 290'\nComp-15 - 270'")]
 
@@ -253,6 +313,19 @@ def test_verify_material_row_is_keyed_and_replaced_by_numeric_row() -> None:
     ]
     assert merge_material_rows(["605-3277 (48Ct) - 1000'"], ["605-3277 (48Ct) - VERIFY"]) == [
         "605-3277 (48Ct) - 1000'",
+    ]
+
+
+def test_hand_written_fiber_material_row_is_keyed_and_does_not_rebuffer() -> None:
+    hand_row = "605-3277- 48Ct FIBER- 600'"
+
+    assert cable_material_key(hand_row) == "48ct"
+    assert canonicalize_cable_material_row(hand_row, apply_buffer=True) == "605-3277 (48Ct) - 600'"
+    assert merge_material_rows([hand_row], ["605-3277 (48Ct) - VERIFY"]) == [
+        "605-3277 (48Ct) - 600'",
+    ]
+    assert merge_material_rows([hand_row], ["605-3277 (48Ct) - 600'"]) == [
+        "605-3277 (48Ct) - 600'",
     ]
 
 

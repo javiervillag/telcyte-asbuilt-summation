@@ -7,8 +7,14 @@ from dataclasses import dataclass, field
 
 from app.additional_materials import ADDITIONAL_MATERIAL_PARTS, round_half_up_to_increment
 from app.models import CableFootageItem, CableFootageLine
-from app.pdf_parser import TextBlock, _clean_text, _is_non_billing_context, field_evidence_blocks
-from app.rate_cards import CODE_TEXT_PATTERN, QTY_TEXT_PATTERN, code_key
+from app.pdf_parser import (
+    TextBlock,
+    _clean_text,
+    _is_non_billing_context,
+    derive_code_total_map,
+    field_evidence_blocks,
+)
+from app.rate_cards import CODE_TEXT_PATTERN, QTY_TEXT_PATTERN, CodeKey, code_key
 
 
 PART_MAP = {
@@ -53,6 +59,11 @@ MATERIAL_ROW_QTY_TEXT = r"(?:\d[\d,]*(?:\.\d+)?|VERIFY)"
 MATERIAL_PART_TYPE_ROW_PATTERN = re.compile(
     rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*\(\s*(?P<type>{TYPE_TEXT})\s*\)\s*-\s*"
     rf"{MATERIAL_ROW_QTY_TEXT}\s*(?:'|ft\b|feet\b)?\s*$",
+    re.I,
+)
+MATERIAL_PART_DESCRIPTOR_ROW_PATTERN = re.compile(
+    rf"^\s*(?P<part>{MATERIAL_PART_TEXT})\s*-\s*(?P<type>{TYPE_TEXT})\s*"
+    rf"(?:fiber|cable)?\s*-\s*{MATERIAL_ROW_QTY_TEXT}\s*(?:'|ft\b|feet\b)?\s*$",
     re.I,
 )
 MATERIAL_PART_ONLY_ROW_PATTERN = re.compile(
@@ -115,6 +126,12 @@ def cable_material_key(line: str) -> str | None:
     text = re.sub(r"\s+", " ", line or "").strip()
 
     match = MATERIAL_PART_TYPE_ROW_PATTERN.match(text)
+    if match:
+        part_key = MATERIAL_PART_TO_KEY.get(match.group("part"))
+        type_key = normalize_cable_type(match.group("type"))
+        return part_key if part_key and part_key == type_key else None
+
+    match = MATERIAL_PART_DESCRIPTOR_ROW_PATTERN.match(text)
     if match:
         part_key = MATERIAL_PART_TO_KEY.get(match.group("part"))
         type_key = normalize_cable_type(match.group("type"))
@@ -188,10 +205,7 @@ def canonicalize_cable_material_row(line: str, *, apply_buffer: bool = False) ->
         # carry the legacy bare part or an unrounded measurement), so the collision
         # is unlikely; idempotency is the safer default. Pinned by
         # test_canonicalize_buffer_does_not_rebuffer_canonical_round_label.
-        already_buffered = (
-            MATERIAL_PART_TYPE_ROW_PATTERN.match(text) is not None
-            and feet % FIBER_ROUNDING_INCREMENT == 0
-        )
+        already_buffered = _is_labeled_final_fiber_material_row(text) and feet % FIBER_ROUNDING_INCREMENT == 0
         if not already_buffered:
             return f"{part_number} ({display_type}) - {buffered_cable_footage(feet, family)}'"
     return f"{part_number} ({display_type}) - {footage_text}"
@@ -257,11 +271,19 @@ def _should_canonicalize_cable_key(key: str | None) -> bool:
     return bool(entry and entry[2] not in ADDITIONAL_MATERIAL_PARTS)
 
 
+def _is_labeled_final_fiber_material_row(text: str) -> bool:
+    return (
+        MATERIAL_PART_TYPE_ROW_PATTERN.match(text) is not None
+        or MATERIAL_PART_DESCRIPTOR_ROW_PATTERN.match(text) is not None
+    )
+
+
 def derive_cable_footage(
     blocks: list[TextBlock],
     *,
     auto_stamp: bool = False,
     path_code: str = "Comp-15",
+    fallback_path_codes: list[str] | tuple[str, ...] = (),
     coax_rounding_increment: int = 10,
 ) -> CableFootageResult:
     try:
@@ -269,6 +291,7 @@ def derive_cable_footage(
             blocks,
             auto_stamp=auto_stamp,
             path_code=path_code,
+            fallback_path_codes=fallback_path_codes,
             coax_rounding_increment=coax_rounding_increment,
         )
     except Exception as exc:  # noqa: BLE001 - cable must never sink billing
@@ -284,6 +307,7 @@ def _derive_cable_footage(
     *,
     auto_stamp: bool,
     path_code: str,
+    fallback_path_codes: list[str] | tuple[str, ...],
     coax_rounding_increment: int,
 ) -> CableFootageResult:
     field_blocks, _skipped_total_boxes, _skipped_material_boxes = field_evidence_blocks(blocks)
@@ -299,6 +323,8 @@ def _derive_cable_footage(
     marker_evidence_by_type: dict[str, list[tuple[CableFootageItem, str]]] = defaultdict(list)
     marker_warnings_by_type: dict[str, list[str]] = defaultdict(list)
     path_segments: list[CableFootageItem] = []
+    primary_path_segments: list[CableFootageItem] = []
+    path_includes_storage = True
 
     for block in field_blocks:
         block_lines = [_clean_text(raw_line) for raw_line in block.text.splitlines()]
@@ -347,6 +373,18 @@ def _derive_cable_footage(
                     )
                 )
 
+    primary_path_segments = list(path_segments)
+    fallback_warnings: list[str] = []
+    using_fallback_path = False
+    if not primary_path_segments and fallback_path_codes:
+        path_segments, fallback_warnings = _fallback_path_segments_from_code_totals(
+            blocks,
+            field_blocks,
+            fallback_path_codes,
+        )
+        path_includes_storage = False
+        using_fallback_path = bool(path_segments)
+
     marker_segments_by_type: dict[str, CableFootageItem] = {}
     for key, evidence in marker_evidence_by_type.items():
         if key != "drop_f":
@@ -360,6 +398,7 @@ def _derive_cable_footage(
         return CableFootageResult()
 
     result = CableFootageResult(handled_callout_lines=handled_callout_lines)
+    result.warnings.extend(fallback_warnings)
 
     type_keys = sorted(type_evidence or storage_by_type)
     if not type_keys:
@@ -383,6 +422,9 @@ def _derive_cable_footage(
             continue
         review_flags: list[str] = []
         review_flags.extend(marker_warnings_by_type.get(key, []))
+        if using_fallback_path and family != "fiber" and key not in marker_segments_by_type:
+            assigned_segments = []
+            review_flags.append("Fallback UG/DP pull-code footage is only validated for fiber cable types.")
         if not family:
             review_flags.append(f"No material part mapping found for cable type {display_type}.")
         if not assigned_segments:
@@ -398,6 +440,7 @@ def _derive_cable_footage(
             storage_items,
             auto_stamp=auto_stamp,
             coax_rounding_increment=coax_rounding_increment,
+            include_storage_in_total=path_includes_storage,
             review_flags=review_flags,
         )
         result.lines.append(line)
@@ -424,6 +467,7 @@ def _build_line(
     *,
     auto_stamp: bool,
     coax_rounding_increment: int,
+    include_storage_in_total: bool = True,
     review_flags: list[str],
 ) -> CableFootageLine:
     path_subtotal = sum(item.feet for item in path_segments)
@@ -433,7 +477,7 @@ def _build_line(
         storage_subtotal = 0.0
         rounding = f"ceil_{max(1, int(coax_rounding_increment))}"
         review_flags.append("Coax source path must be validated before automatic stamping.")
-    subtotal = path_subtotal + storage_subtotal
+    subtotal = path_subtotal + (storage_subtotal if include_storage_in_total else 0.0)
     total_ft: int | None = None
     material_line = ""
     review_material_line = ""
@@ -462,6 +506,56 @@ def _build_line(
         confidence=0.92 if material_line and not review_flags else 0.55,
         review_flags=review_flags,
     )
+
+
+def _fallback_path_segments_from_code_totals(
+    blocks: list[TextBlock],
+    field_blocks: list[TextBlock],
+    fallback_path_codes: list[str] | tuple[str, ...],
+) -> tuple[list[CableFootageItem], list[str]]:
+    code_labels_by_key: dict[CodeKey, str] = {}
+    warnings: list[str] = []
+    for raw_code in fallback_path_codes:
+        key = code_key(raw_code)
+        if not key:
+            clean = re.sub(r"\s+", " ", raw_code or "").strip()
+            if clean:
+                warnings.append(f"Cable fallback path code is not a supported code: {clean}.")
+            continue
+        code_labels_by_key.setdefault(key, _display_path_code(raw_code))
+    if not code_labels_by_key:
+        return [], warnings
+
+    totals = derive_code_total_map(blocks, apply_catalog=False)
+    pages_by_key = _first_pages_for_codes(field_blocks, set(code_labels_by_key))
+    segments: list[CableFootageItem] = []
+    for key, label in code_labels_by_key.items():
+        feet = totals.get(key, 0.0)
+        if feet <= 0:
+            continue
+        segments.append(
+            CableFootageItem(
+                label=label,
+                page=pages_by_key.get(key, 0),
+                feet=feet,
+                source=f"{label} - {feet:g}' (billing total)",
+            )
+        )
+    return segments, warnings
+
+
+def _first_pages_for_codes(
+    field_blocks: list[TextBlock],
+    target_keys: set[CodeKey],
+) -> dict[CodeKey, int]:
+    pages: dict[CodeKey, int] = {}
+    for block in field_blocks:
+        for line in block.text.splitlines():
+            for match in DIRECT_CODE_PATTERN.finditer(line):
+                key = code_key(match.group(1))
+                if key in target_keys and key not in pages:
+                    pages[key] = block.page
+    return pages
 
 
 def _clean_label(value: str) -> str:

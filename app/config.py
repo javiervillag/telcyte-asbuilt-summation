@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     include_cable_footage: bool = Field(default=False, alias="INCLUDE_CABLE_FOOTAGE")
     auto_stamp_cable_footage: bool = Field(default=False, alias="AUTO_STAMP_CABLE_FOOTAGE")
     cable_path_code: str = Field(default="Comp-15", alias="CABLE_PATH_CODE")
+    cable_fallback_path_codes: str = Field(
+        default="UG-54,UG-55,UG-56,UG-57,DP-11",
+        alias="CABLE_FALLBACK_PATH_CODES",
+    )
     coax_rounding_increment: int = Field(default=10, alias="COAX_ROUNDING_INCREMENT")
     allow_llm_inferred_totals: bool = Field(default=False, alias="ALLOW_LLM_INFERRED_TOTALS")
     enable_model_review_on_warnings: bool = Field(default=True, alias="ENABLE_MODEL_REVIEW_ON_WARNINGS")
@@ -48,6 +52,10 @@ class Settings(BaseSettings):
     @property
     def candidate_models(self) -> list[str]:
         return [m.strip() for m in self.openrouter_model_candidates.split(",") if m.strip()]
+
+    @property
+    def fallback_path_code_list(self) -> list[str]:
+        return [code.strip() for code in self.cable_fallback_path_codes.split(",") if code.strip()]
 
     @property
     def run_log_url(self) -> Optional[str]:

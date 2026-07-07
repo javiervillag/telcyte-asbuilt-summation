@@ -250,6 +250,7 @@ async def summarize_with_model(
             blocks,
             auto_stamp=settings.auto_stamp_cable_footage,
             path_code=settings.cable_path_code,
+            fallback_path_codes=settings.fallback_path_code_list,
             coax_rounding_increment=settings.coax_rounding_increment,
         )
         if settings.include_cable_footage
