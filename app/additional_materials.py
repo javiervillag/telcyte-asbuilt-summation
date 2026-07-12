@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.pdf_parser import TextBlock, _clean_text, derive_code_total_map, field_evidence_blocks
+from app.models import SummaryIssue
 from app.rate_cards import CodeKey
 
 
@@ -42,6 +43,7 @@ class AdditionalMaterialResult:
     lines: list[DerivedMaterialLine] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     informational_notes: list[str] = field(default_factory=list)
+    issues: list[SummaryIssue] = field(default_factory=list)
     handled_callout_lines: set[str] = field(default_factory=set)
 
     @property
@@ -227,6 +229,14 @@ def _record_unparsed_label_warning(
     )
     if warning not in result.warnings:
         result.warnings.append(warning)
+        result.issues.append(
+            SummaryIssue(
+                severity="action",
+                code="additional_material_unparsed",
+                message=warning,
+                subject=rule.rule_id,
+            )
+        )
 
 
 def _is_prefixed_drop_f_callout(line: str) -> bool:

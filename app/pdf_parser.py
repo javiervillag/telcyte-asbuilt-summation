@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import fitz
 
 from app.box_titles import starts_with_materials_title, starts_with_totals_title
+from app.models import SummaryIssue
 from app.rate_cards import (
     CODE_PATTERN,
     CODE_TEXT_PATTERN,
@@ -40,6 +41,7 @@ class ExtractionDiagnostics:
     review_required: bool
     warnings: list[str]
     informational_notes: list[str]
+    issues: list[SummaryIssue]
 
 
 # Permit drawings span many sheets with billing callouts on later pages
@@ -517,33 +519,50 @@ def diagnose_extraction(
     unresolved_callout_count = len(unresolved_callouts)
     warnings: list[str] = []
     informational_notes: list[str] = []
+    issues: list[SummaryIssue] = []
+
+    def add_issue(severity: str, code: str, message: str, subject: str | None = None) -> None:
+        issues.append(SummaryIssue(severity=severity, code=code, message=message, subject=subject))
     has_weak_text_layer = len(blocks) < MIN_READABLE_BLOCKS or text_chars < MIN_READABLE_CHARS
     has_weak_quantity_context = len(quantity_lines) < MIN_QUANTITY_LINES
     has_strong_page_text = not has_weak_text_layer and not has_weak_quantity_context and bool(code_totals)
 
     if has_weak_text_layer:
-        warnings.append("This PDF does not have enough readable text for automatic summation.")
+        message = "This PDF does not have enough readable text for automatic summation."
+        warnings.append(message)
+        add_issue("blocker", "weak_text_layer", message)
     elif has_weak_quantity_context:
-        warnings.append("The PDF text layer has very few readable quantity lines.")
+        message = "The PDF text layer has very few readable quantity lines."
+        warnings.append(message)
+        add_issue("blocker", "weak_quantity_context", message)
     if annotation_text_count == 0 and has_strong_page_text:
         informational_notes.append(
             "No readable PDF text-box annotations were found; totals came from readable page text."
         )
     elif annotation_text_count == 0 and len(blocks) < 12:
-        warnings.append("No readable PDF text-box annotations were found.")
+        message = "No readable PDF text-box annotations were found."
+        warnings.append(message)
+        add_issue("blocker", "no_readable_annotations", message)
 
     if not code_totals:
-        warnings.append("No supported billing-code totals were found in the parsed text.")
+        message = "No supported billing-code totals were found in the parsed text."
+        warnings.append(message)
+        add_issue("blocker", "no_supported_totals", message)
     if ambiguous_code_line_count:
-        warnings.append("Some billing-code text was readable but not complete enough to total automatically.")
+        message = "Some billing-code text was readable but not complete enough to total automatically."
+        warnings.append(message)
+        add_issue("blocker", "ambiguous_code_lines", message)
     pages_beyond_cap = bool(total_pages and total_pages > DEFAULT_MAX_PARSE_PAGES)
     if pages_beyond_cap:
-        warnings.append(
+        message = (
             f"PDF has {total_pages} pages; only the first {DEFAULT_MAX_PARSE_PAGES} were parsed - "
             "verify callouts on the later sheets manually."
         )
+        warnings.append(message)
+        add_issue("blocker", "pages_beyond_parse_cap", message)
     for warning in parser_warnings or []:
         warnings.append(warning)
+        add_issue("action", "parser_warning", warning)
     for note in parser_notes or []:
         informational_notes.append(note)
     if excluded_context_lines:
@@ -557,9 +576,9 @@ def diagnose_extraction(
         preview = "; ".join(review_callouts[:6])
         if len(review_callouts) > 6:
             preview += f"; plus {len(review_callouts) - 6} more"
-        warnings.append(
-            f"Readable construction callouts require rate-card/composite interpretation: {preview}."
-        )
+        message = f"Readable construction callouts require rate-card/composite interpretation: {preview}."
+        warnings.append(message)
+        add_issue("action", "unresolved_construction_callouts", message)
     if note_callouts and has_strong_page_text:
         preview = "; ".join(note_callouts[:6])
         if len(note_callouts) > 6:
@@ -571,9 +590,9 @@ def diagnose_extraction(
         preview = "; ".join(note_callouts[:6])
         if len(note_callouts) > 6:
             preview += f"; plus {len(note_callouts) - 6} more"
-        warnings.append(
-            f"Readable construction callouts require rate-card/composite interpretation: {preview}."
-        )
+        message = f"Readable construction callouts require rate-card/composite interpretation: {preview}."
+        warnings.append(message)
+        add_issue("action", "unresolved_construction_callouts", message)
 
     review_required = (
         has_weak_text_layer
@@ -585,7 +604,11 @@ def diagnose_extraction(
         or bool(parser_warnings)
     )
     if review_required:
-        warnings.append("Manual review is required; the app did not add unsupported totals.")
+        message = "Manual review is required; the app did not add unsupported totals."
+        warnings.append(message)
+        # The underlying blocker/action issue carries the useful status. This
+        # banner remains visible for compatibility but adds no new action.
+        add_issue("notice", "manual_review_banner", message)
 
     return ExtractionDiagnostics(
         block_count=len(blocks),
@@ -600,6 +623,7 @@ def diagnose_extraction(
         review_required=review_required,
         warnings=warnings,
         informational_notes=informational_notes,
+        issues=issues,
     )
 
 

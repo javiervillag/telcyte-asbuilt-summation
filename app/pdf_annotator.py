@@ -439,6 +439,12 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
     try:
         page = doc[0]
         existing_material_boxes = _existing_material_boxes(page)
+        existing_material_rows = [
+            row
+            for box in existing_material_boxes
+            for row in extract_material_rows(box.content)
+        ]
+        summary.final_material_rows = list(existing_material_rows)
         should_update_material_box = bool(material_lines) or bool(
             existing_material_boxes and summary.cable_footage
         )
@@ -484,11 +490,9 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
         if should_update_material_box:
             if existing_material_boxes:
                 material_replacement = existing_material_boxes[0]
-                existing_material_rows: list[str] = []
-                for box in existing_material_boxes:
-                    existing_material_rows.extend(extract_material_rows(box.content))
                 computed_material_rows = [line.strip() for line in summary.materials if line.strip()]
                 merged_material_rows = merge_material_rows(existing_material_rows, computed_material_rows)
+                summary.final_material_rows = list(merged_material_rows)
                 merged_material_lines = ["Materials", *merged_material_rows]
                 _record_material_merge_note(summary, existing_material_rows, merged_material_rows)
                 _delete_annotations_by_xref(page, [box.xref for box in existing_material_boxes])
@@ -505,6 +509,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
                 )
                 touched_xrefs.add(added.xref)
             else:
+                summary.final_material_rows = [line.strip() for line in summary.materials if line.strip()]
                 material_rect = choose_material_box_rect(
                     page,
                     material_lines,

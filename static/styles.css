@@ -791,6 +791,11 @@ input[type="file"] {
   background: var(--success-bg);
 }
 
+.run-status.needs_input {
+  color: var(--warn-ink);
+  background: var(--warn-bg);
+}
+
 .run-status.manual_review {
   color: var(--warn-ink);
   background: var(--warn-bg);

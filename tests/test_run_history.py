@@ -5,7 +5,7 @@ import fitz
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.models import CableFootageLine, SummaryResult
+from app.models import CableFootageLine, SummaryIssue, SummaryResult
 from app.openrouter_client import ManualReviewRequired
 from app.run_history import RunHistoryStore
 
@@ -202,6 +202,95 @@ def test_done_with_notes_pdf_run_is_logged_as_green_completed(monkeypatch, tmp_p
     assert run["warnings_count"] == 0
 
 
+def test_needs_input_run_is_counted_and_persists_action(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main, "run_history_store", _temp_store(tmp_path))
+    monkeypatch.setattr(main.settings, "strict_review_badges", False)
+
+    message = "Enter the verified 48Ct footage in the Materials box."
+
+    async def fake_summarize(content, settings, source_name=None):
+        return SummaryResult(
+            model="parser+fake-model",
+            confidence=0.91,
+            job_totals=["UG-56 - 170"],
+            warnings=[message],
+            issues=[
+                SummaryIssue(
+                    severity="action",
+                    code="cable_material_review",
+                    message=message,
+                    subject="48ct",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(main, "summarize_with_model", fake_summarize)
+    monkeypatch.setattr(main, "annotate_pdf", lambda content, summary, source_name=None: b"%PDF-1.4 fake")
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("check.pdf", _sample_pdf(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-telcyte-status"] == "needs_input"
+    payload = json.loads(response.headers["x-telcyte-result-summary"])
+    assert payload["issues"][0]["message"] == message
+
+    data = client.get("/api/run-history").json()
+    assert data["summary"]["completed_runs"] == 1
+    assert data["summary"]["needs_input_runs"] == 1
+    assert data["summary"]["estimated_minutes_saved"] == 8.0
+    run = data["runs"][0]
+    assert run["status_label"] == "Check items"
+    assert run["first_action_item"] == message
+    assert run["issues"][0]["code"] == "cable_material_review"
+
+
+def test_final_numeric_material_downgrades_cable_action_to_notice(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "strict_review_badges", False)
+    message = "Cable material needs review for 48Ct: path ownership needs review."
+    summary = SummaryResult(
+        model="parser+fake-model",
+        warnings=[message],
+        cable_footage=[
+            CableFootageLine(
+                callout="48ct",
+                display_type="48Ct",
+                part_number="605-3277",
+                family="fiber",
+                review_material_line="605-3277 (48Ct) - VERIFY",
+            )
+        ],
+        final_material_rows=["605-3277 (48Ct) - 1000'"],
+        issues=[
+            SummaryIssue(
+                severity="action",
+                code="cable_material_review",
+                message=message,
+                subject="48ct",
+            )
+        ],
+    )
+
+    main._reconcile_summary_issues(summary)
+
+    assert summary.issues[0].severity == "notice"
+    assert summary.issues[0].code == "cable_material_preserved"
+    assert main._status_for_summary(summary) == "done_with_notes"
+
+
+def test_unclassified_warning_remains_fail_closed(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "strict_review_badges", False)
+    summary = SummaryResult(model="parser+fake-model", warnings=["A new warning was added."])
+
+    main._reconcile_summary_issues(summary)
+
+    assert summary.issues[0].severity == "blocker"
+    assert main._status_for_summary(summary) == "manual_review"
+
+
 def test_strict_review_badges_turn_notes_back_to_review(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(main, "run_history_store", _temp_store(tmp_path))
     monkeypatch.setattr(main.settings, "strict_review_badges", True)
@@ -300,6 +389,8 @@ def test_history_gui_knows_done_with_notes_state() -> None:
     styles = (Path(__file__).resolve().parents[1] / "static" / "styles.css").read_text()
 
     assert 'status === "done_with_notes"' in app_js
+    assert 'status === "needs_input"' in app_js
     assert 'kind === "note"' in app_js
     assert ".run-status.done_with_notes" in styles
+    assert ".run-status.needs_input" in styles
     assert ".status.note .status-badge" in styles

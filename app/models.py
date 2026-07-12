@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+class SummaryIssue(BaseModel):
+    severity: Literal["blocker", "action", "notice"]
+    code: str
+    message: str
+    subject: Optional[str] = None
 
 
 class CableFootageItem(BaseModel):
@@ -43,6 +50,10 @@ class SummaryResult(BaseModel):
     cable_footage: list[CableFootageLine] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     informational_notes: list[str] = Field(default_factory=list)
+    issues: list[SummaryIssue] = Field(default_factory=list)
+    # Populated by the annotator from the actual Materials-box merge. It is
+    # runtime classification evidence, not part of the public response model.
+    final_material_rows: list[str] = Field(default_factory=list, exclude=True)
     confidence: float = 0.0
     model: str
     # Per-page billing-code totals for multi-page as-builts (the "MKR Page Totals"

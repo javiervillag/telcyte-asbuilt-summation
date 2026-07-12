@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from app.additional_materials import ADDITIONAL_MATERIAL_PARTS, round_half_up_to_increment
-from app.models import CableFootageItem, CableFootageLine
+from app.models import CableFootageItem, CableFootageLine, SummaryIssue
 from app.pdf_parser import (
     TextBlock,
     _clean_text,
@@ -97,6 +97,7 @@ class CableFootageResult:
     lines: list[CableFootageLine] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     informational_notes: list[str] = field(default_factory=list)
+    issues: list[SummaryIssue] = field(default_factory=list)
     handled_callout_lines: set[str] = field(default_factory=set)
 
 
@@ -313,8 +314,10 @@ def _derive_cable_footage(
     field_blocks, _skipped_total_boxes, _skipped_material_boxes = field_evidence_blocks(blocks)
     target_code = code_key(path_code)
     if not target_code:
+        message = f"Cable footage path code is not a supported code: {path_code}."
         return CableFootageResult(
-            warnings=[f"Cable footage path code is not a supported code: {path_code}."]
+            warnings=[message],
+            issues=[SummaryIssue(severity="action", code="invalid_cable_path_code", message=message)],
         )
 
     handled_callout_lines: set[str] = set()
@@ -399,16 +402,26 @@ def _derive_cable_footage(
 
     result = CableFootageResult(handled_callout_lines=handled_callout_lines)
     result.warnings.extend(fallback_warnings)
+    result.issues.extend(
+        SummaryIssue(severity="action", code="invalid_fallback_path_code", message=warning)
+        for warning in fallback_warnings
+    )
 
     type_keys = sorted(type_evidence or storage_by_type)
     if not type_keys:
-        result.warnings.append("Cable path footage was found, but no cable type was clear enough to assign it.")
+        message = "Cable path footage was found, but no cable type was clear enough to assign it."
+        result.warnings.append(message)
+        result.issues.append(
+            SummaryIssue(severity="action", code="cable_type_unclear", message=message)
+        )
         return result
 
     assigned_path_type = type_keys[0] if len(type_keys) == 1 else ""
     if path_segments and not assigned_path_type:
-        result.warnings.append(
-            "Cable path footage was found with multiple cable types nearby; path ownership needs review."
+        message = "Cable path footage was found with multiple cable types nearby; path ownership needs review."
+        result.warnings.append(message)
+        result.issues.append(
+            SummaryIssue(severity="notice", code="cable_path_ownership", message=message)
         )
 
     for key in type_keys:
@@ -450,6 +463,14 @@ def _derive_cable_footage(
             message = f"Cable material needs review for {line.display_type}: {flag}"
             if message not in result.warnings:
                 result.warnings.append(message)
+                result.issues.append(
+                    SummaryIssue(
+                        severity="action",
+                        code="cable_material_review",
+                        message=message,
+                        subject=line.callout,
+                    )
+                )
         if line.material_line and not line.eligible_for_stamp and not line.review_flags and not auto_stamp:
             result.informational_notes.append(
                 f"Derived cable material line for review only (not stamped): {line.material_line}."

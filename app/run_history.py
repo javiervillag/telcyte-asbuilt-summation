@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Time-saved totals count runs from the cleaned production history baseline.
 SAVINGS_START_DATE = "2026-06-15"
 SAVINGS_START_LABEL = "Jun 15"
-COMPLETED_STATUSES = {"success", "done_with_notes", "manual_review"}
+COMPLETED_STATUSES = {"success", "done_with_notes", "needs_input", "manual_review"}
 
 
 @dataclass
@@ -40,6 +40,7 @@ class RunLogRecord:
     output_pdf: bytes | None = None
     result_lines: list[str] | None = None
     cable_footage: list[dict[str, Any]] | None = None
+    issues: list[dict[str, Any]] | None = None
 
 
 class RunHistoryStore:
@@ -147,6 +148,8 @@ class RunHistoryStore:
                 "detected_totals_count",
                 "extra_billing_codes_count",
                 "warnings_count",
+                "issues_count",
+                "first_action_item",
                 "error_type",
                 "error_message",
                 "estimated_minutes_saved",
@@ -166,6 +169,7 @@ class RunHistoryStore:
         data["selected_extras_json"] = json.dumps(data.pop("selected_extras") or [], ensure_ascii=True)
         data["result_lines_json"] = json.dumps(data.pop("result_lines") or [], ensure_ascii=True)
         data["cable_footage_json"] = json.dumps(data.pop("cable_footage") or [], ensure_ascii=True)
+        data["issues_json"] = json.dumps(data.pop("issues") or [], ensure_ascii=True)
         return data
 
     def _ensure_schema(self) -> None:
@@ -267,6 +271,7 @@ class RunHistoryStore:
             "completed_runs": int(row.get("completed_runs") or 0),
             "done_runs": int(row.get("done_runs") or 0),
             "done_with_notes_runs": int(row.get("done_with_notes_runs") or 0),
+            "needs_input_runs": int(row.get("needs_input_runs") or 0),
             "review_needed_runs": int(row.get("review_needed_runs") or 0),
             "failed_runs": int(row.get("failed_runs") or 0),
             # Computed from the CURRENT confirmed estimate (Nick 2026-06-08,
@@ -286,6 +291,7 @@ class RunHistoryStore:
             "completed_runs": summary["completed_runs"],
             "done_runs": summary["done_runs"],
             "done_with_notes_runs": summary["done_with_notes_runs"],
+            "needs_input_runs": summary["needs_input_runs"],
             "review_needed_runs": summary["review_needed_runs"],
             "failed_runs": summary["failed_runs"],
             "estimated_minutes_saved": summary["estimated_minutes_saved"],
@@ -311,6 +317,14 @@ class RunHistoryStore:
             cable_footage = json.loads(row.get("cable_footage_json") or "[]")
         except json.JSONDecodeError:
             cable_footage = []
+        try:
+            issues = json.loads(row.get("issues_json") or "[]")
+        except json.JSONDecodeError:
+            issues = []
+        action_items = [
+            issue for issue in issues
+            if isinstance(issue, dict) and issue.get("severity") == "action"
+        ]
         duration_seconds = round(float(row.get("duration_ms") or 0) / 1000.0, 2)
         return {
             "id": row.get("id") or "",
@@ -335,6 +349,9 @@ class RunHistoryStore:
             "has_output": bool(row.get("has_output")),
             "result_lines": result_lines if isinstance(result_lines, list) else [],
             "cable_footage": cable_footage if isinstance(cable_footage, list) else [],
+            "issues": issues if isinstance(issues, list) else [],
+            "issues_count": len(issues) if isinstance(issues, list) else 0,
+            "first_action_item": action_items[0].get("message", "") if action_items else "",
         }
 
 
@@ -353,6 +370,8 @@ def _status_label(status: str) -> str:
         return "Done"
     if status == "done_with_notes":
         return "Done - Notes"
+    if status == "needs_input":
+        return "Check items"
     if status == "manual_review":
         return "Review"
     if status == "failed":
@@ -382,7 +401,8 @@ create table if not exists asbuilt_run_history (
   input_pdf bytea,
   output_pdf bytea,
   result_lines_json text not null default '[]',
-  cable_footage_json text not null default '[]'
+  cable_footage_json text not null default '[]',
+  issues_json text not null default '[]'
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
@@ -393,6 +413,7 @@ _POSTGRES_MIGRATIONS = [
     "alter table asbuilt_run_history add column if not exists output_pdf bytea",
     "alter table asbuilt_run_history add column if not exists result_lines_json text not null default '[]'",
     "alter table asbuilt_run_history add column if not exists cable_footage_json text not null default '[]'",
+    "alter table asbuilt_run_history add column if not exists issues_json text not null default '[]'",
 ]
 
 _SQLITE_SCHEMA = """
@@ -417,7 +438,8 @@ create table if not exists asbuilt_run_history (
   input_pdf blob,
   output_pdf blob,
   result_lines_json text not null default '[]',
-  cable_footage_json text not null default '[]'
+  cable_footage_json text not null default '[]',
+  issues_json text not null default '[]'
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
@@ -428,13 +450,14 @@ _SQLITE_MIGRATIONS = [
     ("output_pdf", "alter table asbuilt_run_history add column output_pdf blob"),
     ("result_lines_json", "alter table asbuilt_run_history add column result_lines_json text not null default '[]'"),
     ("cable_footage_json", "alter table asbuilt_run_history add column cable_footage_json text not null default '[]'"),
+    ("issues_json", "alter table asbuilt_run_history add column issues_json text not null default '[]'"),
 ]
 
 _LIST_COLUMNS = (
     "id, created_at, source_filename, output_filename, status, duration_ms,"
     " pages_processed, model, confidence, detected_totals_count,"
     " extra_billing_codes_count, selected_extras_json, warnings_count,"
-    " error_type, error_message, estimated_minutes_saved, result_lines_json, cable_footage_json,"
+    " error_type, error_message, estimated_minutes_saved, result_lines_json, cable_footage_json, issues_json,"
     " (input_pdf is not null) as has_input, (output_pdf is not null) as has_output"
 )
 
@@ -460,7 +483,8 @@ insert into asbuilt_run_history (
   input_pdf,
   output_pdf,
   result_lines_json,
-  cable_footage_json
+  cable_footage_json,
+  issues_json
 ) values (
   %(id)s,
   %(created_at)s,
@@ -482,7 +506,8 @@ insert into asbuilt_run_history (
   %(input_pdf)s,
   %(output_pdf)s,
   %(result_lines_json)s,
-  %(cable_footage_json)s
+  %(cable_footage_json)s,
+  %(issues_json)s
 )
 """
 
@@ -491,10 +516,11 @@ _SQLITE_INSERT_SQL = _POSTGRES_INSERT_SQL.replace("%(", ":").replace(")s", "")
 _SUMMARY_SQL = f"""
 select
   count(*) as total_runs,
-  sum(case when status in ('success', 'done_with_notes', 'manual_review') and output_filename <> '' then 1 else 0 end) as completed_runs,
+  sum(case when status in ('success', 'done_with_notes', 'needs_input', 'manual_review') and output_filename <> '' then 1 else 0 end) as completed_runs,
   sum(case when status = 'success' and output_filename <> '' then 1 else 0 end) as done_runs,
   sum(case when status = 'done_with_notes' and output_filename <> '' then 1 else 0 end) as done_with_notes_runs,
-  sum(case when status in ('success', 'done_with_notes', 'manual_review') and output_filename <> ''
+  sum(case when status = 'needs_input' and output_filename <> '' then 1 else 0 end) as needs_input_runs,
+  sum(case when status in ('success', 'done_with_notes', 'needs_input', 'manual_review') and output_filename <> ''
         and created_at >= '{SAVINGS_START_DATE}' then 1 else 0 end) as savings_eligible_runs,
   sum(case when status = 'manual_review' then 1 else 0 end) as review_needed_runs,
   sum(case when status = 'failed' then 1 else 0 end) as failed_runs,

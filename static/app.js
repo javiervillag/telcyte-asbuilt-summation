@@ -966,13 +966,15 @@ function renderRunHistory(data) {
     metricCard("Completed PDFs", summary.completed_runs || 0),
     metricCard("Done", summary.done_runs || 0),
     metricCard("Done • Notes", summary.done_with_notes_runs || 0),
+    metricCard("Check items", summary.needs_input_runs || 0),
     metricCard("Need review", summary.review_needed_runs || 0),
     metricCard("Failed", summary.failed_runs || 0),
     metricCard(`Time saved (from ${summary.savings_since || "Jun 15"})`, formatMinutesSaved(summary.estimated_minutes_saved)),
   ].join("");
   nickReviewCopy.textContent =
     `${summary.completed_runs || 0} completed PDF runs: ${summary.done_runs || 0} done, ` +
-    `${summary.done_with_notes_runs || 0} done with notes, ${summary.review_needed_runs || 0} review-needed, ` +
+    `${summary.done_with_notes_runs || 0} done with notes, ${summary.needs_input_runs || 0} check-items, ` +
+    `${summary.review_needed_runs || 0} review-needed, ` +
     `${summary.failed_runs || 0} failed runs. Estimated ${formatMinutesSaved(summary.estimated_minutes_saved)} saved ` +
     `since ${summary.savings_since || "Jun 15"} (~8 min per completed as-built, Nick's 2026-06-08 estimate). ` +
     `Dollar savings stay hidden until the rate is confirmed.`;
@@ -1045,6 +1047,9 @@ function renderRunRow(run) {
   const status = run.status || "unknown";
   const output = run.output_filename ? `<span>Output: ${escapeHtml(run.output_filename)}</span>` : "";
   const error = run.error_message ? `<span>Error: ${escapeHtml(run.error_message)}</span>` : "";
+  const actionItem = run.first_action_item
+    ? `<span class="history-action-item"><strong>Check:</strong> ${escapeHtml(run.first_action_item)}</span>`
+    : "";
   const selectedExtras = Array.isArray(run.selected_extras) && run.selected_extras.length
     ? run.selected_extras.map((item) => `${item.code} - ${item.quantity}`).join(", ")
     : "None";
@@ -1069,6 +1074,11 @@ function renderRunRow(run) {
         .map((line) => `<span>${escapeHtml(cableTitle(line))}</span>`)
         .join("")}</div>`
     : "";
+  const issueLines = Array.isArray(run.issues) && run.issues.length
+    ? `<div class="history-result-lines"><strong>Run notes</strong>${run.issues
+        .map((issue) => `<span><b>${escapeHtml(issue.severity || "note")}:</b> ${escapeHtml(issue.message || "")}</span>`)
+        .join("")}</div>`
+    : "";
   return `
     <details class="history-row">
       <summary>
@@ -1085,10 +1095,12 @@ function renderRunRow(run) {
         <span>Warnings: ${escapeHtml(run.warnings_count || 0)}</span>
         <span>Selected extras: ${escapeHtml(selectedExtras)}</span>
         ${error}
+        ${actionItem}
         ${downloads ? `<span class="history-downloads">${downloads}</span>` : storageNote}
       </div>
       ${resultLines}
       ${cableLines}
+      ${issueLines}
     </details>
   `;
 }
@@ -1096,6 +1108,7 @@ function renderRunRow(run) {
 function statusLabelForRun(status) {
   if (status === "success") return "Done";
   if (status === "done_with_notes") return "Done • Notes";
+  if (status === "needs_input") return "Check items";
   if (status === "manual_review") return "Review";
   if (status === "failed") return "Failed";
   return "Run";

@@ -14,7 +14,7 @@ from PIL import Image
 from app.additional_materials import AdditionalMaterialResult, derive_additional_materials
 from app.cable_footage import CableFootageResult, derive_cable_footage, material_row_key
 from app.config import Settings
-from app.models import SummaryResult
+from app.models import SummaryIssue, SummaryResult
 from app.partial_asbuilt import derive_new_totals, extract_previously_billed_job_totals
 from app.pdf_parser import (
     build_pdf_context,
@@ -24,7 +24,7 @@ from app.pdf_parser import (
     diagnose_extraction,
     extract_text_blocks,
 )
-from app.rate_cards import CodeKey, code_key, load_code_catalog
+from app.rate_cards import KNOWN_PREFIX_SET, CodeKey, code_key, load_code_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class ManualReviewRequired(OpenRouterError):
         cable_footage: list | None = None,
         materials: list[str] | None = None,
         new_totals: list[str] | None = None,
+        issues: list[SummaryIssue] | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
@@ -51,6 +52,7 @@ class ManualReviewRequired(OpenRouterError):
         self.cable_footage = cable_footage or []
         self.materials = materials or []
         self.new_totals = new_totals or []
+        self.issues = issues or []
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -154,11 +156,19 @@ def _extract_json(text: str) -> dict:
 
 
 def _normalize_summary(data: dict, model: str) -> SummaryResult:
+    warnings = [str(v) for v in data.get("warnings") or [] if str(v).strip()]
     return SummaryResult(
         title=str(data.get("title") or "MKR Job Totals"),
         job_totals=[str(v) for v in data.get("job_totals") or [] if str(v).strip()],
         materials=[str(v) for v in data.get("materials") or [] if str(v).strip()],
-        warnings=[str(v) for v in data.get("warnings") or [] if str(v).strip()],
+        warnings=warnings,
+        issues=[
+            # The deterministic comparison below promotes a concrete omitted
+            # known billing code to an action. Free-form reviewer commentary
+            # stays a notice so confirmations and context do not create noise.
+            SummaryIssue(severity="notice", code="model_review_note", message=warning)
+            for warning in warnings
+        ],
         confidence=float(data.get("confidence") or 0),
         model=model,
     )
@@ -194,6 +204,7 @@ def _merge_parser_and_model(
         ]
 
     warnings = list(model_summary.warnings)
+    issues = list(model_summary.issues)
     if omitted_model_lines:
         preview = "; ".join(omitted_model_lines[:6])
         if len(omitted_model_lines) > 6:
@@ -201,12 +212,26 @@ def _merge_parser_and_model(
         warnings.append(
             f"Model review suggested possible extra totals not auto-added without parser support: {preview}."
         )
+        message = warnings[-1]
+        known_omitted = [
+            line
+            for line in omitted_model_lines
+            if (key := _line_code_key(line)) and key[0] in KNOWN_PREFIX_SET and key not in parser_keys
+        ]
+        issues.append(
+            SummaryIssue(
+                severity="action" if known_omitted else "notice",
+                code="model_omitted_known_code" if known_omitted else "model_extras_not_added",
+                message=message,
+            )
+        )
 
     return SummaryResult(
         title="MKR Job Totals",
         job_totals=totals if totals or not settings.allow_llm_inferred_totals else model_summary.job_totals,
         materials=model_summary.materials if settings.include_materials else [],
         warnings=warnings,
+        issues=issues,
         confidence=model_summary.confidence,
         model=f"parser+{model_summary.model}" if totals else model_summary.model,
     )
@@ -282,6 +307,7 @@ async def summarize_with_model(
             cable_footage=cable_result.lines,
             materials=additional_materials.material_rows,
             new_totals=new_totals,
+            issues=[*diagnostics.issues, *cable_result.issues, *additional_materials.issues],
         )
 
     if not settings.openrouter_api_key:
@@ -349,6 +375,7 @@ async def summarize_with_model(
                 cable_footage=cable_result.lines,
                 materials=additional_materials.material_rows,
                 new_totals=new_totals,
+                issues=[*diagnostics.issues, *cable_result.issues, *additional_materials.issues],
             ) from exc
         if parser_totals:
             # The deterministic parser is the source of truth (its totals
@@ -365,6 +392,13 @@ async def summarize_with_model(
                 warnings=[
                     "Model review was unavailable for this run; totals are parser-only."
                 ],
+                issues=[
+                    SummaryIssue(
+                        severity="notice",
+                        code="model_review_unavailable",
+                        message="Model review was unavailable for this run; totals are parser-only.",
+                    )
+                ],
                 confidence=0.5,
                 model=selected_model,
             )
@@ -380,8 +414,13 @@ async def summarize_with_model(
     for note in diagnostics.informational_notes:
         if note not in summary.informational_notes:
             summary.informational_notes.append(note)
+    for issue in diagnostics.issues:
+        if issue not in summary.issues:
+            summary.issues.append(issue)
     if not summary.job_totals and not summary.materials and not summary.new_totals:
-        summary.warnings.append("Unable to identify supported totals from the drawing.")
+        message = "Unable to identify supported totals from the drawing."
+        summary.warnings.append(message)
+        summary.issues.append(SummaryIssue(severity="blocker", code="empty_summary", message=message))
     summary = summary.model_copy(update={"page_totals": page_totals})
     logger.info(
         "summary_complete model=%s totals=%s materials=%s confidence=%.2f",
@@ -414,12 +453,17 @@ def _with_cable_footage(
     for note in cable_result.informational_notes:
         if note not in informational_notes:
             informational_notes.append(note)
+    issues = list(summary.issues)
+    for issue in cable_result.issues:
+        if issue not in issues:
+            issues.append(issue)
     return summary.model_copy(
         update={
             "materials": materials,
             "cable_footage": cable_result.lines,
             "warnings": warnings,
             "informational_notes": informational_notes,
+            "issues": issues,
         }
     ).with_eligible_cable_materials()
 
@@ -440,10 +484,15 @@ def _with_additional_materials(
     for note in additional_materials.informational_notes:
         if note not in informational_notes:
             informational_notes.append(note)
+    issues = list(summary.issues)
+    for issue in additional_materials.issues:
+        if issue not in issues:
+            issues.append(issue)
     if (
         materials == summary.materials
         and warnings == summary.warnings
         and informational_notes == summary.informational_notes
+        and issues == summary.issues
     ):
         return summary
     return summary.model_copy(
@@ -451,6 +500,7 @@ def _with_additional_materials(
             "materials": materials,
             "warnings": warnings,
             "informational_notes": informational_notes,
+            "issues": issues,
         }
     )
 

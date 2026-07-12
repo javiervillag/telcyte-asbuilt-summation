@@ -16,7 +16,8 @@ from app.extra_billing_codes import (
     grouped_extra_billing_codes,
     parse_extra_billing_code_selections,
 )
-from app.models import SummaryResult
+from app.cable_footage import material_row_key
+from app.models import SummaryIssue, SummaryResult
 from app.openrouter_client import ManualReviewRequired, OpenRouterError, summarize_with_model
 from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, describe_pdf_fonts
 from app.run_history import RunHistoryStore, RunLogRecord
@@ -182,6 +183,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
+                    issues=_manual_review_issues(exc),
                     confidence=0.0,
                     model=f"parser+{settings.openrouter_model}",
                 ),
@@ -219,9 +221,11 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     cable_footage=exc.cable_footage,
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
+                    issues=_manual_review_issues(exc),
                     confidence=0.0,
                     model=f"parser+{settings.openrouter_model}",
                 ))
+                _reconcile_summary_issues(review_summary)
                 _log_run_attempt(
                     source_filename=source_filename,
                     status="manual_review",
@@ -252,6 +256,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 cable_footage=exc.cable_footage,
                 warnings=exc.warnings,
                 informational_notes=exc.informational_notes,
+                issues=_manual_review_issues(exc),
                 confidence=0.0,
                 model=f"parser+{settings.openrouter_model}",
             ))
@@ -327,6 +332,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
 
     base = Path(source_filename).stem
     output_name = f"{base}-telcyte-summary.pdf"
+    _reconcile_summary_issues(summary)
     status = _status_for_summary(summary)
     _log_run_attempt(
         source_filename=source_filename,
@@ -437,6 +443,7 @@ def _log_run_attempt(
             line.model_dump()
             for line in summary.cable_footage
         ] if summary else [],
+        issues=[issue.model_dump() for issue in summary.issues] if summary else [],
     )
     try:
         run_history_store.log_run(record)
@@ -460,6 +467,7 @@ def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) 
             for line in summary.cable_footage[:10]
         ],
         "notes": summary.informational_notes[:10],
+        "issues": [issue.model_dump() for issue in summary.issues[:20]],
         "result_lines": _result_detail_lines(summary),
     }
     return payload
@@ -493,13 +501,77 @@ def _compact_cable_footage(line) -> dict:
 
 
 def _status_for_summary(summary: SummaryResult) -> str:
-    if settings.strict_review_badges and (summary.warnings or summary.informational_notes):
+    if settings.strict_review_badges and (summary.issues or summary.warnings or summary.informational_notes):
         return "manual_review"
-    if summary.warnings:
+    severities = {issue.severity for issue in summary.issues}
+    if "blocker" in severities:
         return "manual_review"
-    if summary.informational_notes:
+    if "action" in severities:
+        return "needs_input"
+    if "notice" in severities or summary.informational_notes:
         return "done_with_notes"
     return "success"
+
+
+def _manual_review_issues(exc: ManualReviewRequired) -> list[SummaryIssue]:
+    return [
+        *exc.issues,
+        SummaryIssue(
+            severity="blocker",
+            code="processing_manual_review",
+            message="The protected manual-review processing path was required for this PDF.",
+        ),
+    ]
+
+
+def _reconcile_summary_issues(summary: SummaryResult) -> None:
+    """Classify the completed run without changing parser or stamping behavior."""
+    issues = list(summary.issues)
+    covered_messages = {issue.message for issue in issues}
+
+    # Unknown legacy warnings remain blockers. This fail-closed fallback makes
+    # adding a new warning safe until its severity is explicitly chosen.
+    for warning in summary.warnings:
+        if warning not in covered_messages:
+            issues.append(SummaryIssue(severity="blocker", code="unclassified_warning", message=warning))
+            covered_messages.add(warning)
+    for note in summary.informational_notes:
+        if note not in covered_messages:
+            issues.append(SummaryIssue(severity="notice", code="informational_note", message=note))
+            covered_messages.add(note)
+
+    numeric_material_keys = {
+        key
+        for row in summary.final_material_rows
+        if "VERIFY" not in row.upper() and (key := material_row_key(row))
+    }
+    cable_keys_by_subject: dict[str, str] = {}
+    for line in summary.cable_footage:
+        candidate = line.material_line or line.review_material_line
+        if candidate and (key := material_row_key(candidate)):
+            cable_keys_by_subject[line.callout] = key
+
+    reconciled: list[SummaryIssue] = []
+    seen: set[tuple[str, str, str, str | None]] = set()
+    for issue in issues:
+        if issue.code == "cable_material_review" and issue.subject:
+            key = cable_keys_by_subject.get(issue.subject)
+            if key and key in numeric_material_keys:
+                issue = issue.model_copy(
+                    update={
+                        "severity": "notice",
+                        "code": "cable_material_preserved",
+                        "message": (
+                            f"A numeric Materials-box row for {issue.subject} was preserved; "
+                            "automatic cable attribution was not used."
+                        ),
+                    }
+                )
+        identity = (issue.severity, issue.code, issue.message, issue.subject)
+        if identity not in seen:
+            reconciled.append(issue)
+            seen.add(identity)
+    summary.issues = reconciled
 
 
 def _result_detail_lines(summary: SummaryResult) -> list[str]:
