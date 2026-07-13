@@ -181,28 +181,8 @@ def _box_metrics(page: fitz.Page, lines: list[str]) -> tuple[float, float, float
     return width, height, font_size, padding
 
 
-def _placement_box_metrics(
-    page: fitz.Page, lines: list[str], display_space: bool = False
-) -> tuple[float, float, float, float]:
-    return _placement_box_metrics_for_font(page, lines, display_space=display_space)
-
-
-def _placement_box_metrics_for_font(
-    page: fitz.Page,
-    lines: list[str],
-    display_space: bool = False,
-    font_size: float | None = None,
-) -> tuple[float, float, float, float]:
-    width, height, font_size, padding = _box_metrics_for_font(page, lines, font_size)
-    if not display_space and page.rotation in {90, 270}:
-        return height, width, font_size, padding
-    return width, height, font_size, padding
-
-
-def choose_box_rect(page: fitz.Page, lines: list[str], display_space: bool = False) -> fitz.Rect:
+def choose_box_rect(page: fitz.Page, lines: list[str]) -> fitz.Rect:
     rect_display = _choose_output_box_display_rect(page, lines)
-    if display_space:
-        return rect_display
     return _display_to_annotation_rect(page, rect_display)
 
 
@@ -229,13 +209,12 @@ def _choose_output_box_display_rect(
         height,
         margin_x,
         margin_y,
-        display_space=True,
         vertical_preference=vertical_preference,
     )
     density_image = _render_page_for_density(page)
     scale = density_image.width / page.rect.width if page.rect.width else 0.12
-    text_blocks = _page_text_rects(page, display_space=True)
-    annotation_blocks = _page_annotation_rects(page, display_space=True)
+    text_blocks = _page_text_rects(page)
+    annotation_blocks = _page_annotation_rects(page)
     position_penalty = _material_position_preference_penalty if material_policy else _position_preference_penalty
     scored = [
         _placement_score(
@@ -254,7 +233,7 @@ def _choose_output_box_display_rect(
         # Nick's required location is lower-left. Base-plan ink may be covered,
         # but a user-authored or tool-authored annotation still blocks the corner.
         preferred = scored[0]
-        protected = _page_protected_annotation_rects(page, display_space=True)
+        protected = _page_protected_annotation_rects(page)
         if page.rect.contains(preferred.rect) and _overlap_ratio(preferred.rect, protected) <= MAX_ANNOTATION_OVERLAP_RATIO:
             return _clamp_display_rect(page, preferred.rect)
 
@@ -276,7 +255,6 @@ def _choose_output_box_display_rect(
 def choose_material_box_rect(
     page: fitz.Page,
     lines: list[str],
-    display_space: bool = False,
     preferred_font_size: float | None = None,
 ) -> fitz.Rect:
     rect_display = _choose_output_box_display_rect(
@@ -286,8 +264,6 @@ def choose_material_box_rect(
         vertical_preference="bottom",
         material_policy=True,
     )
-    if display_space:
-        return rect_display
     return _display_to_annotation_rect(page, rect_display)
 
 
@@ -297,14 +273,13 @@ def _candidate_rects(
     height: float,
     margin_x: float,
     margin_y: float,
-    display_space: bool = False,
     vertical_preference: str = "top",
 ) -> list[fitz.Rect]:
     max_x = max(margin_x, page.rect.width - margin_x - width)
     if vertical_preference == "bottom":
-        y_rows = _bottom_section_y_rows(page, height, margin_y, display_space=display_space)
+        y_rows = _bottom_section_y_rows(page, height, margin_y)
     else:
-        y_rows = _top_section_y_rows(page, height, margin_y, display_space=display_space)
+        y_rows = _top_section_y_rows(page, height, margin_y)
     # x-major order: the whole left column is preferred before any right
     # candidate (see choose_box_rect acceptance loop).
     return [
@@ -314,29 +289,15 @@ def _candidate_rects(
     ]
 
 
-def _top_section_y_rows(
-    page: fitz.Page, height: float, margin_y: float, display_space: bool = False
-) -> list[float]:
+def _top_section_y_rows(page: fitz.Page, height: float, margin_y: float) -> list[float]:
     max_y = max(margin_y, page.rect.height - margin_y - height)
-    if not display_space and page.rotation in {90, 180, 270}:
-        band_start = max(margin_y, page.rect.height * 0.7 - height)
-        top_edge = max_y
-        mid = band_start + max(0.0, (top_edge - band_start) / 2)
-        return _unique_positions([top_edge, mid, band_start])
-
     band_end = max(margin_y, min(max_y, page.rect.height * 0.3 - height))
     mid = margin_y + max(0.0, (band_end - margin_y) / 2)
     return _unique_positions([margin_y, mid, band_end])
 
 
-def _bottom_section_y_rows(
-    page: fitz.Page, height: float, margin_y: float, display_space: bool = False
-) -> list[float]:
+def _bottom_section_y_rows(page: fitz.Page, height: float, margin_y: float) -> list[float]:
     max_y = max(margin_y, page.rect.height - margin_y - height)
-    if not display_space and page.rotation in {90, 180, 270}:
-        band_end = max(margin_y, min(max_y, page.rect.height * 0.3 - height))
-        mid = margin_y + max(0.0, (band_end - margin_y) / 2)
-        return _unique_positions([margin_y, mid, band_end])
     band_start = max(margin_y, page.rect.height * 0.7 - height)
     mid = band_start + max(0.0, (max_y - band_start) / 2)
     return _unique_positions([max_y, mid, band_start])
@@ -351,25 +312,21 @@ def _unique_positions(values: list[float]) -> list[float]:
     return rows
 
 
-def _rect_in_space(page: fitz.Page, rect: fitz.Rect, display_space: bool) -> fitz.Rect:
-    return _annotation_to_display_rect(page, rect) if display_space else fitz.Rect(rect)
-
-
-def _page_text_rects(page: fitz.Page, display_space: bool = False) -> list[fitz.Rect]:
+def _page_text_rects(page: fitz.Page) -> list[fitz.Rect]:
     rects: list[fitz.Rect] = []
     for raw in page.get_text("blocks", sort=False):
         x0, y0, x1, y1, text, *_ = raw
         if text.strip():
-            rects.append(_rect_in_space(page, fitz.Rect(x0, y0, x1, y1), display_space))
+            rects.append(_annotation_to_display_rect(page, fitz.Rect(x0, y0, x1, y1)))
     return rects
 
 
-def _page_annotation_rects(page: fitz.Page, display_space: bool = False) -> list[fitz.Rect]:
+def _page_annotation_rects(page: fitz.Page) -> list[fitz.Rect]:
     rects: list[fitz.Rect] = []
     for annot in page.annots() or []:
-        rects.append(_rect_in_space(page, fitz.Rect(annot.rect), display_space))
+        rects.append(_annotation_to_display_rect(page, fitz.Rect(annot.rect)))
 
-    bounds = page.rect if display_space else _annotation_bounds(page)
+    bounds = page.rect
     page_area = max(_rect_area(bounds), 1.0)
     for drawing in page.get_drawings():
         rect = fitz.Rect(drawing.get("rect") or fitz.Rect())
@@ -383,11 +340,11 @@ def _page_annotation_rects(page: fitz.Page, display_space: bool = False) -> list
         # blue-dominant fills are Cox base-design labels - Nick's team
         # covers both freely (BI-945043 snips, 2026-06-10).
         if fill and _is_markup_fill(fill) and area_ratio <= 0.35:
-            rects.append(_rect_in_space(page, rect, display_space))
+            rects.append(_annotation_to_display_rect(page, rect))
     return rects
 
 
-def _page_protected_annotation_rects(page: fitz.Page, display_space: bool = False) -> list[fitz.Rect]:
+def _page_protected_annotation_rects(page: fitz.Page) -> list[fitz.Rect]:
     rects: list[fitz.Rect] = []
     for annot in page.annots() or []:
         annot_type = annot.type[1]
@@ -396,7 +353,7 @@ def _page_protected_annotation_rects(page: fitz.Page, display_space: bool = Fals
         fill = tuple(colors.get("fill") or ())
         colored_markup = _is_colored_markup(stroke) or _is_colored_markup(fill)
         if annot_type in {"FreeText", "Stamp", "Text"} or colored_markup:
-            rects.append(_rect_in_space(page, fitz.Rect(annot.rect), display_space))
+            rects.append(_annotation_to_display_rect(page, fitz.Rect(annot.rect)))
     return rects
 
 
@@ -725,17 +682,7 @@ def _replacement_rect_for_content(
     lines: list[str],
     preferred_font_size: float | None = None,
 ) -> fitz.Rect:
-    """Keep the old box's POSITION, but size it to fit the new content.
-
-    Reuses the exact rotation-aware sizing of a fresh stamp
-    (_placement_box_metrics_for_font, which swaps width/height on 90/270 sheets),
-    so a re-stamp and a fresh stamp produce identically-shaped boxes. The old box
-    location is the re-run signal; its stale dimensions are not. The previous code
-    returned the stale rectangle verbatim on rotated pages, which kept a too-narrow
-    box and wrapped the longer "MKR Page Totals" title onto two lines (NR-996825,
-    rot=270). On non-rotated pages _placement_box_metrics_for_font returns the same
-    dimensions as the old _box_metrics_for_font call, so that path is unchanged.
-    """
+    """Preserve the visible top-left anchor while fitting the new content."""
     width, height, _, _ = _box_metrics_for_font(page, lines, preferred_font_size)
     anchor_display = _annotation_to_display_rect(page, anchor)
     rect_display = fitz.Rect(
@@ -1201,50 +1148,6 @@ def _pdf_num(value: float) -> str:
     if value.is_integer():
         return str(int(value))
     return f"{value:.4f}".rstrip("0").rstrip(".")
-
-
-def _add_baked_summary(page: fitz.Page, rect_display: fitz.Rect, lines: list[str]) -> None:
-    """Stamp the totals box as page content on rotated sheets.
-
-    ``rect_display`` is in the viewer's (display) coordinate system; the
-    Shape/insert APIs work in unrotated page space, so the rect is mapped
-    through the derotation matrix before drawing (NR-1138768 follow-up,
-    2026-06-11: the box landed mid-sheet without this mapping).
-    """
-    page_rect = fitz.Rect(rect_display) * page.derotation_matrix
-    page_rect.normalize()
-    page.draw_rect(page_rect, color=TEXT_RED, fill=BOX_FILL, width=BORDER_WIDTH, overlay=True)
-
-    style = TextStyle(size=10.0, color=TEXT_RED, bold_narrow=True)
-    font_file = _font_file(style)
-    font_kwargs: dict = {"fontname": "helv"}
-    if font_file:
-        font_kwargs = {"fontname": _font_name(style), "fontfile": str(font_file)}
-
-    _, _, font_size, _ = _box_metrics(page, lines)
-    for _ in range(10):
-        padding = font_size * 0.5
-        max_width = max(font_size * 4, rect_display.width - padding * 2)
-        max_lines = max(1, int((rect_display.height - padding * 2) / (font_size * 1.18)))
-        rendered: list[str] = []
-        for line in lines:
-            rendered.extend(_wrap_line(line, max_width, font_size))
-        inset = fitz.Rect(
-            page_rect.x0 + padding, page_rect.y0 + padding,
-            page_rect.x1 - padding, page_rect.y1 - padding,
-        )
-        leftover = page.insert_textbox(
-            inset,
-            "\n".join(rendered),
-            fontsize=font_size,
-            color=TEXT_RED,
-            rotate=_annotation_rotation(page),
-            overlay=True,
-            **font_kwargs,
-        )
-        if leftover >= 0 and len(rendered) <= max_lines:
-            return
-        font_size *= 0.88
 
 
 def _pin_annotation_orientation(page: fitz.Page, annot: fitz.Annot) -> None:
