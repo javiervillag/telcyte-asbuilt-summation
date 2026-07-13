@@ -7,8 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import _result_summary_header, _result_summary_payload, app
-from app.models import CableFootageItem, CableFootageLine, SummaryResult
+from app.models import CableFootageItem, CableFootageLine, SummaryIssue, SummaryResult
 from app.openrouter_client import ManualReviewRequired
+from app.pdf_annotator import PlacementReviewRequired
 
 
 SAMPLE = Path("/Users/javiervillaguardado/Downloads/Asbuilt Examples for AI Summation/FIBER-ASBUILT-(TelCyte)-BI-829050-Totals Removed.pdf")
@@ -84,6 +85,62 @@ def test_summarize_endpoint_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None
     assert result_summary["detected_totals"] == ["UG-56 - 170'"]
     assert result_summary["extra_billing_codes"] == []
     assert result_summary["result_lines"] == ["MKR Job Totals", "UG-56 - 170'"]
+
+
+@pytest.mark.parametrize("processing_path", ["success", "manual_review", "manual_review_with_extras"])
+def test_placement_visibility_failure_is_specific_and_persisted_on_every_processing_path(
+    monkeypatch: pytest.MonkeyPatch,
+    processing_path: str,
+) -> None:
+    message = "Materials on page 1 fell outside the visible page bounds (0.0, -10.0, 100.0, 30.0)."
+    logged: dict = {}
+
+    async def fake_summarize(content, settings, source_name=None):
+        if processing_path.startswith("manual_review"):
+            raise ManualReviewRequired(
+                ["Parser review remains."],
+                supported_totals=["UG-28 - 1"],
+                materials=["450-0323 (UG-28) - 1"],
+            )
+        return SummaryResult(
+            model="parser+fake-model",
+            job_totals=["UG-28 - 1"],
+            materials=["450-0323 (UG-28) - 1"],
+        )
+
+    def fake_annotate(content, summary, source_name=None):
+        summary.issues.append(
+            SummaryIssue(
+                severity="blocker",
+                code="output_box_off_page",
+                message=message,
+                subject="Materials",
+            )
+        )
+        raise PlacementReviewRequired(message)
+
+    def fake_log_run_attempt(**kwargs):
+        logged.update(kwargs)
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", fake_annotate)
+    monkeypatch.setattr("app.main._log_run_attempt", fake_log_run_attempt)
+
+    data = None
+    if processing_path == "manual_review_with_extras":
+        data = {"extra_billing_codes": json.dumps([{"code": "PC-02", "quantity": "1"}])}
+    response = TestClient(app).post(
+        "/api/summarize",
+        data=data,
+        files={"file": ("rotated.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["warnings"] == [message]
+    assert logged["status"] == "manual_review"
+    assert logged["error_type"] == "placement_review"
+    assert logged["error_message"] == message
+    assert any(issue.code == "output_box_off_page" for issue in logged["summary"].issues)
 
 
 def test_extra_billing_code_catalog_endpoint() -> None:

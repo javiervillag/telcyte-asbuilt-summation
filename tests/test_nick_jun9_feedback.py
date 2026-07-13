@@ -646,12 +646,17 @@ def test_replacement_rect_resizes_for_content_on_rotated_pages() -> None:
     stale_narrow = fitz.Rect(400, 10, 422, 130)  # 22pt wide - far too narrow for the title
     lines = ["MKR Page Totals", "Comp-9 - 734", "Comp-6 - 734"]
     rect = _replacement_rect_for_content(page, stale_narrow, lines, preferred_font_size=12)
+    stale_display = fitz.Rect(stale_narrow) * page.rotation_matrix
+    stale_display.normalize()
+    replacement_display = fitz.Rect(rect) * page.rotation_matrix
+    replacement_display.normalize()
     doc.close()
 
     title_w = fitz.get_text_length("MKR Page Totals", fontname="helv", fontsize=12)
     assert rect.height >= title_w  # rotation swap -> title fits on one line
     assert rect.width > stale_narrow.width  # not the stale narrow rectangle
-    assert (rect.x0, rect.y0) == (stale_narrow.x0, stale_narrow.y0)  # position preserved
+    assert replacement_display.x0 == pytest.approx(stale_display.x0)
+    assert replacement_display.y0 == pytest.approx(stale_display.y0)
 
 
 def test_restamp_rotated_existing_box_title_not_wrapped() -> None:

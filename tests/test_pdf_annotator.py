@@ -3,10 +3,17 @@ import re
 
 import fitz
 from PIL import Image
+import pytest
 
 from app.cable_footage import derive_cable_footage
 from app.models import CableFootageLine, SummaryResult
-from app.pdf_annotator import BORDER_WIDTH, PlacementReviewRequired, annotate_pdf, choose_box_rect
+from app.pdf_annotator import (
+    BORDER_WIDTH,
+    PlacementReviewRequired,
+    _validate_tracked_output_box_visibility,
+    annotate_pdf,
+    choose_box_rect,
+)
 from app.pdf_parser import extract_text_blocks
 
 
@@ -705,6 +712,104 @@ def test_rotated_replacement_clamps_in_annotation_space_without_dropping_lines()
     assert content_lines == ["MKR Page Totals", *rows]
 
 
+def test_rotated_duplicate_boxes_use_populated_visible_anchor_and_stay_stable() -> None:
+    doc = fitz.open()
+    for _ in range(3):
+        page = doc.new_page(width=792, height=1224)
+        page.set_rotation(270)
+    doc[0].add_freetext_annot(
+        fitz.Rect(572.4, 0, 792, 148.8),
+        "MKR Job Totals\n\nPC-02 - 1\nUG-69 - 1\nUG-28 - 1\nUG-7 - 3",
+        fontsize=12,
+    )
+    doc[0].add_freetext_annot(
+        fitz.Rect(28.2, 31.8, 171, 166.8),
+        "MKR Job Totals",
+        fontsize=12,
+    )
+    doc[2].add_freetext_annot(
+        fitz.Rect(572.4, 0, 792, 148.8),
+        "MKR Page Totals\n\nUG-69 - 1\nUG-28 - 1\nUG-7 - 3",
+        fontsize=12,
+    )
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        job_totals=["UG-69 - 1", "UG-28 - 1", "UG-07 - 3"],
+        page_totals={3: ["UG-69 - 1", "UG-28 - 1", "UG-07 - 3"]},
+        materials=["450-0323 (UG-28) - 1"],
+    )
+
+    first = annotate_pdf(source, summary)
+    first_positions = _output_box_display_positions(first)
+    second = annotate_pdf(first, summary)
+    second_positions = _output_box_display_positions(second)
+
+    assert first_positions == second_positions
+    assert first_positions["p1:MKR Job Totals"][:2] == (0.0, 0.0)
+    assert first_positions["p3:MKR Page Totals"][:2] == (0.0, 0.0)
+    material_rect = first_positions["p1:Materials"]
+    assert material_rect[0] < 40
+    assert material_rect[3] > 720
+    assert any(
+        "previous box showed PC-02 - 1" in note and "so it was removed" in note
+        for note in summary.informational_notes
+    )
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_fresh_rotated_output_boxes_are_visible_and_materials_use_lower_left(rotation: int) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=1224)
+    page.set_rotation(rotation)
+    source = doc.tobytes()
+    doc.close()
+    summary = SummaryResult(
+        model="parser-test",
+        job_totals=["UG-28 - 1"],
+        materials=["450-0323 (UG-28) - 1"],
+    )
+
+    output = annotate_pdf(source, summary)
+    doc = fitz.open(stream=output, filetype="pdf")
+    try:
+        page = doc[0]
+        for annot in page.annots() or []:
+            content = str((annot.info or {}).get("content") or "")
+            if not content.startswith(("MKR Job Totals", "Materials")):
+                continue
+            rect = _display_rect(page, annot.rect)
+            assert page.rect.contains(rect)
+            if content.startswith("Materials"):
+                assert rect.x0 < 40
+                assert rect.y1 > page.rect.height * 0.9
+    finally:
+        doc.close()
+
+
+def test_off_page_tool_box_adds_blocker_and_requires_manual_review() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=1224)
+    page.set_rotation(270)
+    annot = page.add_freetext_annot(
+        fitz.Rect(1100, 50, 1200, 200),
+        "Materials\n450-0323 (UG-28) - 1",
+        fontsize=12,
+    )
+    summary = SummaryResult(model="parser-test")
+
+    try:
+        with pytest.raises(PlacementReviewRequired, match="outside the visible page bounds"):
+            _validate_tracked_output_box_visibility(doc, {annot.xref}, summary)
+    finally:
+        doc.close()
+
+    assert [(issue.severity, issue.code, issue.subject) for issue in summary.issues] == [
+        ("blocker", "output_box_off_page", "Materials")
+    ]
+
+
 def test_rotated_tool_new_totals_uses_custom_appearance_resources() -> None:
     doc = fitz.open()
     page = doc.new_page(width=792, height=1224)
@@ -746,6 +851,29 @@ def _annotation_snapshot(page: fitz.Page) -> list[tuple[str, tuple[float, float,
             )
         )
     return rows
+
+
+def _display_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+    display = fitz.Rect(rect) * page.rotation_matrix
+    display.normalize()
+    return display
+
+
+def _output_box_display_positions(pdf: bytes) -> dict[str, tuple[float, float, float, float]]:
+    positions: dict[str, tuple[float, float, float, float]] = {}
+    doc = fitz.open(stream=pdf, filetype="pdf")
+    try:
+        for page in doc:
+            for annot in page.annots() or []:
+                content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
+                title = next((line.strip() for line in content.splitlines() if line.strip()), "")
+                if title not in {"MKR Job Totals", "MKR Page Totals", "Materials"}:
+                    continue
+                rect = _display_rect(page, annot.rect)
+                positions[f"p{page.number + 1}:{title}"] = tuple(round(value, 1) for value in rect)
+    finally:
+        doc.close()
+    return positions
 
 
 def _summary_annotations(page: fitz.Page) -> list[str]:

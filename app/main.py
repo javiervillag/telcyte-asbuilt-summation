@@ -192,6 +192,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             try:
                 output = annotate_pdf(content, summary, source_name=source_filename)
             except PlacementReviewRequired as placement_exc:
+                placement_message = str(placement_exc)
                 logger.warning("placement_review_required filename=%s error=%s", source_filename, placement_exc)
                 _log_run_attempt(
                     source_filename=source_filename,
@@ -200,15 +201,16 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     selected_extras=selected_extras,
                     pages_processed=page_count,
                     input_pdf=content,
-                    warnings_count=1,
+                    summary=summary,
+                    warnings_count=max(1, len(summary.warnings)),
                     error_type="placement_review",
-                    error_message="No clear open area for the summary box.",
+                    error_message=placement_message,
                 )
                 return JSONResponse(
                     status_code=422,
                     content={
-                        "detail": "This PDF needs manual review because there is no clear open area for the summary box.",
-                        "warnings": ["The app could not place the summary box without risking existing annotations."],
+                        "detail": f"This PDF needs manual review because {placement_message}",
+                        "warnings": [placement_message],
                     },
                 )
         else:
@@ -263,6 +265,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             try:
                 output = annotate_pdf(content, summary, source_name=source_filename)
             except PlacementReviewRequired as placement_exc:
+                placement_message = str(placement_exc)
                 logger.warning("placement_review_required filename=%s error=%s", source_filename, placement_exc)
                 _log_run_attempt(
                     source_filename=source_filename,
@@ -272,18 +275,19 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     pages_processed=page_count,
                     input_pdf=content,
                     summary=summary,
-                    warnings_count=len(summary.warnings),
+                    warnings_count=max(1, len(summary.warnings)),
                     error_type="placement_review",
-                    error_message="No clear open area for the summary box.",
+                    error_message=placement_message,
                 )
                 return JSONResponse(
                     status_code=422,
                     content={
-                        "detail": "This PDF needs manual review because there is no clear open area for the summary box.",
-                        "warnings": ["The app could not place the summary box without risking existing annotations."],
+                        "detail": f"This PDF needs manual review because {placement_message}",
+                        "warnings": [placement_message],
                     },
                 )
     except PlacementReviewRequired as exc:
+        placement_message = str(exc)
         logger.warning("placement_review_required filename=%s error=%s", source_filename, exc)
         _log_run_attempt(
             source_filename=source_filename,
@@ -292,15 +296,16 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             selected_extras=selected_extras,
             pages_processed=page_count,
             input_pdf=content,
-            warnings_count=1,
+            summary=summary,
+            warnings_count=max(1, len(summary.warnings)),
             error_type="placement_review",
-            error_message="No clear open area for the summary box.",
+            error_message=placement_message,
         )
         return JSONResponse(
             status_code=422,
             content={
-                "detail": "This PDF needs manual review because there is no clear open area for the summary box.",
-                "warnings": ["The app could not place the summary box without risking existing annotations."],
+                "detail": f"This PDF needs manual review because {placement_message}",
+                "warnings": [placement_message],
             },
         )
     except OpenRouterError as exc:

@@ -5,6 +5,7 @@ from io import BytesIO
 import os
 from pathlib import Path
 import re
+from typing import Callable
 
 import fitz
 from PIL import Image
@@ -17,7 +18,7 @@ from app.box_titles import (
     starts_with_page_totals_title,
 )
 from app.cable_footage import extract_material_rows, material_row_key, merge_material_rows
-from app.models import SummaryResult
+from app.models import SummaryIssue, SummaryResult
 from app.rate_cards import total_line_key
 
 BOX_FILL = (0.78, 1.0, 0.63)
@@ -67,8 +68,8 @@ class TextStyle:
 
 
 class PlacementReviewRequired(RuntimeError):
-    def __init__(self) -> None:
-        super().__init__("No low-impact location was found for the summary box.")
+    def __init__(self, message: str = "No low-impact location was found for the summary box.") -> None:
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,47 @@ class ExistingTotalsBox:
 class AddedFreeTextBox:
     xref: int
     font_size: float
+
+
+def _annotation_to_display_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+    out = fitz.Rect(rect) * page.rotation_matrix
+    out.normalize()
+    return out
+
+
+def _display_to_annotation_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+    out = fitz.Rect(rect) * page.derotation_matrix
+    out.normalize()
+    return out
+
+
+def _clamp_display_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+    bounds = fitz.Rect(page.rect)
+    out = fitz.Rect(rect)
+    out.normalize()
+    if out.width > bounds.width:
+        out.x0, out.x1 = bounds.x0, bounds.x1
+    else:
+        if out.x0 < bounds.x0:
+            out.x1 += bounds.x0 - out.x0
+            out.x0 = bounds.x0
+        if out.x1 > bounds.x1:
+            out.x0 -= out.x1 - bounds.x1
+            out.x1 = bounds.x1
+    if out.height > bounds.height:
+        out.y0, out.y1 = bounds.y0, bounds.y1
+    else:
+        if out.y0 < bounds.y0:
+            out.y1 += bounds.y0 - out.y0
+            out.y0 = bounds.y0
+        if out.y1 > bounds.y1:
+            out.y0 -= out.y1 - bounds.y1
+            out.y1 = bounds.y1
+    out.x0 = max(bounds.x0, out.x0)
+    out.y0 = max(bounds.y0, out.y0)
+    out.x1 = min(bounds.x1, out.x1)
+    out.y1 = min(bounds.y1, out.y1)
+    return out
 
 
 def _render_page_for_density(page: fitz.Page, scale: float = 0.12) -> Image.Image:
@@ -158,28 +200,43 @@ def _placement_box_metrics_for_font(
 
 
 def choose_box_rect(page: fitz.Page, lines: list[str], display_space: bool = False) -> fitz.Rect:
-    """Pick the box rect.
+    rect_display = _choose_output_box_display_rect(page, lines)
+    if display_space:
+        return rect_display
+    return _display_to_annotation_rect(page, rect_display)
 
-    With display_space=True (baked box on rotated sheets) all geometry is in
-    the viewer's coordinate system - same top-left-first corner logic as
-    normal pages - and the caller transforms the result into page space for
-    drawing. The legacy rotation special-casing only applies to the FreeText
-    annotation path.
+
+def _choose_output_box_display_rect(
+    page: fitz.Page,
+    lines: list[str],
+    *,
+    preferred_font_size: float | None = None,
+    vertical_preference: str = "top",
+    material_policy: bool = False,
+) -> fitz.Rect:
+    """Choose in viewer coordinates, then let the caller convert once.
+
+    PyMuPDF renders the density image in display orientation. Keeping candidates,
+    extracted text, and annotations in that same space prevents rotated sheets
+    from being scored against unrelated regions of the page.
     """
-    width, height, _, _ = _placement_box_metrics(page, lines, display_space=display_space)
+    width, height, _, _ = _box_metrics_for_font(page, lines, preferred_font_size)
     margin_x = max(14.0, page.rect.width * 0.014)
     margin_y = max(18.0, page.rect.height * 0.018)
-    if not display_space and page.rotation in {90, 270}:
-        # Rotated PDFs report page coordinates differently from the viewer. Keep
-        # candidates in visible corners and let density scoring choose the least
-        # disruptive one.
-        margin_y = max(margin_y, page.mediabox.height * 0.02)
-
-    candidates = _candidate_rects(page, width, height, margin_x, margin_y, display_space=display_space)
+    candidates = _candidate_rects(
+        page,
+        width,
+        height,
+        margin_x,
+        margin_y,
+        display_space=True,
+        vertical_preference=vertical_preference,
+    )
     density_image = _render_page_for_density(page)
     scale = density_image.width / page.rect.width if page.rect.width else 0.12
-    text_blocks = _page_text_rects(page)
-    annotation_blocks = _page_annotation_rects(page)
+    text_blocks = _page_text_rects(page, display_space=True)
+    annotation_blocks = _page_annotation_rects(page, display_space=True)
+    position_penalty = _material_position_preference_penalty if material_policy else _position_preference_penalty
     scored = [
         _placement_score(
             density_image,
@@ -188,9 +245,19 @@ def choose_box_rect(page: fitz.Page, lines: list[str], display_space: bool = Fal
             scale,
             text_blocks,
             annotation_blocks,
+            position_penalty=position_penalty,
         )
         for candidate in candidates
     ]
+
+    if material_policy and scored:
+        # Nick's required location is lower-left. Base-plan ink may be covered,
+        # but a user-authored or tool-authored annotation still blocks the corner.
+        preferred = scored[0]
+        protected = _page_protected_annotation_rects(page, display_space=True)
+        if page.rect.contains(preferred.rect) and _overlap_ratio(preferred.rect, protected) <= MAX_ANNOTATION_OVERLAP_RATIO:
+            return _clamp_display_rect(page, preferred.rect)
+
     # Preference order: all left-column candidates (top to bottom), then the
     # right column. First acceptable candidate wins; density scoring is only
     # the tie-breaking fallback when every corner is genuinely busy.
@@ -201,9 +268,9 @@ def choose_box_rect(page: fitz.Page, lines: list[str], display_space: bool = Fal
             and row.text_overlap_ratio <= MAX_TEXT_OVERLAP_RATIO
             and row.annotation_overlap_ratio <= MAX_ANNOTATION_OVERLAP_RATIO
         ):
-            return row.rect
+            return _clamp_display_rect(page, row.rect)
     scored.sort(key=lambda row: row.total)
-    return scored[0].rect
+    return _clamp_display_rect(page, scored[0].rect)
 
 
 def choose_material_box_rect(
@@ -212,52 +279,16 @@ def choose_material_box_rect(
     display_space: bool = False,
     preferred_font_size: float | None = None,
 ) -> fitz.Rect:
-    width, height, _, _ = _placement_box_metrics_for_font(
+    rect_display = _choose_output_box_display_rect(
         page,
         lines,
-        display_space=display_space,
-        font_size=preferred_font_size,
-    )
-    margin_x = max(14.0, page.rect.width * 0.014)
-    margin_y = max(18.0, page.rect.height * 0.018)
-    if not display_space and page.rotation in {90, 270}:
-        margin_y = max(margin_y, page.mediabox.height * 0.02)
-
-    candidates = _candidate_rects(
-        page,
-        width,
-        height,
-        margin_x,
-        margin_y,
-        display_space=display_space,
+        preferred_font_size=preferred_font_size,
         vertical_preference="bottom",
+        material_policy=True,
     )
-    density_image = _render_page_for_density(page)
-    scale = density_image.width / page.rect.width if page.rect.width else 0.12
-    text_blocks = _page_text_rects(page)
-    annotation_blocks = _page_annotation_rects(page)
-    scored = [
-        _placement_score(
-            density_image,
-            page,
-            candidate,
-            scale,
-            text_blocks,
-            annotation_blocks,
-            position_penalty=_material_position_preference_penalty,
-        )
-        for candidate in candidates
-    ]
-    for row in scored:
-        if (
-            page.rect.contains(row.rect)
-            and row.density <= MAX_ACCEPTABLE_DENSITY
-            and row.text_overlap_ratio <= MAX_TEXT_OVERLAP_RATIO
-            and row.annotation_overlap_ratio <= MAX_ANNOTATION_OVERLAP_RATIO
-        ):
-            return row.rect
-    scored.sort(key=lambda row: row.total)
-    return scored[0].rect
+    if display_space:
+        return rect_display
+    return _display_to_annotation_rect(page, rect_display)
 
 
 def _candidate_rects(
@@ -320,21 +351,26 @@ def _unique_positions(values: list[float]) -> list[float]:
     return rows
 
 
-def _page_text_rects(page: fitz.Page) -> list[fitz.Rect]:
+def _rect_in_space(page: fitz.Page, rect: fitz.Rect, display_space: bool) -> fitz.Rect:
+    return _annotation_to_display_rect(page, rect) if display_space else fitz.Rect(rect)
+
+
+def _page_text_rects(page: fitz.Page, display_space: bool = False) -> list[fitz.Rect]:
     rects: list[fitz.Rect] = []
     for raw in page.get_text("blocks", sort=False):
         x0, y0, x1, y1, text, *_ = raw
         if text.strip():
-            rects.append(fitz.Rect(x0, y0, x1, y1))
+            rects.append(_rect_in_space(page, fitz.Rect(x0, y0, x1, y1), display_space))
     return rects
 
 
-def _page_annotation_rects(page: fitz.Page) -> list[fitz.Rect]:
+def _page_annotation_rects(page: fitz.Page, display_space: bool = False) -> list[fitz.Rect]:
     rects: list[fitz.Rect] = []
     for annot in page.annots() or []:
-        rects.append(fitz.Rect(annot.rect))
+        rects.append(_rect_in_space(page, fitz.Rect(annot.rect), display_space))
 
-    page_area = max(_rect_area(page.rect), 1.0)
+    bounds = page.rect if display_space else _annotation_bounds(page)
+    page_area = max(_rect_area(bounds), 1.0)
     for drawing in page.get_drawings():
         rect = fitz.Rect(drawing.get("rect") or fitz.Rect())
         if rect.is_empty:
@@ -347,8 +383,31 @@ def _page_annotation_rects(page: fitz.Page) -> list[fitz.Rect]:
         # blue-dominant fills are Cox base-design labels - Nick's team
         # covers both freely (BI-945043 snips, 2026-06-10).
         if fill and _is_markup_fill(fill) and area_ratio <= 0.35:
-            rects.append(rect)
+            rects.append(_rect_in_space(page, rect, display_space))
     return rects
+
+
+def _page_protected_annotation_rects(page: fitz.Page, display_space: bool = False) -> list[fitz.Rect]:
+    rects: list[fitz.Rect] = []
+    for annot in page.annots() or []:
+        annot_type = annot.type[1]
+        colors = annot.colors or {}
+        stroke = tuple(colors.get("stroke") or ())
+        fill = tuple(colors.get("fill") or ())
+        colored_markup = _is_colored_markup(stroke) or _is_colored_markup(fill)
+        if annot_type in {"FreeText", "Stamp", "Text"} or colored_markup:
+            rects.append(_rect_in_space(page, fitz.Rect(annot.rect), display_space))
+    return rects
+
+
+def _overlap_ratio(candidate: fitz.Rect, blocks: list[fitz.Rect]) -> float:
+    area = max(_rect_area(candidate), 1.0)
+    overlap_area = 0.0
+    for block in blocks:
+        overlap = candidate & block
+        if not overlap.is_empty:
+            overlap_area += _rect_area(overlap)
+    return min(1.0, overlap_area / area)
 
 
 def _is_markup_fill(color: tuple[float, ...]) -> bool:
@@ -454,7 +513,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
         if new_total_lines:
             totals_font_size = None
         elif existing_boxes:
-            replacement = existing_boxes[0]
+            replacement = _select_primary_output_box(page, existing_boxes, total_line_key)
             _record_replaced_total_deltas(summary, replacement.content)
             _delete_annotations_by_xref(page, [box.xref for box in existing_boxes])
             added = _add_summary_annotation(
@@ -489,7 +548,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
 
         if should_update_material_box:
             if existing_material_boxes:
-                material_replacement = existing_material_boxes[0]
+                material_replacement = _select_primary_output_box(page, existing_material_boxes, material_row_key)
                 computed_material_rows = [line.strip() for line in summary.materials if line.strip()]
                 merged_material_rows = merge_material_rows(existing_material_rows, computed_material_rows)
                 summary.final_material_rows = list(merged_material_rows)
@@ -531,6 +590,7 @@ def annotate_pdf(pdf_bytes: bytes, summary: SummaryResult, source_name: str | No
 
         buffer = BytesIO()
         _force_tracked_output_box_appearances(doc, touched_xrefs)
+        _validate_tracked_output_box_visibility(doc, touched_xrefs, summary)
         doc.save(buffer, garbage=4, deflate=True)
         return buffer.getvalue()
     finally:
@@ -558,7 +618,7 @@ def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult, touched_xrefs
         page = doc[idx]
         existing = _existing_page_totals_boxes(page)
         if existing:
-            replacement = existing[0]
+            replacement = _select_primary_output_box(page, existing, total_line_key)
             _delete_annotations_by_xref(page, [box.xref for box in existing])
             added = _add_summary_annotation(
                 page,
@@ -575,7 +635,7 @@ def _stamp_page_totals(doc: fitz.Document, summary: SummaryResult, touched_xrefs
 def _stamp_new_totals(page: fitz.Page, lines: list[str], touched_xrefs: set[int]) -> None:
     existing = _existing_tool_new_totals_boxes(page)
     if existing:
-        replacement = existing[0]
+        replacement = _select_primary_output_box(page, existing, total_line_key)
         _delete_annotations_by_xref(page, [box.xref for box in existing])
         added = _add_new_totals_annotation(
             page,
@@ -595,13 +655,11 @@ def _stamp_new_totals(page: fitz.Page, lines: list[str], touched_xrefs: set[int]
 def _new_totals_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
     if page.rotation not in {90, 270}:
         return rect
-    bounds = _annotation_bounds(page)
-    min_width = min(bounds.width * 0.32, 230.0)
-    if rect.width >= min_width:
-        return _clamp_annotation_rect(page, rect)
-    expanded = fitz.Rect(rect)
-    expanded.x1 = expanded.x0 + min_width
-    return _clamp_annotation_rect(page, expanded)
+    display_rect = _annotation_to_display_rect(page, rect)
+    min_width = min(page.rect.width * 0.32, 230.0)
+    if display_rect.width < min_width:
+        display_rect.x1 = display_rect.x0 + min_width
+    return _display_to_annotation_rect(page, _clamp_display_rect(page, display_rect))
 
 
 def _existing_job_totals_boxes(page: fitz.Page) -> list[ExistingTotalsBox]:
@@ -641,8 +699,24 @@ def _existing_output_boxes(page: fitz.Page, predicate) -> list[ExistingTotalsBox
                 font_size=_annotation_font_size(doc, annot.xref),
             )
         )
-    boxes.sort(key=lambda box: (box.rect.x0, box.rect.y0))
     return boxes
+
+
+def _select_primary_output_box(
+    page: fitz.Page,
+    boxes: list[ExistingTotalsBox],
+    row_key: Callable[[str], object | None],
+) -> ExistingTotalsBox:
+    if not boxes:
+        raise ValueError("At least one output box is required.")
+
+    def rank(box: ExistingTotalsBox) -> tuple[int, int, float, float, int]:
+        lines = [line.strip() for line in box.content.splitlines() if line.strip()]
+        recognized_rows = sum(1 for line in lines if row_key(line))
+        display_rect = _annotation_to_display_rect(page, box.rect)
+        return (-recognized_rows, -len(lines), display_rect.y0, display_rect.x0, box.xref)
+
+    return min(boxes, key=rank)
 
 
 def _replacement_rect_for_content(
@@ -662,9 +736,15 @@ def _replacement_rect_for_content(
     rot=270). On non-rotated pages _placement_box_metrics_for_font returns the same
     dimensions as the old _box_metrics_for_font call, so that path is unchanged.
     """
-    width, height, _, _ = _placement_box_metrics_for_font(page, lines, font_size=preferred_font_size)
-    rect = fitz.Rect(anchor.x0, anchor.y0, anchor.x0 + width, anchor.y0 + height)
-    return _clamp_annotation_rect(page, rect)
+    width, height, _, _ = _box_metrics_for_font(page, lines, preferred_font_size)
+    anchor_display = _annotation_to_display_rect(page, anchor)
+    rect_display = fitz.Rect(
+        anchor_display.x0,
+        anchor_display.y0,
+        anchor_display.x0 + width,
+        anchor_display.y0 + height,
+    )
+    return _display_to_annotation_rect(page, _clamp_display_rect(page, rect_display))
 
 
 def _annotation_bounds(page: fitz.Page) -> fitz.Rect:
@@ -674,31 +754,8 @@ def _annotation_bounds(page: fitz.Page) -> fitz.Rect:
 
 
 def _clamp_annotation_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
-    bounds = _annotation_bounds(page)
-    out = fitz.Rect(rect)
-    if out.width > bounds.width:
-        out.x0, out.x1 = bounds.x0, bounds.x1
-    else:
-        if out.x0 < bounds.x0:
-            out.x1 += bounds.x0 - out.x0
-            out.x0 = bounds.x0
-        if out.x1 > bounds.x1:
-            out.x0 -= out.x1 - bounds.x1
-            out.x1 = bounds.x1
-    if out.height > bounds.height:
-        out.y0, out.y1 = bounds.y0, bounds.y1
-    else:
-        if out.y0 < bounds.y0:
-            out.y1 += bounds.y0 - out.y0
-            out.y0 = bounds.y0
-        if out.y1 > bounds.y1:
-            out.y0 -= out.y1 - bounds.y1
-            out.y1 = bounds.y1
-    out.x0 = max(bounds.x0, out.x0)
-    out.y0 = max(bounds.y0, out.y0)
-    out.x1 = min(bounds.x1, out.x1)
-    out.y1 = min(bounds.y1, out.y1)
-    return out
+    display_rect = _annotation_to_display_rect(page, rect)
+    return _display_to_annotation_rect(page, _clamp_display_rect(page, display_rect))
 
 
 def _box_metrics_for_font(
@@ -749,6 +806,9 @@ def _record_replaced_total_deltas(summary: SummaryResult, old_content: str) -> N
         new_qty, new_line = new_totals[key]
         if old_qty != new_qty:
             deltas.append(f"previous box showed {old_line}; recomputed drawing total is {new_line}")
+    for key in sorted(set(old_totals) - set(new_totals)):
+        _old_qty, old_line = old_totals[key]
+        deltas.append(f"previous box showed {old_line}; no supported field total was found, so it was removed")
     if not deltas:
         return
     note = "Replaced an existing totals box: " + "; ".join(deltas[:4]) + "."
@@ -907,6 +967,43 @@ def _force_tracked_output_box_appearances(doc: fitz.Document, touched_xrefs: set
             )
             _set_editor_text_style(page, annot, rendered_lines, font_size, text_color)
             _pin_annotation_orientation(page, annot)
+
+
+def _validate_tracked_output_box_visibility(
+    doc: fitz.Document,
+    touched_xrefs: set[int],
+    summary: SummaryResult,
+    tolerance: float = 0.5,
+) -> None:
+    violations: list[str] = []
+    for page in doc:
+        bounds = fitz.Rect(page.rect)
+        for annot in page.annots() or []:
+            if annot.xref not in touched_xrefs:
+                continue
+            display_rect = _annotation_to_display_rect(page, annot.rect)
+            inside = (
+                display_rect.width > 0
+                and display_rect.height > 0
+                and display_rect.x0 >= bounds.x0 - tolerance
+                and display_rect.y0 >= bounds.y0 - tolerance
+                and display_rect.x1 <= bounds.x1 + tolerance
+                and display_rect.y1 <= bounds.y1 + tolerance
+            )
+            if inside:
+                continue
+            content = str((annot.info or {}).get("content") or "").replace("\r", "\n")
+            title = next((line.strip() for line in content.splitlines() if line.strip()), "output box")
+            message = (
+                f"{title} on page {page.number + 1} fell outside the visible page bounds "
+                f"({display_rect.x0:.1f}, {display_rect.y0:.1f}, {display_rect.x1:.1f}, {display_rect.y1:.1f})."
+            )
+            violations.append(message)
+            issue = SummaryIssue(severity="blocker", code="output_box_off_page", message=message, subject=title)
+            if issue not in summary.issues:
+                summary.issues.append(issue)
+    if violations:
+        raise PlacementReviewRequired(violations[0])
 
 
 def _style_for_output_box(content: str) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
