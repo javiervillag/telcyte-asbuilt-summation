@@ -14,7 +14,8 @@ from PIL import Image
 from app.additional_materials import AdditionalMaterialResult, derive_additional_materials
 from app.cable_footage import CableFootageResult, derive_cable_footage, material_row_key
 from app.config import Settings
-from app.models import SummaryIssue, SummaryResult
+from app.evidence import build_billing_evidence, decimal_text
+from app.models import DeltaEvidence, EvidencePart, MaterialEvidence, SummaryEvidence, SummaryIssue, SummaryResult
 from app.partial_asbuilt import derive_new_totals, extract_previously_billed_job_totals
 from app.pdf_parser import (
     build_pdf_context,
@@ -44,6 +45,7 @@ class ManualReviewRequired(OpenRouterError):
         materials: list[str] | None = None,
         new_totals: list[str] | None = None,
         issues: list[SummaryIssue] | None = None,
+        evidence: SummaryEvidence | None = None,
     ) -> None:
         self.warnings = warnings
         self.supported_totals = supported_totals or []
@@ -53,6 +55,7 @@ class ManualReviewRequired(OpenRouterError):
         self.materials = materials or []
         self.new_totals = new_totals or []
         self.issues = issues or []
+        self.evidence = evidence or SummaryEvidence()
         super().__init__("Manual review required. The parsed PDF evidence did not fully support automatic totals.")
 
 
@@ -254,18 +257,25 @@ async def summarize_with_model(
     excluded_context_lines: list[str] = []
     parser_notes: list[str] = []
     parser_warnings: list[str] = []
+    code_contributions: dict[CodeKey, list[EvidencePart]] = {}
     parser_totals = derive_code_totals(
         blocks,
         code_catalog=code_catalog,
         excluded_lines=excluded_context_lines,
         notes=parser_notes,
         warnings=parser_warnings,
+        contributions=code_contributions,
     )
     # Per-page billing totals for the "MKR Page Totals" boxes (multi-page sheets).
     # Deterministic parser output - never routed through the LLM merge.
     page_totals = derive_code_totals_by_page(blocks, code_catalog=code_catalog)
     previous_billed_totals = extract_previously_billed_job_totals(blocks)
-    new_totals, delta_warnings = derive_new_totals(parser_totals, previous_billed_totals)
+    delta_evidence: list[DeltaEvidence] = []
+    new_totals, delta_warnings = derive_new_totals(
+        parser_totals,
+        previous_billed_totals,
+        evidence=delta_evidence,
+    )
     parser_warnings.extend(delta_warnings)
     if new_totals:
         page_totals = {}
@@ -285,6 +295,21 @@ async def summarize_with_model(
         derive_additional_materials(blocks, code_totals_by_key=material_code_totals)
         if settings.include_cable_footage and settings.auto_stamp_cable_footage
         else AdditionalMaterialResult()
+    )
+    evidence = SummaryEvidence(
+        billing=build_billing_evidence(parser_totals, code_contributions),
+        delta=delta_evidence,
+        materials=[
+            MaterialEvidence(
+                part=line.part_number,
+                display=line.display,
+                rule=line.rule,
+                source_quantity=decimal_text(line.source_quantity),
+                source_lines=list(line.source_lines),
+                result=line.material_line,
+            )
+            for line in additional_materials.lines
+        ],
     )
     resolved_callout_lines = set(cable_result.handled_callout_lines) | set(additional_materials.handled_callout_lines)
     diagnostics = diagnose_extraction(
@@ -308,6 +333,7 @@ async def summarize_with_model(
             materials=additional_materials.material_rows,
             new_totals=new_totals,
             issues=[*diagnostics.issues, *cable_result.issues, *additional_materials.issues],
+            evidence=evidence,
         )
 
     if not settings.openrouter_api_key:
@@ -376,6 +402,7 @@ async def summarize_with_model(
                 materials=additional_materials.material_rows,
                 new_totals=new_totals,
                 issues=[*diagnostics.issues, *cable_result.issues, *additional_materials.issues],
+                evidence=evidence,
             ) from exc
         if parser_totals:
             # The deterministic parser is the source of truth (its totals
@@ -405,7 +432,7 @@ async def summarize_with_model(
         else:
             raise
     summary = _merge_parser_and_model(parser_totals, model_summary, settings)
-    summary = summary.model_copy(update={"new_totals": new_totals})
+    summary = summary.model_copy(update={"new_totals": new_totals, "evidence": evidence})
     summary = _with_cable_footage(summary, cable_result, settings)
     summary = _with_additional_materials(summary, additional_materials)
     for warning in diagnostics.warnings:

@@ -972,11 +972,19 @@ def test_previously_billed_job_delta_ignores_page_level_reference_boxes() -> Non
 
     blocks = extract_text_blocks(content)
     previous = extract_previously_billed_job_totals(blocks)
-    rows, warnings = derive_new_totals(["Comp-9 - 1160"], previous)
+    evidence = []
+    rows, warnings = derive_new_totals(["Comp-9 - 1160"], previous, evidence=evidence)
 
     assert previous == {("COMP", "9"): 832.0}
     assert rows == ["Comp-9 - 328"]
     assert warnings == []
+    assert evidence[0].model_dump() == {
+        "key": "COMP:9",
+        "display": "Comp-9",
+        "cumulative": "1160",
+        "previously_billed": "832",
+        "new": "328",
+    }
 
 
 def test_previously_billed_job_delta_ignores_duplicate_page_text_copy() -> None:

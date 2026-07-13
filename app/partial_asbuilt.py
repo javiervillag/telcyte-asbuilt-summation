@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.box_titles import is_previously_billed_totals_box, starts_with_job_totals_title
+from app.evidence import code_evidence_key, decimal_text
+from app.models import DeltaEvidence
 from app.pdf_parser import TextBlock
 from app.rate_cards import CodeKey, total_line_key
 
@@ -26,6 +28,7 @@ def extract_previously_billed_job_totals(blocks: list[TextBlock]) -> dict[CodeKe
 def derive_new_totals(
     cumulative_rows: list[str],
     previous_totals: dict[CodeKey, float],
+    evidence: list[DeltaEvidence] | None = None,
 ) -> tuple[list[str], list[str]]:
     if not previous_totals:
         return [], []
@@ -50,7 +53,18 @@ def derive_new_totals(
             continue
         if delta == 0:
             continue
-        rows.append(f"{_display_from_row(row)} - {_format_number(delta)}")
+        display = _display_from_row(row)
+        rows.append(f"{display} - {_format_number(delta)}")
+        if evidence is not None:
+            evidence.append(
+                DeltaEvidence(
+                    key=code_evidence_key(key),
+                    display=display,
+                    cumulative=decimal_text(cumulative_qty),
+                    previously_billed=decimal_text(previous_qty),
+                    new=decimal_text(delta),
+                )
+            )
 
     if seen_previous:
         labels = ", ".join(f"{prefix}-{number}" for prefix, number in sorted(seen_previous))

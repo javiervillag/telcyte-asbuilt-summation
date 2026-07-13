@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from decimal import Decimal
 
 import fitz
 
 from app.box_titles import starts_with_materials_title, starts_with_totals_title
-from app.models import SummaryIssue
+from app.models import EvidencePart, SummaryIssue
 from app.rate_cards import (
     CODE_PATTERN,
     CODE_TEXT_PATTERN,
@@ -163,6 +164,14 @@ def _format_number(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
+def _decimal_quantity(value: str) -> str:
+    number = Decimal(value.replace(",", ""))
+    rendered = format(number, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
 def _aggregate_code_rows(
     blocks: list[TextBlock],
     catalog: dict[CodeKey, str],
@@ -170,6 +179,7 @@ def _aggregate_code_rows(
     catalog_misses: list[str],
     *,
     apply_catalog: bool = True,
+    contributions: dict[CodeKey, list[EvidencePart]] | None = None,
 ) -> tuple[list[str], list[CodeKey], dict[CodeKey, float]]:
     """Two-pass billing-code aggregation over already-filtered field blocks.
 
@@ -200,6 +210,18 @@ def _aggregate_code_rows(
         if cleaned and cleaned not in catalog_misses:
             catalog_misses.append(cleaned)
 
+    def _record_contribution(block: TextBlock, line: str, key: CodeKey, raw_qty: str) -> None:
+        if contributions is None:
+            return
+        contributions.setdefault(key, []).append(
+            EvidencePart(
+                page=block.page,
+                bbox=block.bbox,
+                line=_clean_text(line)[:80],
+                qty=_decimal_quantity(raw_qty),
+            )
+        )
+
     for block in blocks:
         for line in block.text.splitlines():
             for match in direct_pattern.finditer(line):
@@ -218,6 +240,7 @@ def _aggregate_code_rows(
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
                 totals[key] += float(raw_qty.replace(",", ""))
+                _record_contribution(block, line, key, raw_qty)
 
     direct_keys = set(totals)
     for block in blocks:
@@ -239,6 +262,7 @@ def _aggregate_code_rows(
                     order.append(key)
                     display[key] = catalog.get(normalized_key, _display_code(raw_code, normalized_key))
                 totals[key] += float(raw_qty.replace(",", ""))
+                _record_contribution(block, line, key, raw_qty)
 
     rows = [f"{display[key]} - {_format_number(totals[key])}" for key in order]
     return rows, order, dict(totals)
@@ -250,6 +274,7 @@ def derive_code_totals(
     excluded_lines: list[str] | None = None,
     notes: list[str] | None = None,
     warnings: list[str] | None = None,
+    contributions: dict[CodeKey, list[EvidencePart]] | None = None,
 ) -> list[str]:
     """Aggregate billing-code totals from text blocks.
 
@@ -266,7 +291,13 @@ def derive_code_totals(
     # manual one) must never be counted as field callouts. The same applies to a
     # stamped Materials box now that cable output can be re-uploaded.
     blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
-    rows, order, _totals = _aggregate_code_rows(blocks, catalog, excluded_lines, catalog_misses)
+    rows, order, _totals = _aggregate_code_rows(
+        blocks,
+        catalog,
+        excluded_lines,
+        catalog_misses,
+        contributions=contributions,
+    )
 
     if notes is not None:
         if skipped_total_boxes:

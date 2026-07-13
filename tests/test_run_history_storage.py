@@ -3,13 +3,16 @@
 These tests use synthetic PDFs and a temp SQLite store - no local samples.
 """
 import sqlite3
+import json
+from io import BytesIO
 
 import fitz
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 import app.main as main
-from app.models import SummaryResult
+from app.models import BillingEvidence, EvidencePart, SummaryEvidence, SummaryResult
 from app.run_history import RunHistoryStore
 
 
@@ -105,4 +108,88 @@ def test_sqlite_schema_migration_adds_blob_columns(tmp_path) -> None:
     assert data["summary"]["total_runs"] == 0
     with sqlite3.connect(db) as conn:
         columns = {row[1] for row in conn.execute("pragma table_info(asbuilt_run_history)")}
-    assert {"input_pdf", "output_pdf", "cable_footage_json", "issues_json"} <= columns
+    assert {"input_pdf", "output_pdf", "cable_footage_json", "issues_json", "evidence_json"} <= columns
+
+
+def test_evidence_and_preview_are_lazy_run_scoped_endpoints(client, monkeypatch) -> None:
+    async def fake_summarize(content, settings, source_name=None):
+        return SummaryResult(
+            model="parser+fake",
+            confidence=0.9,
+            job_totals=["UG-06 - 2"],
+            evidence=SummaryEvidence(
+                billing=[
+                    BillingEvidence(
+                        key="UG:6",
+                        display="UG-06",
+                        total="2",
+                        parts=[EvidencePart(page=1, bbox=(10, 10, 100, 30), line="UG-06 - 2", qty="2")],
+                    )
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(main, "summarize_with_model", fake_summarize)
+    monkeypatch.setattr(main, "annotate_pdf", lambda content, summary, source_name=None: _pdf("stamped"))
+
+    response = client.post(
+        "/api/summarize",
+        files={"file": ("evidence.pdf", _pdf("source"), "application/pdf")},
+    )
+    assert response.status_code == 200
+    payload = json.loads(response.headers["x-telcyte-result-summary"])
+    assert payload["run_id"]
+    assert payload["preview_pages"] == [1]
+
+    evidence = client.get(f"/api/run-history/{payload['run_id']}/evidence")
+    assert evidence.status_code == 200
+    assert evidence.json()["billing"][0]["parts"][0]["page"] == 1
+
+    preview = client.get(f"/api/run-history/{payload['run_id']}/preview?page=1&size=thumb")
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "image/jpeg"
+    assert preview.headers["cache-control"] == "private, max-age=86400"
+    assert preview.headers["etag"]
+    rendered = Image.open(BytesIO(preview.content))
+    assert max(rendered.size) <= 1100
+
+    cached = client.get(
+        f"/api/run-history/{payload['run_id']}/preview?page=1&size=thumb",
+        headers={"If-None-Match": preview.headers["etag"]},
+    )
+    assert cached.status_code == 304
+    assert client.get(f"/api/run-history/{payload['run_id']}/preview?page=2").status_code == 400
+    assert client.get(f"/api/run-history/{payload['run_id']}/preview?size=huge").status_code == 400
+    assert client.get("/api/run-history/missing/evidence").status_code == 404
+
+
+def test_old_run_evidence_defaults_to_empty_sections(tmp_path) -> None:
+    store = _store(tmp_path)
+    run_id = store.log_run(
+        main.RunLogRecord(source_filename="old.pdf", status="success", duration_ms=1, output_filename="old-out.pdf")
+    )
+
+    assert run_id
+    assert store.get_evidence(run_id) == {
+        "billing": [],
+        "delta": [],
+        "materials": [],
+        "preview_pages": [],
+        "cable": [],
+        "issues": [],
+    }
+
+
+def test_log_run_returns_no_id_when_insert_fails(tmp_path, monkeypatch) -> None:
+    store = _store(tmp_path)
+
+    def fail_insert(_row) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(store, "_insert_sqlite", fail_insert)
+
+    run_id = store.log_run(
+        main.RunLogRecord(source_filename="failed-log.pdf", status="failed", duration_ms=1)
+    )
+
+    assert run_id is None

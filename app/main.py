@@ -1,11 +1,13 @@
 import json
 import logging
 import time
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 import fitz
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from PIL import Image
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -17,6 +19,7 @@ from app.extra_billing_codes import (
     parse_extra_billing_code_selections,
 )
 from app.cable_footage import material_row_key
+from app.evidence import finalize_material_evidence
 from app.models import SummaryIssue, SummaryResult
 from app.openrouter_client import ManualReviewRequired, OpenRouterError, summarize_with_model
 from app.pdf_annotator import PlacementReviewRequired, annotate_pdf, describe_pdf_fonts
@@ -85,6 +88,50 @@ async def run_history_pdf(run_id: str, kind: str = "output") -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
+
+
+@app.get("/api/run-history/{run_id}/evidence")
+async def run_history_evidence(run_id: str) -> dict:
+    evidence = run_history_store.get_evidence(run_id)
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return evidence
+
+
+@app.get("/api/run-history/{run_id}/preview")
+async def run_history_preview(
+    run_id: str,
+    request: Request,
+    page: int = 1,
+    size: str = "thumb",
+) -> Response:
+    if size not in {"thumb", "large"}:
+        raise HTTPException(status_code=400, detail="size must be 'thumb' or 'large'.")
+    stored = run_history_store.get_pdf(run_id, "output")
+    if not stored:
+        raise HTTPException(status_code=404, detail="No stored output PDF for this run.")
+    _name, pdf_bytes = stored
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        if page < 1 or page > doc.page_count:
+            raise HTTPException(status_code=400, detail="page is outside this PDF.")
+        etag = f'"{run_id}-{page}-{size}"'
+        cache_headers = {
+            "Cache-Control": "private, max-age=86400",
+            "ETag": etag,
+        }
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=cache_headers)
+        pdf_page = doc[page - 1]
+        target_edge = 1100 if size == "thumb" else 2600
+        scale = min(3.0, target_edge / max(pdf_page.rect.width, pdf_page.rect.height))
+        pix = pdf_page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=82, optimize=True)
+    finally:
+        doc.close()
+    return Response(content=buffer.getvalue(), media_type="image/jpeg", headers=cache_headers)
 
 
 @app.get("/api/run-history.csv")
@@ -184,6 +231,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
                     issues=_manual_review_issues(exc),
+                    evidence=exc.evidence,
                     confidence=0.0,
                     model=f"parser+{settings.openrouter_model}",
                 ),
@@ -194,7 +242,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             except PlacementReviewRequired as placement_exc:
                 placement_message = str(placement_exc)
                 logger.warning("placement_review_required filename=%s error=%s", source_filename, placement_exc)
-                _log_run_attempt(
+                run_id = _log_run_attempt(
                     source_filename=source_filename,
                     status="manual_review",
                     started_at=started_at,
@@ -211,6 +259,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     content={
                         "detail": f"This PDF needs manual review because {placement_message}",
                         "warnings": [placement_message],
+                        "result_summary": _result_summary_payload(summary, None, run_id=run_id),
                     },
                 )
         else:
@@ -224,11 +273,12 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     warnings=exc.warnings,
                     informational_notes=exc.informational_notes,
                     issues=_manual_review_issues(exc),
+                    evidence=exc.evidence,
                     confidence=0.0,
                     model=f"parser+{settings.openrouter_model}",
                 ))
                 _reconcile_summary_issues(review_summary)
-                _log_run_attempt(
+                run_id = _log_run_attempt(
                     source_filename=source_filename,
                     status="manual_review",
                     started_at=started_at,
@@ -247,7 +297,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                         "warnings": exc.warnings,
                         "supported_totals": exc.supported_totals,
                         "unresolved_callouts": exc.unresolved_callouts,
-                        "result_summary": _result_summary_payload(review_summary, None),
+                        "result_summary": _result_summary_payload(review_summary, None, run_id=run_id),
                     },
                 )
             summary = _finalize_summary_for_output(SummaryResult(
@@ -259,6 +309,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                 warnings=exc.warnings,
                 informational_notes=exc.informational_notes,
                 issues=_manual_review_issues(exc),
+                evidence=exc.evidence,
                 confidence=0.0,
                 model=f"parser+{settings.openrouter_model}",
             ))
@@ -267,7 +318,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             except PlacementReviewRequired as placement_exc:
                 placement_message = str(placement_exc)
                 logger.warning("placement_review_required filename=%s error=%s", source_filename, placement_exc)
-                _log_run_attempt(
+                run_id = _log_run_attempt(
                     source_filename=source_filename,
                     status="manual_review",
                     started_at=started_at,
@@ -284,12 +335,13 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
                     content={
                         "detail": f"This PDF needs manual review because {placement_message}",
                         "warnings": [placement_message],
+                        "result_summary": _result_summary_payload(summary, None, run_id=run_id),
                     },
                 )
     except PlacementReviewRequired as exc:
         placement_message = str(exc)
         logger.warning("placement_review_required filename=%s error=%s", source_filename, exc)
-        _log_run_attempt(
+        run_id = _log_run_attempt(
             source_filename=source_filename,
             status="manual_review",
             started_at=started_at,
@@ -306,6 +358,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             content={
                 "detail": f"This PDF needs manual review because {placement_message}",
                 "warnings": [placement_message],
+                "result_summary": _result_summary_payload(summary, None, run_id=run_id),
             },
         )
     except OpenRouterError as exc:
@@ -337,9 +390,10 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
 
     base = Path(source_filename).stem
     output_name = f"{base}-telcyte-summary.pdf"
+    _finalize_evidence_for_output(summary, page_count)
     _reconcile_summary_issues(summary)
     status = _status_for_summary(summary)
-    _log_run_attempt(
+    run_id = _log_run_attempt(
         source_filename=source_filename,
         status=status,
         started_at=started_at,
@@ -367,7 +421,7 @@ async def summarize_pdf(file: UploadFile = File(...), extra_billing_codes: str =
             "X-Telcyte-Confidence": f"{summary.confidence:.2f}",
             "X-Telcyte-Status": status,
             "X-Telcyte-Warnings": json.dumps(summary.warnings[:6]),
-            "X-Telcyte-Result-Summary": _result_summary_header(summary, output_name),
+            "X-Telcyte-Result-Summary": _result_summary_header(summary, output_name, run_id=run_id),
         },
     )
 
@@ -389,6 +443,16 @@ def _with_user_selected_extras(
 
 def _finalize_summary_for_output(summary: SummaryResult) -> SummaryResult:
     return summary.with_eligible_cable_materials()
+
+
+def _finalize_evidence_for_output(summary: SummaryResult, page_count: Optional[int]) -> None:
+    finalize_material_evidence(summary)
+    pages = {1}
+    if not summary.new_totals:
+        pages.update(summary.page_totals)
+    if page_count:
+        pages = {page for page in pages if 1 <= page <= page_count}
+    summary.evidence.preview_pages = sorted(pages)
 
 
 def _validate_pdf_upload(content: bytes) -> int:
@@ -420,7 +484,7 @@ def _log_run_attempt(
     error_message: str = "",
     input_pdf: Optional[bytes] = None,
     output_pdf: Optional[bytes] = None,
-) -> None:
+) -> Optional[str]:
     minutes_saved, dollars_saved = run_history_store.estimate_savings(status, bool(output_filename))
     record = RunLogRecord(
         source_filename=source_filename,
@@ -449,18 +513,34 @@ def _log_run_attempt(
             for line in summary.cable_footage
         ] if summary else [],
         issues=[issue.model_dump() for issue in summary.issues] if summary else [],
+        evidence=summary.evidence.model_dump() if summary else {},
     )
     try:
-        run_history_store.log_run(record)
+        return run_history_store.log_run(record)
     except Exception as exc:  # noqa: BLE001 - logging must never block PDF generation
         logger.warning("run_history_unexpected_failure error=%s", exc)
+        return None
 
 
-def _result_summary_header(summary: SummaryResult, output_name: str) -> str:
-    return json.dumps(_result_summary_payload(summary, output_name), ensure_ascii=True, separators=(",", ":"))
+def _result_summary_header(
+    summary: SummaryResult,
+    output_name: str,
+    *,
+    run_id: Optional[str] = None,
+) -> str:
+    return json.dumps(
+        _result_summary_payload(summary, output_name, run_id=run_id),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
 
-def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) -> dict:
+def _result_summary_payload(
+    summary: SummaryResult,
+    output_name: Optional[str],
+    *,
+    run_id: Optional[str] = None,
+) -> dict:
     payload = {
         "output_name": output_name or "",
         "detected_totals": summary.job_totals[:20],
@@ -472,9 +552,12 @@ def _result_summary_payload(summary: SummaryResult, output_name: Optional[str]) 
             for line in summary.cable_footage[:10]
         ],
         "notes": summary.informational_notes[:10],
-        "issues": [issue.model_dump() for issue in summary.issues[:20]],
+        "issues": [issue.model_dump() for issue in summary.issues[:8]],
         "result_lines": _result_detail_lines(summary),
+        "preview_pages": summary.evidence.preview_pages,
     }
+    if run_id:
+        payload["run_id"] = run_id
     return payload
 
 
@@ -488,6 +571,10 @@ def _compact_cable_footage(line) -> dict:
         "family": line.family,
         "path_subtotal": line.path_subtotal,
         "storage_subtotal": line.storage_subtotal,
+        "path_source": line.path_source,
+        "included_storage_ft": line.included_storage_ft,
+        "subtotal_used": line.subtotal_used,
+        "buffered_ft_before_rounding": line.buffered_ft_before_rounding,
         "buffer": line.buffer,
         "rounding": line.rounding,
         "total_ft": line.total_ft,

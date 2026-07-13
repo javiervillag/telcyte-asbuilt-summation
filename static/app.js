@@ -54,6 +54,7 @@ let currentDownload = null;
 let processingTimer = null;
 let processingStartedAt = 0;
 let processingProgress = 0;
+const evidenceCache = new Map();
 
 const processingSteps = [
   { at: 5, title: "Preparing PDF", message: "Uploading the as-built and checking the selected extras." },
@@ -311,7 +312,7 @@ function setStatus(title, message, kind, details = []) {
     appendList("Needs manual interpretation", groups.unresolvedCallouts || []);
   }
   if (groups.canStartOver) {
-    appendStatusActions(groups.download || null);
+    appendStatusActions(groups.download || null, groups.resultSummary || null);
   }
   statusBox.className = kind ? `status ${kind}` : "status";
 }
@@ -371,6 +372,7 @@ function appendResultSummary(summary, warnings = []) {
   appendDetailSection(block, "Notes", summary.notes);
   appendDetailSection(block, "Review items", warnings);
   appendDetailSection(block, "MKR Job Totals details", summary.result_lines);
+  appendEvidencePanel(block, summary.run_id);
   statusBox.appendChild(block);
 }
 
@@ -378,7 +380,6 @@ function appendCableBreakdown(block, lines) {
   if (!Array.isArray(lines) || !lines.length) return;
   const details = document.createElement("details");
   details.className = "included-details cable-breakdown";
-  details.open = true;
   const summary = document.createElement("summary");
   summary.textContent = "Cable material breakdown";
   const list = document.createElement("div");
@@ -426,7 +427,7 @@ function cableMetric(label, value) {
 }
 
 function cableTitle(line) {
-  const base = line.material_line || `${line.part_number || "Unmapped"} (${line.display_type || line.callout || "Cable"})`;
+  const base = line.material_line || line.review_material_line || `${line.part_number || "Unmapped"} (${line.display_type || line.callout || "Cable"})`;
   const hasReviewFlags = Array.isArray(line.review_flags) && line.review_flags.length > 0;
   return hasReviewFlags ? `${base} (preliminary)` : base;
 }
@@ -477,7 +478,176 @@ function appendDetailSection(block, title, lines) {
   block.appendChild(details);
 }
 
-function appendStatusActions(download) {
+function appendEvidencePanel(block, runId) {
+  if (!runId) return;
+  block.insertAdjacentHTML("beforeend", evidencePanelMarkup(runId));
+}
+
+function evidencePanelMarkup(runId) {
+  return `
+    <details class="included-details evidence-panel" data-evidence-run-id="${escapeHtml(runId)}">
+      <summary>Calculation details</summary>
+      <div class="evidence-content"></div>
+    </details>
+  `;
+}
+
+async function loadEvidence(details) {
+  const runId = details.dataset.evidenceRunId;
+  if (!runId || details.dataset.loaded === "true") return;
+  details.dataset.loaded = "true";
+  try {
+    let request = evidenceCache.get(runId);
+    if (!request) {
+      request = fetch(`/api/run-history/${encodeURIComponent(runId)}/evidence`).then((response) => {
+        if (!response.ok) throw new Error("Calculation details unavailable.");
+        return response.json();
+      });
+      evidenceCache.set(runId, request);
+    }
+    const evidence = await request;
+    const content = details.querySelector(".evidence-content");
+    const markup = evidenceMarkup(evidence);
+    if (!markup) {
+      details.remove();
+      return;
+    }
+    content.innerHTML = markup;
+    updatePreviewPages(runId, evidence.preview_pages || []);
+  } catch {
+    details.remove();
+  }
+}
+
+function evidenceMarkup(evidence) {
+  const rows = [];
+  for (const item of evidence.billing || []) {
+    const parts = (item.parts || []).map(
+      (part) => `p${part.page} · ${part.line} · +${part.qty}`,
+    );
+    rows.push(evidenceRow(`${item.display} - ${item.total}`, parts));
+  }
+  for (const item of evidence.delta || []) {
+    rows.push(evidenceRow(
+      `${item.display} - ${item.new} new`,
+      [`${item.cumulative} cumulative - ${item.previously_billed} previously billed = ${item.new}`],
+    ));
+  }
+  for (const item of evidence.materials || []) {
+    const lines = [item.rule];
+    if (item.source_quantity !== null && item.source_quantity !== undefined) {
+      lines.push(`Source quantity: ${item.source_quantity}`);
+    }
+    lines.push(...(item.source_lines || []));
+    rows.push(evidenceRow(item.result || item.display, lines));
+  }
+  for (const item of evidence.cable || []) {
+    rows.push(evidenceRow(cableTitle(item), cableEvidenceLines(item)));
+  }
+  return rows.join("");
+}
+
+function evidenceRow(title, lines) {
+  const clean = (lines || []).filter(Boolean);
+  if (!clean.length) return "";
+  return `
+    <details class="evidence-row">
+      <summary>${escapeHtml(title)}</summary>
+      <div>${clean.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+    </details>
+  `;
+}
+
+function cableEvidenceLines(line) {
+  if (line.path_source === "unassigned") {
+    return [
+      "Path ownership was not assigned; no automatic footage basis was invented.",
+      `Storage observed: ${formatFeet(line.storage_subtotal)}`,
+    ];
+  }
+  const sourceLabels = {
+    comp15: "Comp-15 path",
+    fallback_codes: "UG/DP fallback pull codes",
+    station_markers: "D/T station markers",
+  };
+  const rows = [
+    `Path source: ${sourceLabels[line.path_source] || line.path_source}`,
+    `Path: ${formatFeet(line.path_subtotal)}`,
+    `Storage observed: ${formatFeet(line.storage_subtotal)}`,
+    `Storage included: ${formatFeet(line.included_storage_ft)}`,
+    `Subtotal used: ${formatFeet(line.subtotal_used)}`,
+  ];
+  if (line.buffered_ft_before_rounding !== null && line.buffered_ft_before_rounding !== undefined) {
+    rows.push(`After ${Math.round(Number(line.buffer || 1) * 100 - 100)}%: ${formatFeet(line.buffered_ft_before_rounding)}`);
+  }
+  if (line.total_ft !== null && line.total_ft !== undefined) {
+    rows.push(`Rounding: ${String(line.rounding || "n/a").replace("ceil_", "up to ")} → ${formatFeet(line.total_ft)}`);
+  }
+  return rows;
+}
+
+function previewMarkup(runId, pages = [1], extraClass = "") {
+  const cleanPages = [...new Set((pages || []).map(Number).filter((page) => page > 0))];
+  const firstPage = cleanPages[0] || 1;
+  const encoded = encodeURIComponent(runId);
+  return `
+    <div class="run-preview ${escapeHtml(extraClass)}" data-preview-run-id="${escapeHtml(runId)}" data-preview-page="${firstPage}">
+      <a href="/api/run-history/${encoded}/preview?page=${firstPage}&size=large" target="_blank" rel="noopener" aria-label="Open page ${firstPage} preview">
+        <img loading="lazy" src="/api/run-history/${encoded}/preview?page=${firstPage}&size=thumb" alt="Stamped PDF page ${firstPage} preview" />
+      </a>
+      <div class="preview-pages">${previewPageButtons(cleanPages, firstPage)}</div>
+    </div>
+  `;
+}
+
+function previewPageButtons(pages, activePage) {
+  if (!Array.isArray(pages) || pages.length < 2) return "";
+  return pages.map((page) => `
+    <button type="button" class="preview-page${page === activePage ? " active" : ""}" data-preview-page-button="${page}">p${page}</button>
+  `).join("");
+}
+
+function updatePreviewPages(runId, pages) {
+  const cleanPages = [...new Set((pages || []).map(Number).filter((page) => page > 0))];
+  if (!cleanPages.length) return;
+  document.querySelectorAll(`[data-preview-run-id="${CSS.escape(runId)}"]`).forEach((preview) => {
+    const active = Number(preview.dataset.previewPage || cleanPages[0]);
+    preview.querySelector(".preview-pages").innerHTML = previewPageButtons(cleanPages, active);
+  });
+}
+
+document.addEventListener("toggle", (event) => {
+  const details = event.target.closest?.("[data-evidence-run-id]");
+  if (details?.open) loadEvidence(details);
+}, true);
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-preview-page-button]");
+  if (!button) return;
+  const preview = button.closest("[data-preview-run-id]");
+  if (!preview) return;
+  const page = Number(button.dataset.previewPageButton || 1);
+  const runId = preview.dataset.previewRunId;
+  const encoded = encodeURIComponent(runId);
+  preview.dataset.previewPage = String(page);
+  const image = preview.querySelector("img");
+  const link = preview.querySelector("a");
+  image.src = `/api/run-history/${encoded}/preview?page=${page}&size=thumb`;
+  image.alt = `Stamped PDF page ${page} preview`;
+  link.href = `/api/run-history/${encoded}/preview?page=${page}&size=large`;
+  link.setAttribute("aria-label", `Open page ${page} preview`);
+  preview.querySelectorAll("[data-preview-page-button]").forEach((item) => {
+    item.classList.toggle("active", Number(item.dataset.previewPageButton) === page);
+  });
+});
+
+function appendStatusActions(download, summary) {
+  if (summary?.run_id && Array.isArray(summary.preview_pages) && summary.preview_pages.length) {
+    statusBox.insertAdjacentHTML(
+      "beforeend",
+      previewMarkup(summary.run_id, summary.preview_pages || [1], "result-preview"),
+    );
+  }
   const block = document.createElement("div");
   block.className = "status-actions";
   if (download?.url && download?.filename) {
@@ -1079,6 +1249,8 @@ function renderRunRow(run) {
         .map((issue) => `<span><b>${escapeHtml(issue.severity || "note")}:</b> ${escapeHtml(issue.message || "")}</span>`)
         .join("")}</div>`
     : "";
+  const evidence = run.id && run.has_evidence ? evidencePanelMarkup(run.id) : "";
+  const preview = run.id && run.has_output ? previewMarkup(run.id, [1], "history-preview") : "";
   return `
     <details class="history-row">
       <summary>
@@ -1101,6 +1273,8 @@ function renderRunRow(run) {
       ${resultLines}
       ${cableLines}
       ${issueLines}
+      ${evidence}
+      ${preview}
     </details>
   `;
 }

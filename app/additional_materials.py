@@ -35,6 +35,7 @@ class DerivedMaterialLine:
     total_quantity: int
     unit: str
     material_line: str
+    rule: str
     source_lines: list[str] = field(default_factory=list)
 
 
@@ -256,8 +257,19 @@ def _material_line(rule: MaterialRule, source_quantity: float, source_lines: lis
         total_quantity=total_quantity,
         unit=rule.unit,
         material_line=line,
+        rule=_material_rule_name(rule),
         source_lines=source_lines,
     )
+
+
+def _material_rule_name(rule: MaterialRule) -> str:
+    if rule.unit == "ea":
+        return "count each"
+    if rule.buffer == 1.10 and rule.rounding_increment == 1:
+        return "add 10%, round to nearest foot"
+    if rule.buffer == 1.10:
+        return f"add 10%, round to nearest {rule.rounding_increment} ft"
+    return "use source quantity"
 
 
 def _material_quantity(source_quantity: float, rule: MaterialRule) -> int:

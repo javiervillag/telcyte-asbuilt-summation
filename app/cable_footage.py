@@ -428,15 +428,20 @@ def _derive_cable_footage(
         family, display_type, part_number = PART_MAP.get(key, ("", key, ""))
         storage_items = storage_by_type.get(key, [])
         assigned_segments = path_segments if key == assigned_path_type else []
+        path_source = "unassigned"
+        if assigned_segments:
+            path_source = "fallback_codes" if using_fallback_path else "comp15"
         if key in marker_segments_by_type:
             assigned_segments = [marker_segments_by_type[key]]
             storage_items = []
+            path_source = "station_markers"
         if not assigned_segments and not storage_items:
             continue
         review_flags: list[str] = []
         review_flags.extend(marker_warnings_by_type.get(key, []))
         if using_fallback_path and family != "fiber" and key not in marker_segments_by_type:
             assigned_segments = []
+            path_source = "unassigned"
             review_flags.append("Fallback UG/DP pull-code footage is only validated for fiber cable types.")
         if not family:
             review_flags.append(f"No material part mapping found for cable type {display_type}.")
@@ -454,6 +459,7 @@ def _derive_cable_footage(
             auto_stamp=auto_stamp,
             coax_rounding_increment=coax_rounding_increment,
             include_storage_in_total=path_includes_storage,
+            path_source=path_source,
             review_flags=review_flags,
         )
         result.lines.append(line)
@@ -489,6 +495,7 @@ def _build_line(
     auto_stamp: bool,
     coax_rounding_increment: int,
     include_storage_in_total: bool = True,
+    path_source: str = "unassigned",
     review_flags: list[str],
 ) -> CableFootageLine:
     path_subtotal = sum(item.feet for item in path_segments)
@@ -498,11 +505,14 @@ def _build_line(
         storage_subtotal = 0.0
         rounding = f"ceil_{max(1, int(coax_rounding_increment))}"
         review_flags.append("Coax source path must be validated before automatic stamping.")
-    subtotal = path_subtotal + (storage_subtotal if include_storage_in_total else 0.0)
+    included_storage_ft = storage_subtotal if include_storage_in_total and path_subtotal > 0 else 0.0
+    subtotal = path_subtotal + included_storage_ft
     total_ft: int | None = None
+    buffered_ft_before_rounding: float | None = None
     material_line = ""
     review_material_line = ""
     if path_subtotal > 0 and part_number and family:
+        buffered_ft_before_rounding = round(subtotal * CABLE_BUFFER, 6)
         total_ft = buffered_cable_footage(subtotal, family, coax_rounding_increment)
         material_line = f"{part_number} ({display_type}) - {total_ft}'"
     elif part_number and family in {"fiber", "drop_fiber"} and storage_subtotal > 0:
@@ -517,6 +527,10 @@ def _build_line(
         storage_items=storage_items if family != "coax" else [],
         path_subtotal=path_subtotal,
         storage_subtotal=storage_subtotal,
+        path_source=path_source,
+        included_storage_ft=included_storage_ft,
+        subtotal_used=subtotal if path_subtotal > 0 else 0.0,
+        buffered_ft_before_rounding=buffered_ft_before_rounding,
         buffer=CABLE_BUFFER,
         rounding=rounding,
         total_ft=total_ft,

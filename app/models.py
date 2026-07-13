@@ -12,6 +12,44 @@ class SummaryIssue(BaseModel):
     subject: Optional[str] = None
 
 
+class EvidencePart(BaseModel):
+    page: int
+    bbox: tuple[float, float, float, float]
+    line: str
+    qty: str
+
+
+class BillingEvidence(BaseModel):
+    key: str
+    display: str
+    total: str
+    parts: list[EvidencePart] = Field(default_factory=list)
+
+
+class DeltaEvidence(BaseModel):
+    key: str
+    display: str
+    cumulative: str
+    previously_billed: str
+    new: str
+
+
+class MaterialEvidence(BaseModel):
+    part: str
+    display: str
+    rule: str
+    source_quantity: Optional[str] = None
+    source_lines: list[str] = Field(default_factory=list)
+    result: str
+
+
+class SummaryEvidence(BaseModel):
+    billing: list[BillingEvidence] = Field(default_factory=list)
+    delta: list[DeltaEvidence] = Field(default_factory=list)
+    materials: list[MaterialEvidence] = Field(default_factory=list)
+    preview_pages: list[int] = Field(default_factory=list)
+
+
 class CableFootageItem(BaseModel):
     label: str = ""
     page: int = 0
@@ -28,6 +66,10 @@ class CableFootageLine(BaseModel):
     storage_items: list[CableFootageItem] = Field(default_factory=list)
     path_subtotal: float = 0.0
     storage_subtotal: float = 0.0
+    path_source: Literal["comp15", "fallback_codes", "station_markers", "unassigned"] = "unassigned"
+    included_storage_ft: float = 0.0
+    subtotal_used: float = 0.0
+    buffered_ft_before_rounding: Optional[float] = None
     buffer: float = 1.1
     rounding: str = "ceil_100"
     total_ft: Optional[int] = None
@@ -51,6 +93,7 @@ class SummaryResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     informational_notes: list[str] = Field(default_factory=list)
     issues: list[SummaryIssue] = Field(default_factory=list)
+    evidence: SummaryEvidence = Field(default_factory=SummaryEvidence, exclude=True)
     # Populated by the annotator from the actual Materials-box merge. It is
     # runtime classification evidence, not part of the public response model.
     final_material_rows: list[str] = Field(default_factory=list, exclude=True)

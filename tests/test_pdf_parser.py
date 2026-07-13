@@ -1,7 +1,10 @@
 from pathlib import Path
+from decimal import Decimal
 
 import fitz
 
+from app.evidence import build_billing_evidence
+from app.pdf_parser import TextBlock
 from app.pdf_parser import (
     build_pdf_context,
     diagnose_extraction,
@@ -136,6 +139,49 @@ def test_derive_code_totals_reads_future_code_prefixes_and_surface_labels() -> N
     totals = derive_code_totals(extract_text_blocks(content))
 
     assert totals == ["SME-01 - 1", "DP-11 - 156", "UG-06 - 5", "UG-85 - 1"]
+
+
+def test_billing_evidence_records_only_accepted_parts_with_exact_decimal_sum() -> None:
+    blocks = [
+        TextBlock(page=1, bbox=(10, 20, 100, 40), text="UG-44 - 16.5"),
+        TextBlock(page=2, bbox=(10, 50, 100, 70), text="UG-44 - 3.5"),
+        TextBlock(page=2, bbox=(10, 80, 100, 100), text="Planner approved 2 x COMP-9"),
+    ]
+    contributions = {}
+
+    totals = derive_code_totals(blocks, contributions=contributions)
+    evidence = build_billing_evidence(totals, contributions)
+
+    ug44 = next(item for item in evidence if item.key == "UG:44")
+    assert ug44.total == "20"
+    assert [part.page for part in ug44.parts] == [1, 2]
+    assert sum(Decimal(part.qty) for part in ug44.parts) == Decimal(ug44.total)
+    comp9 = next(item for item in evidence if item.key == "COMP:9")
+    assert [part.qty for part in comp9.parts] == ["2"]
+
+
+def test_prj10_style_evidence_excludes_previously_billed_box() -> None:
+    blocks = [
+        TextBlock(
+            page=1,
+            bbox=(10, 10, 200, 80),
+            text="MKR Job Totals\nPreviously Billed\nComp-9 - 832",
+            source="annotation",
+        ),
+        TextBlock(page=3, bbox=(10, 20, 100, 40), text="Comp-9 - 184"),
+        TextBlock(page=4, bbox=(10, 50, 100, 90), text="Comp-9 - 832\nComp-9 - 144"),
+    ]
+    contributions = {}
+
+    totals = derive_code_totals(blocks, contributions=contributions)
+    evidence = build_billing_evidence(totals, contributions)
+
+    assert totals == ["Comp-9 - 1160"]
+    assert [(part.page, part.qty) for part in evidence[0].parts] == [
+        (3, "184"),
+        (4, "832"),
+        (4, "144"),
+    ]
 
 
 def test_derive_code_totals_counts_dirt_surface_descriptor_codes() -> None:

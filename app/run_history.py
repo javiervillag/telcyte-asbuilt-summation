@@ -41,6 +41,7 @@ class RunLogRecord:
     result_lines: list[str] | None = None
     cable_footage: list[dict[str, Any]] | None = None
     issues: list[dict[str, Any]] | None = None
+    evidence: dict[str, Any] | None = None
 
 
 class RunHistoryStore:
@@ -74,7 +75,7 @@ class RunHistoryStore:
         dollars = minutes / 60.0 * max(0.0, float(self.savings_hourly_rate))
         return round(minutes, 2), round(dollars, 2)
 
-    def log_run(self, record: RunLogRecord) -> None:
+    def log_run(self, record: RunLogRecord) -> str | None:
         try:
             self._ensure_schema()
             row = self._record_to_row(record)
@@ -82,8 +83,10 @@ class RunHistoryStore:
                 self._insert_postgres(row)
             else:
                 self._insert_sqlite(row)
+            return str(row["id"])
         except Exception as exc:  # noqa: BLE001 - logging must not break PDF processing
             logger.warning("run_history_log_failed error=%s", exc)
+            return None
 
     def dashboard(self, limit: int = 20, query: str = "") -> dict[str, Any]:
         self._ensure_schema()
@@ -130,6 +133,36 @@ class RunHistoryStore:
             name = f"{name}.pdf"
         return name, bytes(row[1])
 
+    def get_evidence(self, run_id: str) -> dict[str, Any] | None:
+        """Return calculation evidence for one run without inflating history lists."""
+        self._ensure_schema()
+        if self._backend == "postgres":
+            import psycopg
+
+            with psycopg.connect(self.database_url) as conn:
+                row = conn.execute(
+                    "select evidence_json, cable_footage_json, issues_json "
+                    "from asbuilt_run_history where id = %s",
+                    (run_id,),
+                ).fetchone()
+        else:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                row = conn.execute(
+                    "select evidence_json, cable_footage_json, issues_json "
+                    "from asbuilt_run_history where id = ?",
+                    (run_id,),
+                ).fetchone()
+        if not row:
+            return None
+        evidence = _json_object(row[0])
+        evidence.setdefault("billing", [])
+        evidence.setdefault("delta", [])
+        evidence.setdefault("materials", [])
+        evidence.setdefault("preview_pages", [])
+        evidence["cable"] = _json_list(row[1])
+        evidence["issues"] = _json_list(row[2])
+        return evidence
+
     def csv_export(self, limit: int = 500) -> str:
         data = self.dashboard(limit=max(1, min(int(limit or 500), 2000)))
         output = io.StringIO()
@@ -170,6 +203,7 @@ class RunHistoryStore:
         data["result_lines_json"] = json.dumps(data.pop("result_lines") or [], ensure_ascii=True)
         data["cable_footage_json"] = json.dumps(data.pop("cable_footage") or [], ensure_ascii=True)
         data["issues_json"] = json.dumps(data.pop("issues") or [], ensure_ascii=True)
+        data["evidence_json"] = json.dumps(data.pop("evidence") or {}, ensure_ascii=True)
         return data
 
     def _ensure_schema(self) -> None:
@@ -347,6 +381,7 @@ class RunHistoryStore:
             "estimated_minutes_saved": round(float(row.get("estimated_minutes_saved") or 0.0), 1),
             "has_input": bool(row.get("has_input")),
             "has_output": bool(row.get("has_output")),
+            "has_evidence": bool(row.get("has_evidence")),
             "result_lines": result_lines if isinstance(result_lines, list) else [],
             "cable_footage": cable_footage if isinstance(cable_footage, list) else [],
             "issues": issues if isinstance(issues, list) else [],
@@ -363,6 +398,22 @@ def _iso_string(value: Any) -> str:
             value = value.replace(tzinfo=timezone.utc)
         return value.isoformat()
     return str(value)
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _json_list(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(value or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _status_label(status: str) -> str:
@@ -402,7 +453,8 @@ create table if not exists asbuilt_run_history (
   output_pdf bytea,
   result_lines_json text not null default '[]',
   cable_footage_json text not null default '[]',
-  issues_json text not null default '[]'
+  issues_json text not null default '[]',
+  evidence_json text not null default '{}'
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
@@ -414,6 +466,7 @@ _POSTGRES_MIGRATIONS = [
     "alter table asbuilt_run_history add column if not exists result_lines_json text not null default '[]'",
     "alter table asbuilt_run_history add column if not exists cable_footage_json text not null default '[]'",
     "alter table asbuilt_run_history add column if not exists issues_json text not null default '[]'",
+    "alter table asbuilt_run_history add column if not exists evidence_json text not null default '{}'",
 ]
 
 _SQLITE_SCHEMA = """
@@ -439,7 +492,8 @@ create table if not exists asbuilt_run_history (
   output_pdf blob,
   result_lines_json text not null default '[]',
   cable_footage_json text not null default '[]',
-  issues_json text not null default '[]'
+  issues_json text not null default '[]',
+  evidence_json text not null default '{}'
 );
 create index if not exists idx_asbuilt_run_history_created_at
   on asbuilt_run_history (created_at desc);
@@ -451,6 +505,7 @@ _SQLITE_MIGRATIONS = [
     ("result_lines_json", "alter table asbuilt_run_history add column result_lines_json text not null default '[]'"),
     ("cable_footage_json", "alter table asbuilt_run_history add column cable_footage_json text not null default '[]'"),
     ("issues_json", "alter table asbuilt_run_history add column issues_json text not null default '[]'"),
+    ("evidence_json", "alter table asbuilt_run_history add column evidence_json text not null default '{}'"),
 ]
 
 _LIST_COLUMNS = (
@@ -458,7 +513,8 @@ _LIST_COLUMNS = (
     " pages_processed, model, confidence, detected_totals_count,"
     " extra_billing_codes_count, selected_extras_json, warnings_count,"
     " error_type, error_message, estimated_minutes_saved, result_lines_json, cable_footage_json, issues_json,"
-    " (input_pdf is not null) as has_input, (output_pdf is not null) as has_output"
+    " (input_pdf is not null) as has_input, (output_pdf is not null) as has_output,"
+    " ((evidence_json <> '{}' and evidence_json <> '[]') or cable_footage_json <> '[]') as has_evidence"
 )
 
 _POSTGRES_INSERT_SQL = """
@@ -484,7 +540,8 @@ insert into asbuilt_run_history (
   output_pdf,
   result_lines_json,
   cable_footage_json,
-  issues_json
+  issues_json,
+  evidence_json
 ) values (
   %(id)s,
   %(created_at)s,
@@ -507,7 +564,8 @@ insert into asbuilt_run_history (
   %(output_pdf)s,
   %(result_lines_json)s,
   %(cable_footage_json)s,
-  %(issues_json)s
+  %(issues_json)s,
+  %(evidence_json)s
 )
 """
 

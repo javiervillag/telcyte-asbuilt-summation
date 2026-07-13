@@ -6,8 +6,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import _result_summary_header, _result_summary_payload, app
-from app.models import CableFootageItem, CableFootageLine, SummaryIssue, SummaryResult
+from app.evidence import finalize_material_evidence
+from app.main import _finalize_evidence_for_output, _result_summary_header, _result_summary_payload, app
+from app.models import (
+    CableFootageItem,
+    CableFootageLine,
+    MaterialEvidence,
+    SummaryEvidence,
+    SummaryIssue,
+    SummaryResult,
+)
 from app.openrouter_client import ManualReviewRequired
 from app.pdf_annotator import PlacementReviewRequired
 
@@ -394,6 +402,8 @@ def test_summarize_endpoint_reports_manual_review(monkeypatch: pytest.MonkeyPatc
     assert body["result_summary"]["output_name"] == ""
     assert body["result_summary"]["detected_totals"] == []
     assert body["result_summary"]["extra_billing_codes"] == []
+    assert body["result_summary"]["run_id"]
+    assert body["result_summary"]["preview_pages"] == []
     assert body["result_summary"]["result_lines"] == ["MKR Job Totals"]
     assert body["warnings"] == ["This PDF does not have enough readable text for automatic summation."]
 
@@ -587,6 +597,118 @@ def test_cable_header_payload_is_compact_for_many_segments() -> None:
     assert "storage_items" not in compact
     assert "verbose source line" not in header
     assert len(header) < 4096
+
+
+def test_result_header_stays_under_conservative_proxy_budget() -> None:
+    cables = [
+        _cable_line().model_copy(update={"callout": f"cable-{index}"})
+        for index in range(6)
+    ]
+    summary = SummaryResult(
+        model="parser+representative-model",
+        job_totals=[f"UG-{index:02d} - {index * 10}" for index in range(20)],
+        materials=[f"470-{index:04d} - {index}" for index in range(10)],
+        new_totals=[f"UG-{index:02d} - {index}" for index in range(8)],
+        cable_footage=cables,
+        informational_notes=["Short processing note."] * 5,
+        issues=[
+            SummaryIssue(severity="action", code=f"check_{index}", message=f"Check item {index}.")
+            for index in range(8)
+        ],
+    )
+
+    header = _result_summary_header(summary, "large-result.pdf", run_id="a" * 32)
+
+    # The measured production baseline was 3,344 bytes before run_id and
+    # preview_pages. Keep ample room below common proxy header limits.
+    assert len(header.encode("utf-8")) < 6144
+
+
+def test_final_material_evidence_labels_preserved_rows_without_duplicating_computed_rows() -> None:
+    summary = SummaryResult(
+        model="parser-test",
+        materials=["470-0135 (SMC-07) - 4"],
+        final_material_rows=["470-0135 (SMC-07) - 4", "600-8403 (FP) - 1"],
+        evidence=SummaryEvidence(
+            materials=[
+                MaterialEvidence(
+                    part="470-0135",
+                    display="SMC-07",
+                    rule="count each",
+                    source_quantity="4",
+                    source_lines=["SMC-07 - 4"],
+                    result="470-0135 (SMC-07) - 4",
+                )
+            ]
+        ),
+    )
+
+    finalize_material_evidence(summary)
+
+    assert [item.result for item in summary.evidence.materials] == [
+        "470-0135 (SMC-07) - 4",
+        "600-8403 (FP) - 1",
+    ]
+    assert summary.evidence.materials[1].rule == "preserved from existing Materials box"
+
+
+def test_preview_pages_follow_actual_stamping_mode() -> None:
+    page_totals = {3: ["UG-06 - 2"], 4: ["Comp-9 - 3"]}
+    regular = SummaryResult(model="parser-test", job_totals=["UG-06 - 2"], page_totals=page_totals)
+    delta = SummaryResult(
+        model="parser-test",
+        job_totals=["Comp-9 - 1160"],
+        new_totals=["Comp-9 - 328"],
+        page_totals=page_totals,
+    )
+
+    _finalize_evidence_for_output(regular, 4)
+    _finalize_evidence_for_output(delta, 4)
+
+    assert regular.evidence.preview_pages == [1, 3, 4]
+    assert delta.evidence.preview_pages == [1]
+
+
+def test_preserved_numeric_cable_row_is_explained_when_auto_result_is_verify() -> None:
+    summary = SummaryResult(
+        model="parser-test",
+        materials=["605-3277 (48Ct) - VERIFY"],
+        final_material_rows=["605-3277 (48Ct) - 1000'"],
+        cable_footage=[
+            CableFootageLine(
+                callout="48ct",
+                display_type="48Ct",
+                part_number="605-3277",
+                family="fiber",
+                path_source="unassigned",
+                storage_subtotal=250,
+                review_material_line="605-3277 (48Ct) - VERIFY",
+            )
+        ],
+    )
+
+    finalize_material_evidence(summary)
+
+    assert summary.evidence.materials[0].result == "605-3277 (48Ct) - 1000'"
+    assert summary.evidence.materials[0].rule == "preserved from existing Materials box"
+
+
+def test_result_header_omits_run_id_when_history_insert_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_summarize(content, settings, source_name=None):
+        return SummaryResult(model="parser+fake", confidence=0.9, job_totals=["UG-56 - 170"])
+
+    monkeypatch.setattr("app.main.summarize_with_model", fake_summarize)
+    monkeypatch.setattr("app.main.annotate_pdf", lambda content, summary, source_name=None: b"%PDF-1.4 fake")
+    monkeypatch.setattr("app.main.run_history_store.log_run", lambda record: None)
+
+    response = TestClient(app).post(
+        "/api/summarize",
+        files={"file": ("no-history.pdf", SAMPLE.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.headers["x-telcyte-result-summary"])
+    assert "run_id" not in payload
 
 
 def test_sample_manual_review_response_includes_supported_evidence() -> None:

@@ -1,3 +1,5 @@
+import pytest
+
 from app.cable_footage import (
     buffered_cable_footage,
     cable_material_key,
@@ -175,6 +177,10 @@ def test_fiber_fallback_pull_codes_use_path_only_without_storage() -> None:
     line = result.lines[0]
     assert line.path_subtotal == 468
     assert line.storage_subtotal == 236
+    assert line.path_source == "fallback_codes"
+    assert line.included_storage_ft == 0
+    assert line.subtotal_used == 468
+    assert line.buffered_ft_before_rounding == pytest.approx(514.8)
     assert line.total_ft == 600
     assert line.material_line == "605-3277 (48Ct) - 600'"
     assert line.eligible_for_stamp is True
@@ -195,6 +201,10 @@ def test_comp15_takes_precedence_over_fallback_pull_codes() -> None:
     line = result.lines[0]
     assert line.path_subtotal == 582
     assert line.storage_subtotal == 250
+    assert line.path_source == "comp15"
+    assert line.included_storage_ft == 250
+    assert line.subtotal_used == 832
+    assert line.buffered_ft_before_rounding == pytest.approx(915.2)
     assert line.total_ft == 1000
     assert line.material_line == "605-3277 (48Ct) - 1000'"
 
@@ -213,6 +223,10 @@ def test_fallback_pull_codes_stay_verify_when_multiple_cable_types_present() -> 
     )
 
     fiber = next(line for line in result.lines if line.callout == "48ct")
+    assert fiber.path_source == "unassigned"
+    assert fiber.included_storage_ft == 0
+    assert fiber.subtotal_used == 0
+    assert fiber.buffered_ft_before_rounding is None
     assert fiber.material_line == ""
     assert fiber.review_material_line == "605-3277 (48Ct) - VERIFY"
     assert any("path ownership needs review" in warning for warning in result.warnings)
@@ -278,6 +292,9 @@ def test_drop_f_station_markers_derive_base_without_double_counting_storage() ->
 
     assert drop.path_subtotal == 324
     assert drop.storage_subtotal == 0
+    assert drop.path_source == "station_markers"
+    assert drop.subtotal_used == 324
+    assert drop.buffered_ft_before_rounding == pytest.approx(356.4)
     assert drop.total_ft == 356
     assert drop.material_line == "240-0318 (Drop F) - 356'"
     assert drop.eligible_for_stamp is True

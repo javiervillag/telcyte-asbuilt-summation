@@ -69,6 +69,10 @@ def test_misc_material_code_rules_from_de_duplicated_totals() -> None:
         "450-0323 (UG-28) - 2",
         "470-0135 (SMC-07) - 3",
     ]
+    smc = next(line for line in result.lines if line.rule_id == "smc07")
+    assert smc.rule == "count each"
+    assert smc.source_quantity == 3
+    assert smc.source_lines == ["SMC-07 - 3"]
 
 
 def test_material_code_rules_are_not_dropped_by_catalog_filtering() -> None:
