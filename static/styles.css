@@ -887,7 +887,8 @@ input[type="file"] {
   background: var(--success-bg);
 }
 
-.status.warn .status-badge {
+.status.warn .status-badge,
+.status.check .status-badge {
   color: var(--warn-ink);
   background: var(--warn-bg);
 }

@@ -195,6 +195,7 @@ form.addEventListener("submit", async (event) => {
     }
     const warnings = readWarnings(response);
     const resultSummary = readResultSummary(response);
+    const runStatus = response.headers.get("X-Telcyte-Status") || "";
     const blob = await response.blob();
     const disposition = response.headers.get("Content-Disposition") || "";
     const match = disposition.match(/filename=\"?([^"]+)\"?/);
@@ -203,7 +204,7 @@ form.addEventListener("submit", async (event) => {
       resultSummary.output_name = outputName;
     }
     const notes = Array.isArray(resultSummary?.notes) ? resultSummary.notes.filter(Boolean) : [];
-    const resultKind = warnings.length ? "warn" : (notes.length ? "note" : "done");
+    const resultKind = resultKindForRunStatus(runStatus, warnings, notes);
     clearCurrentDownload();
     const url = URL.createObjectURL(blob);
     currentDownload = { url, filename: outputName };
@@ -688,9 +689,18 @@ function clearCurrentDownload() {
 function statusLabel(kind) {
   if (kind === "done") return "Done";
   if (kind === "note") return "Done • Notes";
+  if (kind === "check") return "Check items";
   if (kind === "warn") return "Review";
   if (kind === "error") return "Review";
   return "Status";
+}
+
+function resultKindForRunStatus(status, warnings, notes) {
+  if (status === "success") return "done";
+  if (status === "done_with_notes") return "note";
+  if (status === "needs_input") return "check";
+  if (status === "manual_review") return "warn";
+  return warnings.length ? "warn" : (notes.length ? "note" : "done");
 }
 
 function startProcessingProgress() {
