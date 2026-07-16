@@ -6,6 +6,7 @@ from app.cable_footage import (
     canonicalize_cable_material_row,
     derive_cable_footage,
     extract_material_rows,
+    material_row_key,
     merge_material_rows,
     normalize_cable_type,
 )
@@ -22,6 +23,8 @@ def test_normalize_cable_type_variants() -> None:
     assert normalize_cable_type(".625") == ".625"
     assert normalize_cable_type(".875") == ".875"
     assert normalize_cable_type("Drop F") == "drop_f"
+    assert normalize_cable_type("RG6") == "rg6"
+    assert normalize_cable_type("RG11") == "rg11"
     assert normalize_cable_type("PWR-625") is None
 
 
@@ -292,7 +295,7 @@ def test_drop_f_station_markers_derive_base_without_double_counting_storage() ->
 
     assert drop.path_subtotal == 324
     assert drop.storage_subtotal == 0
-    assert drop.path_source == "station_markers"
+    assert drop.path_source == "tail_sequence"
     assert drop.subtotal_used == 324
     assert drop.buffered_ft_before_rounding == pytest.approx(356.4)
     assert drop.total_ft == 356
@@ -333,6 +336,18 @@ def test_verify_material_row_is_keyed_and_replaced_by_numeric_row() -> None:
     ]
 
 
+def test_rg_material_rows_share_the_additional_material_part_key() -> None:
+    assert material_row_key("240-2079 (RG6) - 55'") == "part:240-2079"
+    assert material_row_key("240-2083 (RG11) - 220'") == "part:240-2083"
+    assert merge_material_rows(
+        ["240-2079 (RG6) - VERIFY", "Manual Material - 1"],
+        ["240-2079 (RG6) - 55'"],
+    ) == [
+        "240-2079 (RG6) - 55'",
+        "Manual Material - 1",
+    ]
+
+
 def test_hand_written_fiber_material_row_is_keyed_and_does_not_rebuffer() -> None:
     hand_row = "605-3277- 48Ct FIBER- 600'"
 
@@ -362,6 +377,7 @@ def test_buffered_cable_footage_rule() -> None:
     # coax: +10% then ceil to the configured increment (default 10)
     assert buffered_cable_footage(500, "coax", 10) == 550
     assert buffered_cable_footage(118, "coax", 10) == 130
+    assert buffered_cable_footage(200, "coax", 10) == 220
 
 
 def test_cable_material_key_recognizes_legacy_part_number() -> None:

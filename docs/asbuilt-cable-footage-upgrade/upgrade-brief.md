@@ -88,6 +88,8 @@ The coax sample also says some paths are not counted if cable was not pulled thr
 
 Nick confirmed the coax rule by email: use pulled path footage only, no storage, add 10%, then round using the normal coax rule. He also confirmed the final material line should include the part number, for example `220-9236 (.625) - 140'`.
 
+Nick additionally confirmed on July 16, 2026 that the Tie Point-to-EOL jacket-number sequence applies to all supported cable types: 48Ct, 144Ct, 288Ct, `.625`, `.875`, Drop F, RG6, and RG11. Sequence evidence supplies the raw path footage; the existing family-specific buffer, storage, and rounding rules still apply. Conflicting or incomplete sequence evidence remains Review-only.
+
 Important remaining risk: the visible text evidence in the sample only explains `118'` of pulled path, while Nick's expected material output is `140'` after buffer/rounding. That means the formula is confirmed, but the source-path reconstruction is still under-determined for this coax sample. Do not hard-code the `140'`; keep coax review-safe until the parser can explain the pulled path or Nick supplies the missing path evidence.
 
 ## Material Mapping

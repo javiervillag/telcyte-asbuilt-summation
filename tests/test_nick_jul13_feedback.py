@@ -309,16 +309,17 @@ def test_same_line_terminal_markers_anchor_tail_sequence() -> None:
     assert line.eligible_for_stamp is True
 
 
-def test_144ct_tail_markers_do_not_change_existing_materials_box() -> None:
+def test_144ct_tail_sequence_updates_only_its_existing_material_row() -> None:
     blocks = [
         _block("EOL - 144Ct - 50'\nT23560 - D23610"),
         _block("Tie Point - 144Ct - 50'\nT24394 - D24344"),
     ]
     cable = derive_cable_footage(blocks, auto_stamp=True)
     line = cable.lines[0]
-    assert line.path_source == "unassigned"
-    assert line.total_ft is None
-    assert line.eligible_for_stamp is False
+    assert line.path_source == "tail_sequence"
+    assert line.total_ft == 1000
+    assert line.material_line == "605-1502 (144Ct) - 1000'"
+    assert line.eligible_for_stamp is True
 
     existing_content = "Materials\n605-1502 (144Ct) - 1400'\nEMT - 10'"
     doc = fitz.open()
@@ -330,7 +331,125 @@ def test_144ct_tail_markers_do_not_change_existing_materials_box() -> None:
     summary = SummaryResult(model="parser-test", cable_footage=cable.lines).with_eligible_cable_materials()
     output = annotate_pdf(source, summary)
 
-    assert _materials_box_content(output) == existing_content
+    assert _materials_box_content(output) == "Materials\n605-1502 (144Ct) - 1000'\nEMT - 10'"
+
+
+def test_288ct_tail_sequence_uses_fiber_buffer_and_rounding() -> None:
+    result = derive_cable_footage(
+        [
+            _block("EOL - 288Ct T1000"),
+            _block("Tie Point - 288Ct T1200"),
+        ],
+        auto_stamp=True,
+    )
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.path_subtotal == 200
+    assert line.total_ft == 300
+    assert line.material_line == "605-1503 (288Ct) - 300'"
+    assert line.eligible_for_stamp is True
+
+
+@pytest.mark.parametrize(
+    ("cable_type", "part_number", "tie_marker", "expected"),
+    [
+        (".625", "220-9236", "T1120", 140),
+        (".875", "220-6999", "T1200", 220),
+    ],
+)
+def test_coax_single_terminal_markers_use_sequence_without_storage(
+    cable_type: str,
+    part_number: str,
+    tie_marker: str,
+    expected: int,
+) -> None:
+    result = derive_cable_footage(
+        [
+            _block(f"EOL - {cable_type} T1000"),
+            _block(f"Storage - {cable_type} - 500' D1050"),
+            _block(f"Tie Point - {cable_type} {tie_marker}"),
+        ],
+        auto_stamp=True,
+    )
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.storage_subtotal == 0
+    assert line.total_ft == expected
+    assert line.material_line == f"{part_number} ({cable_type}) - {expected}'"
+    assert line.eligible_for_stamp is True
+    assert not any("Coax source path" in flag for flag in line.review_flags)
+
+
+def test_coax_sequence_cross_check_excludes_storage_from_code_method() -> None:
+    result = derive_cable_footage(
+        [
+            _block("EOL - .625 T1000"),
+            _block("Storage - .625 - 500' D1050"),
+            _block("Tie Point - .625 T1120"),
+            _block("Comp-15 - 120'"),
+        ],
+        auto_stamp=True,
+    )
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.total_ft == 140
+    assert line.eligible_for_stamp is True
+    assert any("agree at 140'" in note for note in result.informational_notes)
+
+
+@pytest.mark.parametrize(
+    ("cable_type", "part_number", "eol", "tie", "expected"),
+    [
+        ("RG6", "240-2079", 1000, 1050, 55),
+        ("RG11", "240-2083", 2000, 2200, 220),
+    ],
+)
+def test_rg_drop_cable_tail_sequence_uses_whole_foot_rounding(
+    cable_type: str,
+    part_number: str,
+    eol: int,
+    tie: int,
+    expected: int,
+) -> None:
+    result = derive_cable_footage(
+        [
+            _block(f"EOL - {cable_type} T{eol}"),
+            _block(f"Tie Point - {cable_type} T{tie}"),
+        ],
+        auto_stamp=True,
+    )
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.rounding == "nearest_1"
+    assert line.total_ft == expected
+    assert line.material_line == f"{part_number} ({cable_type}) - {expected}'"
+    assert line.eligible_for_stamp is True
+
+
+def test_mixed_coax_and_rg11_path_code_keeps_both_types_visible_for_review() -> None:
+    result = derive_cable_footage(
+        [
+            _block("Splice - .625\nTie Point - .625\nEOL - .625"),
+            _block("EOL - RG11 - 24'\nTie Point - RG11 - 20'"),
+            _block("Comp-15 - 640'"),
+        ],
+        auto_stamp=True,
+    )
+
+    assert {line.callout for line in result.lines} == {".625", "rg11"}
+    assert all(line.eligible_for_stamp is False for line in result.lines)
+    assert {line.review_material_line for line in result.lines} == {
+        "220-9236 (.625) - VERIFY",
+        "240-2083 (RG11) - VERIFY",
+    }
+    assert all(
+        any("could not be safely assigned" in flag for flag in line.review_flags)
+        for line in result.lines
+    )
 
 
 def test_invalid_configured_path_code_warns_but_valid_codes_still_count() -> None:
@@ -347,9 +466,7 @@ def test_invalid_configured_path_code_warns_but_valid_codes_still_count() -> Non
     assert any(issue.code == "invalid_cable_path_code" for issue in result.issues)
 
 
-def test_drop_f_station_markers_still_use_d_span_method() -> None:
-    """The Drop F method (D-span + terminal slack) is untouched by the trunk
-    tail-sequence; mirrors test_drop_f_station_markers_derive_base..."""
+def test_drop_f_terminal_markers_use_confirmed_tail_sequence() -> None:
     blocks = [
         _block(
             "EOL - Drop F - 40'\n"
@@ -363,6 +480,7 @@ def test_drop_f_station_markers_still_use_d_span_method() -> None:
     result = derive_cable_footage(blocks, auto_stamp=True)
     drop = next(line for line in result.lines if line.callout == "drop_f")
 
-    assert drop.path_source == "station_markers"
+    assert drop.path_source == "tail_sequence"
     assert drop.path_subtotal == 324
     assert drop.total_ft == 356
+    assert drop.rounding == "nearest_1"
