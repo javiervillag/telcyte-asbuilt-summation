@@ -12,6 +12,7 @@ Storage/risers/slack are already inside the span. With multiple cables pulled
 through the same route(s), the callout/code/hexagon footage is used instead.
 """
 
+import fitz
 import pytest
 
 from app.cable_footage import (
@@ -19,6 +20,8 @@ from app.cable_footage import (
     _station_marker_parts,
     derive_cable_footage,
 )
+from app.models import SummaryResult
+from app.pdf_annotator import annotate_pdf
 from app.pdf_parser import TextBlock, _unresolved_callout_lines
 
 
@@ -34,6 +37,26 @@ def _email_sequence_blocks() -> list[TextBlock]:
         _block("Riser - 48Ct\nD23692 - Top-23712"),
         _block("Tie Point - 48Ct - 50'\nT24394 - D24344"),
     ]
+
+
+def _short_sequence_blocks() -> list[TextBlock]:
+    """800' tail span -> 880' buffered -> 900' rounded."""
+    return [
+        _block("EOL - 48Ct - 50'\nT1000 - D1050"),
+        _block("Tie Point - 48Ct - 50'\nT1800 - D1750"),
+    ]
+
+
+def _materials_box_content(pdf_bytes: bytes) -> str:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for annotation in doc[0].annots() or []:
+            content = str((annotation.info or {}).get("content", ""))
+            if content.lower().startswith("materials"):
+                return content
+    finally:
+        doc.close()
+    return ""
 
 
 def test_marker_parts_accept_top_pole_p_with_and_without_dash() -> None:
@@ -97,6 +120,7 @@ def test_tail_sequence_agrees_with_path_codes_and_notes_it() -> None:
     assert line.eligible_for_stamp is True
     assert any("agree at 1000'" in note for note in result.informational_notes)
     assert any("combined Comp-10, Comp-15 callouts" in note for note in result.informational_notes)
+    assert any("corroborates combined Comp-10, Comp-15" in note for note in result.informational_notes)
 
 
 def test_tail_sequence_disagreement_with_path_codes_flags_review() -> None:
@@ -108,8 +132,60 @@ def test_tail_sequence_disagreement_with_path_codes_flags_review() -> None:
     assert line.path_source == "tail_sequence"
     assert line.total_ft == 1000
     assert line.eligible_for_stamp is False
+    assert line.material_line == ""
+    assert line.review_material_line == "605-3277 (48Ct) - VERIFY"
     assert any("disagree" in flag for flag in line.review_flags)
     assert any("verify cable length" in warning for warning in result.warnings)
+    assert any(issue.severity == "action" for issue in result.issues)
+
+
+def test_tail_sequence_lower_than_path_codes_also_flags_review() -> None:
+    blocks = _short_sequence_blocks() + [_block("Comp-15 - 800'")]
+    # Codes method: 800 + 100 terminal slack = 900 * 1.1 = 990 -> 1000,
+    # while the tail sequence rounds to 900. Never silently under-order.
+    result = derive_cable_footage(blocks, auto_stamp=True)
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.total_ft == 900
+    assert line.eligible_for_stamp is False
+    assert line.material_line == ""
+    assert line.review_material_line == "605-3277 (48Ct) - VERIFY"
+    assert any("900'" in flag and "1000'" in flag for flag in line.review_flags)
+
+
+def test_dual_primary_codes_without_sequence_require_review() -> None:
+    blocks = [
+        _block("Tie Point - 48Ct"),
+        _block("Comp-15 - 500'\nComp-10 - 500'"),
+    ]
+
+    result = derive_cable_footage(blocks, auto_stamp=True)
+
+    line = result.lines[0]
+    assert line.path_source == "path_codes"
+    assert line.path_subtotal == 1000
+    assert line.total_ft == 1100
+    assert line.eligible_for_stamp is False
+    assert line.material_line == ""
+    assert line.review_material_line == "605-3277 (48Ct) - VERIFY"
+    assert any("Comp-10, Comp-15 both contribute" in flag for flag in line.review_flags)
+
+
+def test_dual_primary_codes_disagreement_requires_review() -> None:
+    blocks = _email_sequence_blocks() + [
+        _block("Comp-15 - 500'\nComp-10 - 500'"),
+    ]
+
+    result = derive_cable_footage(blocks, auto_stamp=True)
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.total_ft == 1000
+    assert line.eligible_for_stamp is False
+    assert line.review_material_line == "605-3277 (48Ct) - VERIFY"
+    assert any("1000'" in flag and "1300'" in flag for flag in line.review_flags)
+    assert any("Comp-10, Comp-15 both contribute" in flag for flag in line.review_flags)
 
 
 def test_comp10_only_sheet_counts_as_primary_path_footage() -> None:
@@ -204,20 +280,57 @@ def test_tie_point_without_space_still_anchors_the_sequence() -> None:
     assert line.total_ft == 1000
 
 
-def test_near_agreement_within_one_increment_stamps_sequence_with_note() -> None:
+def test_near_agreement_within_one_increment_requires_review() -> None:
     blocks = _email_sequence_blocks() + [_block("Comp-15 - 650'")]
     # Codes method: 650 + 126 storage = 776 * 1.1 = 853.6 -> 900 vs sequence 1000.
     result = derive_cable_footage(blocks, auto_stamp=True)
 
-    assert result.warnings == []
     line = result.lines[0]
     assert line.path_source == "tail_sequence"
     assert line.total_ft == 1000
+    assert line.eligible_for_stamp is False
+    assert line.material_line == ""
+    assert line.review_material_line == "605-3277 (48Ct) - VERIFY"
+    assert any("1000'" in flag and "900'" in flag for flag in line.review_flags)
+
+
+def test_same_line_terminal_markers_anchor_tail_sequence() -> None:
+    blocks = [
+        _block("EOL - 48Ct - 50' T23560 - D23610"),
+        _block("Tie Point - 48Ct - 50' T24394 - D24344"),
+    ]
+
+    result = derive_cable_footage(blocks, auto_stamp=True)
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.path_subtotal == 834
+    assert line.material_line == "605-3277 (48Ct) - 1000'"
     assert line.eligible_for_stamp is True
-    assert any(
-        "tail-sequence footage (1000') was used; path-code footage rounds to 900'" in note
-        for note in result.informational_notes
-    )
+
+
+def test_144ct_tail_markers_do_not_change_existing_materials_box() -> None:
+    blocks = [
+        _block("EOL - 144Ct - 50'\nT23560 - D23610"),
+        _block("Tie Point - 144Ct - 50'\nT24394 - D24344"),
+    ]
+    cable = derive_cable_footage(blocks, auto_stamp=True)
+    line = cable.lines[0]
+    assert line.path_source == "unassigned"
+    assert line.total_ft is None
+    assert line.eligible_for_stamp is False
+
+    existing_content = "Materials\n605-1502 (144Ct) - 1400'\nEMT - 10'"
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.add_freetext_annot(fitz.Rect(20, 520, 300, 760), existing_content, fontsize=10)
+    source = doc.tobytes()
+    doc.close()
+
+    summary = SummaryResult(model="parser-test", cable_footage=cable.lines).with_eligible_cable_materials()
+    output = annotate_pdf(source, summary)
+
+    assert _materials_box_content(output) == existing_content
 
 
 def test_invalid_configured_path_code_warns_but_valid_codes_still_count() -> None:

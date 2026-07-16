@@ -375,11 +375,10 @@ def _derive_cable_footage(
                 storage_by_type[key].append(item)
                 type_evidence[key].add(line)
                 handled_callout_lines.add(line)
-                marker_line = block_lines[index + 1] if index + 1 < len(block_lines) else ""
-                if marker_line:
-                    marker = MARKER_PAIR_PATTERN.search(marker_line)
-                    if marker:
-                        marker_evidence_by_type[key].append((item, marker.group(0)))
+                marker_text, marker_line = _callout_marker_pair(block_lines, index, match.end())
+                if marker_text:
+                    marker_evidence_by_type[key].append((item, marker_text))
+                    if marker_line:
                         handled_callout_lines.add(marker_line)
             for match in DESIGNATION_PATTERN.finditer(line):
                 key = normalize_cable_type(match.group("type"))
@@ -396,12 +395,11 @@ def _derive_cable_footage(
                 # or a bare "Tie Point - 48Ct") still carry their jacket-footage
                 # pair on the next line; collect it so the tail sequence can use
                 # terminals that never state slack feet.
-                marker_line = block_lines[index + 1] if index + 1 < len(block_lines) else ""
-                if marker_line:
-                    marker = MARKER_PAIR_PATTERN.search(marker_line)
-                    if marker:
-                        item = CableFootageItem(label=label, page=block.page, feet=0.0, source=line)
-                        marker_evidence_by_type[key].append((item, marker.group(0)))
+                marker_text, marker_line = _callout_marker_pair(block_lines, index, match.end())
+                if marker_text:
+                    item = CableFootageItem(label=label, page=block.page, feet=0.0, source=line)
+                    marker_evidence_by_type[key].append((item, marker_text))
+                    if marker_line:
                         handled_callout_lines.add(marker_line)
             for match in DIRECT_CODE_PATTERN.finditer(line):
                 raw_code, raw_qty, _raw_unit = match.groups()
@@ -443,7 +441,10 @@ def _derive_cable_footage(
             marker_warnings_by_type[key].extend(marker_warnings)
             if marker_segment:
                 marker_segments_by_type[key] = marker_segment
-        elif PART_MAP.get(key, ("", "", ""))[0] == "fiber":
+        # Nick's confirmed tail-sequence example is specifically 48Ct. Keep
+        # 144/288Ct on the established path-code behavior until he confirms the
+        # same field rule for those cable types.
+        elif key == "48ct":
             sequence_segment, sequence_warnings, fallback_notes = _tail_sequence_path_segment(
                 key,
                 evidence,
@@ -471,6 +472,7 @@ def _derive_cable_footage(
     )
     result.informational_notes.extend(sequence_notes)
     contributing_codes = sorted({segment.label for segment in primary_path_segments})
+    multiple_primary_codes = len(contributing_codes) > 1
     if len(contributing_codes) > 1:
         result.informational_notes.append(
             f"Cable path footage combined {', '.join(contributing_codes)} callouts."
@@ -502,9 +504,11 @@ def _derive_cable_footage(
             path_source = "fallback_codes" if using_fallback_path else "path_codes"
         review_flags: list[str] = []
         review_flags.extend(marker_warnings_by_type.get(key, []))
+        force_verify = False
+        sequence_exact_match = False
         if key in tail_sequence_types:
             sequence_segment = marker_segments_by_type[key]
-            cross_check_flag, cross_check_note = _sequence_cross_check(
+            cross_check_flag, cross_check_note, sequence_exact_match = _sequence_cross_check(
                 sequence_segment.feet,
                 assigned_segments,
                 storage_items,
@@ -515,8 +519,26 @@ def _derive_cable_footage(
             )
             if cross_check_flag:
                 review_flags.append(cross_check_flag)
+                force_verify = True
             if cross_check_note:
                 result.informational_notes.append(cross_check_note)
+        if multiple_primary_codes:
+            if sequence_exact_match:
+                sequence_total = buffered_cable_footage(
+                    marker_segments_by_type[key].feet,
+                    family,
+                    coax_rounding_increment,
+                )
+                result.informational_notes.append(
+                    f"{display_type} tail sequence corroborates combined "
+                    f"{', '.join(contributing_codes)} path codes at {sequence_total}'."
+                )
+            else:
+                review_flags.append(
+                    f"{', '.join(contributing_codes)} both contribute path footage; "
+                    "ownership is unclear without an exactly matching tail sequence."
+                )
+                force_verify = True
         if key in marker_segments_by_type:
             assigned_segments = [marker_segments_by_type[key]]
             storage_items = []
@@ -545,6 +567,7 @@ def _derive_cable_footage(
             include_storage_in_total=path_includes_storage,
             path_source=path_source,
             review_flags=review_flags,
+            force_verify=force_verify,
         )
         result.lines.append(line)
 
@@ -581,6 +604,7 @@ def _build_line(
     include_storage_in_total: bool = True,
     path_source: str = "unassigned",
     review_flags: list[str],
+    force_verify: bool = False,
 ) -> CableFootageLine:
     path_subtotal = sum(item.feet for item in path_segments)
     storage_subtotal = sum(item.feet for item in storage_items)
@@ -598,7 +622,10 @@ def _build_line(
     if path_subtotal > 0 and part_number and family:
         buffered_ft_before_rounding = round(subtotal * CABLE_BUFFER, 6)
         total_ft = buffered_cable_footage(subtotal, family, coax_rounding_increment)
-        material_line = f"{part_number} ({display_type}) - {total_ft}'"
+        if force_verify:
+            review_material_line = f"{part_number} ({display_type}) - VERIFY"
+        else:
+            material_line = f"{part_number} ({display_type}) - {total_ft}'"
     elif part_number and family in {"fiber", "drop_fiber"} and storage_subtotal > 0:
         review_material_line = f"{part_number} ({display_type}) - VERIFY"
     source_pages = sorted({item.page for item in [*path_segments, *storage_items] if item.page})
@@ -683,6 +710,27 @@ def _clean_label(value: str) -> str:
 
 def _number(value: str) -> float:
     return float(value.replace(",", ""))
+
+
+def _callout_marker_pair(
+    block_lines: list[str],
+    index: int,
+    callout_end: int,
+) -> tuple[str, str]:
+    """Return a marker pair on the callout line or its next line.
+
+    Same-line pairs are common in flattened annotations. Cross-box adjacency is
+    deliberately not inferred here because nearby cable callouts can interleave.
+    The second return value is the separate marker line, when one was consumed.
+    """
+    same_line = MARKER_PAIR_PATTERN.search(block_lines[index][callout_end:])
+    if same_line:
+        return same_line.group(0), ""
+    marker_line = block_lines[index + 1] if index + 1 < len(block_lines) else ""
+    marker = MARKER_PAIR_PATTERN.search(marker_line)
+    if marker:
+        return marker.group(0), marker_line
+    return "", ""
 
 
 def _station_marker_path_segment(
@@ -826,29 +874,25 @@ def _sequence_cross_check(
     *,
     include_storage: bool,
     coax_rounding_increment: int,
-) -> tuple[str, str]:
+) -> tuple[str, str, bool]:
     """Compare the tail-sequence footage against what the callout/code method
     would have ordered. Both measure the same cable, so they cross-validate:
     compare AFTER buffer+rounding (raw differences like riser feet are expected
-    and absorbed there). Same rounded quantity -> agreement note; one increment
-    apart -> informational note only; further apart -> review flag."""
+    and absorbed there). Only the same rounded quantity is safe to stamp; any
+    disagreement returns a review flag. The final boolean means exact agreement."""
     code_path = sum(item.feet for item in code_segments)
     if code_path <= 0:
-        return "", ""
+        return "", "", False
     code_subtotal = code_path + (sum(item.feet for item in storage_items) if include_storage else 0.0)
     code_total = buffered_cable_footage(code_subtotal, family, coax_rounding_increment)
     sequence_total = buffered_cable_footage(sequence_feet, family, coax_rounding_increment)
     if sequence_total == code_total:
         return "", (
             f"{display_type} tail-sequence footage and path-code footage agree at {sequence_total}'."
-        )
-    if abs(sequence_total - code_total) <= FIBER_ROUNDING_INCREMENT:
-        return "", (
-            f"{display_type} tail-sequence footage ({sequence_total}') was used; path-code footage rounds to {code_total}'."
-        )
+        ), True
     return (
         f"Tail-sequence footage ({sequence_total}') and path-code footage ({code_total}') disagree; verify cable length."
-    ), ""
+    ), "", False
 
 
 def _station_marker_parts(value: str) -> tuple[str, int]:
