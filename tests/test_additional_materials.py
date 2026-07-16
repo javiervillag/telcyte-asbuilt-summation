@@ -51,6 +51,18 @@ def test_fiber_style_drop_f_callouts_are_left_to_cable_marker_logic() -> None:
     assert result.warnings == []
 
 
+def test_prefixed_rg_callouts_are_left_to_cable_sequence_logic() -> None:
+    result = derive_additional_materials(
+        [
+            _block("EOL - RG6 T1000\nTie Point - RG6 T1050"),
+            _block("EOL - RG11 T2000\nTie Point - RG11 T2200"),
+        ]
+    )
+
+    assert result.material_rows == []
+    assert result.warnings == []
+
+
 def test_direct_drop_cable_does_not_depend_on_comp15_path_subtotal() -> None:
     result = derive_additional_materials([_block("RG11 - 200'")])
 

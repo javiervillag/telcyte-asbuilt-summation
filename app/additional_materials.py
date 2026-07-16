@@ -215,7 +215,10 @@ def _record_unparsed_label_warning(
             line = _clean_text(raw_line)
             if not line or rule.display.lower() not in re.sub(r"\s+", " ", line).lower():
                 continue
-            if rule.rule_id == "drop_f" and _is_prefixed_drop_f_callout(line):
+            if rule.rule_id in {"drop_f", "rg6", "rg11"} and _is_prefixed_drop_cable_callout(
+                line,
+                rule.display,
+            ):
                 continue
             if _MATERIAL_LIKE_CUE.search(line) and line not in possible_lines:
                 possible_lines.append(line)
@@ -240,8 +243,15 @@ def _record_unparsed_label_warning(
         )
 
 
-def _is_prefixed_drop_f_callout(line: str) -> bool:
-    return bool(re.search(r"\b(?:EOL|Storage|Tie\s*Point|Splice)\s*-\s*Drop\s+F\b", line, re.I))
+def _is_prefixed_drop_cable_callout(line: str, display: str) -> bool:
+    cable_type = re.escape(display).replace(r"\ ", r"\s+")
+    return bool(
+        re.search(
+            rf"\b(?:EOL|Storage|Tie\s*Point|Splice|Riser)\s*-\s*{cable_type}\b",
+            line,
+            re.I,
+        )
+    )
 
 
 def _material_line(rule: MaterialRule, source_quantity: float, source_lines: list[str]) -> DerivedMaterialLine:

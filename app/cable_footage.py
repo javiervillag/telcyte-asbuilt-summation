@@ -24,9 +24,11 @@ PART_MAP = {
     "144ct": ("fiber", "144Ct", "605-1502"),
     "288ct": ("fiber", "288Ct", "605-1503"),
     "drop_f": ("drop_fiber", "Drop F", "240-0318"),
+    "rg6": ("drop_cable", "RG6", "240-2079"),
+    "rg11": ("drop_cable", "RG11", "240-2083"),
 }
 
-TYPE_TEXT = r"(?:Drop\s+F|\.\s*(?:625|875)|0?(?:48|144|288)\s*(?:ct|count))"
+TYPE_TEXT = r"(?:Drop\s+F|RG11|RG6|\.\s*(?:625|875)|0?(?:48|144|288)\s*(?:ct|count))"
 TYPE_PATTERN = re.compile(TYPE_TEXT, re.I)
 MATERIALS_TITLE_PATTERN = re.compile(r"^\s*materials?\s*:?\s*$", re.I)
 STORAGE_PATTERN = re.compile(
@@ -45,9 +47,11 @@ DIRECT_CODE_PATTERN = re.compile(
 # Jacket footage markers under cable callouts. Besides D/T, field crews mark
 # pole-top readings as Top/Pole/P (Nick email 2026-07-13: canonical form has no
 # dash, e.g. Top23712, but drawn sheets carry Top-23712, so the dash is
-# tolerated). 4-6 digits keeps these from ever colliding with billing codes,
-# which cap at 3 digits.
-MARKER_TOKEN_TEXT = r"(?:Top|Pole|D|T|P)-?\d{4,6}"
+# tolerated). Three-digit jacket readings occur on coax sheets; marker parsing
+# remains scoped to recognized cable callouts so these cannot become billing
+# quantities.
+MARKER_TOKEN_TEXT = r"(?:Top|Pole|D|T|P)-?\d{3,6}"
+MARKER_TOKEN_PATTERN = re.compile(rf"\b(?P<marker>{MARKER_TOKEN_TEXT})\b", re.I)
 MARKER_PAIR_PATTERN = re.compile(
     rf"\b(?P<a>{MARKER_TOKEN_TEXT})\s*-\s*(?P<b>{MARKER_TOKEN_TEXT})\b", re.I
 )
@@ -124,6 +128,8 @@ def normalize_cable_type(value: str) -> str | None:
         return f"{int(fiber.group(1))}ct"
     if text in {"dropf", "dropfiber"}:
         return "drop_f"
+    if text in {"rg6", "rg11"}:
+        return text
     return None
 
 
@@ -375,7 +381,7 @@ def _derive_cable_footage(
                 storage_by_type[key].append(item)
                 type_evidence[key].add(line)
                 handled_callout_lines.add(line)
-                marker_text, marker_line = _callout_marker_pair(block_lines, index, match.end())
+                marker_text, marker_line = _callout_marker_text(block_lines, index, match.end())
                 if marker_text:
                     marker_evidence_by_type[key].append((item, marker_text))
                     if marker_line:
@@ -395,7 +401,7 @@ def _derive_cable_footage(
                 # or a bare "Tie Point - 48Ct") still carry their jacket-footage
                 # pair on the next line; collect it so the tail sequence can use
                 # terminals that never state slack feet.
-                marker_text, marker_line = _callout_marker_pair(block_lines, index, match.end())
+                marker_text, marker_line = _callout_marker_text(block_lines, index, match.end())
                 if marker_text:
                     item = CableFootageItem(label=label, page=block.page, feet=0.0, source=line)
                     marker_evidence_by_type[key].append((item, marker_text))
@@ -436,25 +442,24 @@ def _derive_cable_footage(
     tail_sequence_types: set[str] = set()
     sequence_notes: list[str] = []
     for key, evidence in marker_evidence_by_type.items():
-        if key == "drop_f":
+        sequence_segment, sequence_warnings, fallback_notes = _tail_sequence_path_segment(
+            key,
+            evidence,
+            splice_present=key in splice_types,
+        )
+        marker_warnings_by_type[key].extend(sequence_warnings)
+        sequence_notes.extend(fallback_notes)
+        if sequence_segment:
+            marker_segments_by_type[key] = sequence_segment
+            tail_sequence_types.add(key)
+            continue
+        # Preserve the established Drop F D-span method as a fallback for older
+        # sheets that do not expose a complete Tie Point-to-EOL tail sequence.
+        if key == "drop_f" and not sequence_warnings and not fallback_notes:
             marker_segment, marker_warnings = _station_marker_path_segment(key, evidence)
             marker_warnings_by_type[key].extend(marker_warnings)
             if marker_segment:
                 marker_segments_by_type[key] = marker_segment
-        # Nick's confirmed tail-sequence example is specifically 48Ct. Keep
-        # 144/288Ct on the established path-code behavior until he confirms the
-        # same field rule for those cable types.
-        elif key == "48ct":
-            sequence_segment, sequence_warnings, fallback_notes = _tail_sequence_path_segment(
-                key,
-                evidence,
-                splice_present=key in splice_types,
-            )
-            marker_warnings_by_type[key].extend(sequence_warnings)
-            sequence_notes.extend(fallback_notes)
-            if sequence_segment:
-                marker_segments_by_type[key] = sequence_segment
-                tail_sequence_types.add(key)
 
     if not path_segments and not storage_by_type and not type_evidence:
         return CableFootageResult()
@@ -514,7 +519,7 @@ def _derive_cable_footage(
                 storage_items,
                 display_type,
                 family,
-                include_storage=path_includes_storage,
+                include_storage=path_includes_storage and family == "fiber",
                 coax_rounding_increment=coax_rounding_increment,
             )
             if cross_check_flag:
@@ -543,7 +548,7 @@ def _derive_cable_footage(
             assigned_segments = [marker_segments_by_type[key]]
             storage_items = []
             path_source = "tail_sequence" if key in tail_sequence_types else "station_markers"
-        if not assigned_segments and not storage_items:
+        if not assigned_segments and not storage_items and not path_segments:
             continue
         if using_fallback_path and family != "fiber" and key not in marker_segments_by_type:
             assigned_segments = []
@@ -555,6 +560,7 @@ def _derive_cable_footage(
             review_flags.append(f"No supported pulled-path footage was found for {display_type}.")
         if path_segments and not assigned_segments:
             review_flags.append("Pulled-path footage could not be safely assigned to this cable type.")
+            force_verify = True
         line = _build_line(
             key,
             display_type,
@@ -612,7 +618,12 @@ def _build_line(
     if family == "coax":
         storage_subtotal = 0.0
         rounding = f"ceil_{max(1, int(coax_rounding_increment))}"
-        review_flags.append("Coax source path must be validated before automatic stamping.")
+        if path_source != "tail_sequence":
+            review_flags.append("Coax source path must be validated before automatic stamping.")
+    elif family in {"drop_fiber", "drop_cable"}:
+        rounding = "nearest_1"
+        if family == "drop_cable" and path_source != "tail_sequence":
+            review_flags.append("Drop-cable source path must be validated before automatic stamping.")
     included_storage_ft = storage_subtotal if include_storage_in_total and path_subtotal > 0 else 0.0
     subtotal = path_subtotal + included_storage_ft
     total_ft: int | None = None
@@ -626,7 +637,9 @@ def _build_line(
             review_material_line = f"{part_number} ({display_type}) - VERIFY"
         else:
             material_line = f"{part_number} ({display_type}) - {total_ft}'"
-    elif part_number and family in {"fiber", "drop_fiber"} and storage_subtotal > 0:
+    elif part_number and family in {"fiber", "drop_fiber", "drop_cable"} and storage_subtotal > 0:
+        review_material_line = f"{part_number} ({display_type}) - VERIFY"
+    if force_verify and part_number and family and not material_line and not review_material_line:
         review_material_line = f"{part_number} ({display_type}) - VERIFY"
     source_pages = sorted({item.page for item in [*path_segments, *storage_items] if item.page})
     return CableFootageLine(
@@ -712,25 +725,34 @@ def _number(value: str) -> float:
     return float(value.replace(",", ""))
 
 
-def _callout_marker_pair(
+def _callout_marker_text(
     block_lines: list[str],
     index: int,
     callout_end: int,
 ) -> tuple[str, str]:
-    """Return a marker pair on the callout line or its next line.
+    """Return one or more jacket markers on the callout line or its next line.
 
-    Same-line pairs are common in flattened annotations. Cross-box adjacency is
-    deliberately not inferred here because nearby cable callouts can interleave.
-    The second return value is the separate marker line, when one was consumed.
+    Same-line markers are common in flattened annotations, and coax sheets may
+    expose only one tail marker per terminal callout. Cross-box adjacency is
+    deliberately not inferred because nearby cable callouts can interleave. The
+    second return value is the separate marker line, when one was consumed.
     """
-    same_line = MARKER_PAIR_PATTERN.search(block_lines[index][callout_end:])
+    same_line = _marker_text(block_lines[index][callout_end:])
     if same_line:
-        return same_line.group(0), ""
+        return same_line, ""
     marker_line = block_lines[index + 1] if index + 1 < len(block_lines) else ""
-    marker = MARKER_PAIR_PATTERN.search(marker_line)
-    if marker:
-        return marker.group(0), marker_line
+    marker_text = _marker_text(marker_line)
+    if marker_text:
+        return marker_text, marker_line
     return "", ""
+
+
+def _marker_text(value: str) -> str:
+    pair = MARKER_PAIR_PATTERN.search(value)
+    if pair:
+        return pair.group(0)
+    markers = [match.group("marker") for match in MARKER_TOKEN_PATTERN.finditer(value)]
+    return " - ".join(markers)
 
 
 def _station_marker_path_segment(
@@ -786,13 +808,12 @@ def _tail_sequence_path_segment(
     *,
     splice_present: bool,
 ) -> tuple[CableFootageItem | None, list[str], list[str]]:
-    """Trunk-fiber footage as a cable sequence (Nick email 2026-07-13): the Tie
-    Point callout is the start of the cable and the EOL is the end, so the
-    difference of their T (tail) jacket numbers is the raw footage of cable
-    used - storage coils, risers, and end slack are already inside that span
-    and must not be added again. Returns (segment, review_warnings,
-    fallback_notes); no segment plus empty warnings means "fall back to the
-    callout/code footage quietly" (Nick's multiple-cables-per-route case)."""
+    """Cable footage as a terminal sequence (Nick confirmations 2026-07-13 and
+    2026-07-16): the Tie Point callout is the start and the EOL is the end, so
+    the difference of their T (tail) jacket numbers is the raw cable footage.
+    Storage, risers, and end slack are already inside that span and must not be
+    added again. Returns (segment, review_warnings, fallback_notes); no segment
+    plus empty warnings means fall back to the established method quietly."""
     display_type = PART_MAP.get(key, ("", key, ""))[1]
     tie_values: set[int] = set()
     eol_values: set[int] = set()
@@ -800,13 +821,13 @@ def _tail_sequence_path_segment(
     warnings: list[str] = []
     pages: list[int] = []
     for item, marker_text in evidence:
-        marker = MARKER_PAIR_PATTERN.search(marker_text)
-        if not marker:
-            continue
         parts = [
-            _station_marker_parts(marker.group("a")),
-            _station_marker_parts(marker.group("b")),
+            _station_marker_parts(match.group("marker"))
+            for match in MARKER_TOKEN_PATTERN.finditer(marker_text)
         ]
+        parts = [(kind, value) for kind, value in parts if kind and value]
+        if not parts:
+            continue
         all_values.extend(value for _kind, value in parts)
         t_values = [value for kind, value in parts if kind == "T"]
         d_values = [value for kind, value in parts if kind == "D"]
@@ -896,7 +917,7 @@ def _sequence_cross_check(
 
 
 def _station_marker_parts(value: str) -> tuple[str, int]:
-    match = re.match(r"(Top|Pole|P|D|T)-?(\d{4,6})$", value.strip(), re.I)
+    match = re.match(r"(Top|Pole|P|D|T)-?(\d{3,6})$", value.strip(), re.I)
     if not match:
         return "", 0
     prefix = match.group(1).upper()
@@ -906,7 +927,10 @@ def _station_marker_parts(value: str) -> tuple[str, int]:
 
 def _ceil_to_increment(value: float, increment: int) -> int:
     increment = max(1, int(increment))
-    return int(math.ceil(value / increment) * increment)
+    # Decimal-looking inputs such as 200 * 1.10 can become
+    # 220.00000000000003 in binary floating point. Remove only that machine
+    # noise so an exact increment does not jump to the next order quantity.
+    return int(math.ceil((value / increment) - 1e-9) * increment)
 
 
 CABLE_BUFFER = 1.10
@@ -918,7 +942,7 @@ def buffered_cable_footage(feet: float, family: str, coax_increment: int = 10) -
     increment (fiber -> next 100'; coax -> COAX_ROUNDING_INCREMENT). Single source of
     truth for the buffer rule, shared by the cable-footage derive path (_build_line) and
     the Materials-box canonicalizer (Nick, BI-872022)."""
-    if family == "drop_fiber":
+    if family in {"drop_fiber", "drop_cable"}:
         return round_half_up_to_increment(feet * CABLE_BUFFER, 1)
     increment = FIBER_ROUNDING_INCREMENT if family == "fiber" else max(1, int(coax_increment))
     return _ceil_to_increment(feet * CABLE_BUFFER, increment)
