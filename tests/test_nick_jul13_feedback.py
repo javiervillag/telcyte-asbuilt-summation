@@ -192,6 +192,48 @@ def test_riser_with_labeled_feet_counts_like_storage() -> None:
     assert line.eligible_for_stamp is True
 
 
+def test_tie_point_without_space_still_anchors_the_sequence() -> None:
+    blocks = [
+        _block("EOL - 48Ct - 50'\nT23560 - D23610"),
+        _block("TiePoint - 48Ct - 50'\nT24394 - D24344"),
+    ]
+    result = derive_cable_footage(blocks, auto_stamp=True)
+
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.total_ft == 1000
+
+
+def test_near_agreement_within_one_increment_stamps_sequence_with_note() -> None:
+    blocks = _email_sequence_blocks() + [_block("Comp-15 - 650'")]
+    # Codes method: 650 + 126 storage = 776 * 1.1 = 853.6 -> 900 vs sequence 1000.
+    result = derive_cable_footage(blocks, auto_stamp=True)
+
+    assert result.warnings == []
+    line = result.lines[0]
+    assert line.path_source == "tail_sequence"
+    assert line.total_ft == 1000
+    assert line.eligible_for_stamp is True
+    assert any(
+        "tail-sequence footage (1000') was used; path-code footage rounds to 900'" in note
+        for note in result.informational_notes
+    )
+
+
+def test_invalid_configured_path_code_warns_but_valid_codes_still_count() -> None:
+    blocks = [
+        _block("Comp-15 - 500'"),
+        _block("Storage - 48Ct - 100'"),
+    ]
+    result = derive_cable_footage(blocks, auto_stamp=True, path_codes="Comp-15,BOGUS")
+
+    line = result.lines[0]
+    assert line.path_subtotal == 500
+    assert line.total_ft == 700
+    assert any("BOGUS" in warning for warning in result.warnings)
+    assert any(issue.code == "invalid_cable_path_code" for issue in result.issues)
+
+
 def test_drop_f_station_markers_still_use_d_span_method() -> None:
     """The Drop F method (D-span + terminal slack) is untouched by the trunk
     tail-sequence; mirrors test_drop_f_station_markers_derive_base..."""
