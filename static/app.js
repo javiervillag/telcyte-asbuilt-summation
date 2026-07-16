@@ -568,8 +568,10 @@ function cableEvidenceLines(line) {
   }
   const sourceLabels = {
     comp15: "Comp-15 path",
+    path_codes: "Composite path codes",
     fallback_codes: "UG/DP fallback pull codes",
     station_markers: "D/T station markers",
+    tail_sequence: "Tie Point to EOL tail sequence",
   };
   const rows = [
     `Path source: ${sourceLabels[line.path_source] || line.path_source}`,

@@ -128,7 +128,7 @@ def _parse(pdf_bytes: bytes, settings, catalog):
         cable = derive_cable_footage(
             blocks,
             auto_stamp=settings.auto_stamp_cable_footage,
-            path_code=settings.cable_path_code,
+            path_codes=settings.cable_path_code,
             coax_rounding_increment=settings.coax_rounding_increment,
         )
         handled = cable.handled_callout_lines
