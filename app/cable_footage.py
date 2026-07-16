@@ -762,12 +762,15 @@ def _tail_sequence_path_segment(
         all_values.extend(value for _kind, value in parts)
         t_values = [value for kind, value in parts if kind == "T"]
         d_values = [value for kind, value in parts if kind == "D"]
-        if item.label == "Tie Point":
+        # Whitespace/case-proof label key: "TiePoint - 48Ct" cleans to
+        # "Tiepoint", which a literal "Tie Point" comparison would miss.
+        label_key = re.sub(r"[^a-z]+", "", item.label.lower())
+        if label_key == "tiepoint":
             tie_values.update(t_values)
-        elif item.label == "EOL":
+        elif label_key == "eol":
             eol_values.update(t_values)
         if (
-            item.label in {"Tie Point", "EOL"}
+            label_key in {"tiepoint", "eol"}
             and item.feet > 0
             and len(t_values) == 1
             and len(d_values) == 1
