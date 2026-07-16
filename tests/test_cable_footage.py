@@ -201,7 +201,7 @@ def test_comp15_takes_precedence_over_fallback_pull_codes() -> None:
     line = result.lines[0]
     assert line.path_subtotal == 582
     assert line.storage_subtotal == 250
-    assert line.path_source == "comp15"
+    assert line.path_source == "path_codes"
     assert line.included_storage_ft == 250
     assert line.subtotal_used == 832
     assert line.buffered_ft_before_rounding == pytest.approx(915.2)

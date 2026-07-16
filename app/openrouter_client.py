@@ -284,7 +284,7 @@ async def summarize_with_model(
         derive_cable_footage(
             blocks,
             auto_stamp=settings.auto_stamp_cable_footage,
-            path_code=settings.cable_path_code,
+            path_codes=settings.cable_path_code_list,
             fallback_path_codes=settings.fallback_path_code_list,
             coax_rounding_increment=settings.coax_rounding_increment,
         )

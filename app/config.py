@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     include_materials: bool = Field(default=False, alias="INCLUDE_MATERIALS")
     include_cable_footage: bool = Field(default=False, alias="INCLUDE_CABLE_FOOTAGE")
     auto_stamp_cable_footage: bool = Field(default=False, alias="AUTO_STAMP_CABLE_FOOTAGE")
-    cable_path_code: str = Field(default="Comp-15", alias="CABLE_PATH_CODE")
+    # Comma-separated composite codes whose callouts carry pulled cable footage.
+    # Comp-10 added per Nick email 2026-07-13.
+    cable_path_code: str = Field(default="Comp-15,Comp-10", alias="CABLE_PATH_CODE")
     cable_fallback_path_codes: str = Field(
         default="UG-54,UG-55,UG-56,UG-57,DP-11",
         alias="CABLE_FALLBACK_PATH_CODES",
@@ -52,6 +54,10 @@ class Settings(BaseSettings):
     @property
     def candidate_models(self) -> list[str]:
         return [m.strip() for m in self.openrouter_model_candidates.split(",") if m.strip()]
+
+    @property
+    def cable_path_code_list(self) -> list[str]:
+        return [code.strip() for code in self.cable_path_code.split(",") if code.strip()]
 
     @property
     def fallback_path_code_list(self) -> list[str]:

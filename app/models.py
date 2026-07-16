@@ -66,7 +66,16 @@ class CableFootageLine(BaseModel):
     storage_items: list[CableFootageItem] = Field(default_factory=list)
     path_subtotal: float = 0.0
     storage_subtotal: float = 0.0
-    path_source: Literal["comp15", "fallback_codes", "station_markers", "unassigned"] = "unassigned"
+    # "comp15" is retained for run-history payloads written before multi-code
+    # path support (2026-07); new results emit "path_codes"/"tail_sequence".
+    path_source: Literal[
+        "comp15",
+        "path_codes",
+        "fallback_codes",
+        "station_markers",
+        "tail_sequence",
+        "unassigned",
+    ] = "unassigned"
     included_storage_ft: float = 0.0
     subtotal_used: float = 0.0
     buffered_ft_before_rounding: Optional[float] = None
