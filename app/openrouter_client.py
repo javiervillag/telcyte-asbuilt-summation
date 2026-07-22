@@ -257,6 +257,7 @@ async def summarize_with_model(
     excluded_context_lines: list[str] = []
     parser_notes: list[str] = []
     parser_warnings: list[str] = []
+    parser_issues: list[SummaryIssue] = []
     code_contributions: dict[CodeKey, list[EvidencePart]] = {}
     parser_totals = derive_code_totals(
         blocks,
@@ -264,6 +265,7 @@ async def summarize_with_model(
         excluded_lines=excluded_context_lines,
         notes=parser_notes,
         warnings=parser_warnings,
+        issues=parser_issues,
         contributions=code_contributions,
     )
     # Per-page billing totals for the "MKR Page Totals" boxes (multi-page sheets).
@@ -318,6 +320,7 @@ async def summarize_with_model(
         excluded_context_lines=excluded_context_lines,
         parser_notes=parser_notes,
         parser_warnings=parser_warnings,
+        parser_issues=parser_issues,
         resolved_callout_lines=resolved_callout_lines,
         total_pages=total_pages,
     )

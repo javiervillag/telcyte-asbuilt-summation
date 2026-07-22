@@ -7,7 +7,14 @@ from decimal import Decimal
 
 import fitz
 
-from app.box_titles import starts_with_materials_title, starts_with_totals_title
+from app.box_titles import (
+    TotalsTitleKind,
+    is_legacy_totals_alias,
+    is_previously_billed_totals_box,
+    starts_with_materials_title,
+    starts_with_totals_title,
+    totals_title_kind,
+)
 from app.models import EvidencePart, SummaryIssue
 from app.rate_cards import (
     CODE_PATTERN,
@@ -57,6 +64,15 @@ UNRESOLVED_CALLOUT_PATTERN = re.compile(
     r"\b(?:EOL|Tie\s*Point|Storage|Pull\s*through|Pull-through)\b",
     re.I,
 )
+_DIRECT_CODE_ROW_PATTERN = re.compile(
+    rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
+    re.I,
+)
+_QUANTITY_FIRST_CODE_PATTERN = re.compile(
+    rf"\b({QTY_TEXT_PATTERN})\s*x\s*({CODE_TEXT_PATTERN})\b",
+    re.I,
+)
+_TOTAL_WORD_PATTERN = re.compile(r"\btotals?\b", re.I)
 
 
 def _clean_text(text: str) -> str:
@@ -101,7 +117,7 @@ def extract_text_blocks(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PARSE_PAG
                 # reviewer sees it) but must NOT feed the page-text dedup
                 # sets: a genuine field callout that happens to equal one of
                 # its lines would otherwise be silently dropped.
-                if not starts_with_totals_title(cleaned):
+                if not starts_with_totals_title(cleaned) and not _is_unclassified_totals_text(cleaned):
                     annotation_texts.add(cleaned)
                     annotation_lines.update(line for line in cleaned.splitlines() if line)
                 blocks.append(TextBlock(page=page_index, bbox=bbox, text=cleaned, source="annotation"))
@@ -188,14 +204,8 @@ def _aggregate_code_rows(
     never diverge in how they read the same callouts. Callers own exclusion
     (``field_evidence_blocks``) and notes; this is pure aggregation.
     """
-    direct_pattern = re.compile(
-        rf"\b({CODE_TEXT_PATTERN})\s*-\s*({QTY_TEXT_PATTERN})(\s*(?:'|sqft))?",
-        re.I,
-    )
-    quantity_first_pattern = re.compile(
-        rf"\b({QTY_TEXT_PATTERN})\s*x\s*({CODE_TEXT_PATTERN})\b",
-        re.I,
-    )
+    direct_pattern = _DIRECT_CODE_ROW_PATTERN
+    quantity_first_pattern = _QUANTITY_FIRST_CODE_PATTERN
     totals: dict[CodeKey, float] = defaultdict(float)
     display: dict[CodeKey, str] = {}
     order: list[CodeKey] = []
@@ -274,6 +284,7 @@ def derive_code_totals(
     excluded_lines: list[str] | None = None,
     notes: list[str] | None = None,
     warnings: list[str] | None = None,
+    issues: list[SummaryIssue] | None = None,
     contributions: dict[CodeKey, list[EvidencePart]] | None = None,
 ) -> list[str]:
     """Aggregate billing-code totals from text blocks.
@@ -290,7 +301,19 @@ def derive_code_totals(
     # Re-run safety: a previously stamped "MKR Job/Page Totals" box (ours or a
     # manual one) must never be counted as field callouts. The same applies to a
     # stamped Materials box now that cable output can be re-uploaded.
-    blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(blocks)
+    source_blocks = blocks
+    legacy_boxes = _distinct_summary_boxes(
+        [
+            block
+            for block in source_blocks
+            if is_legacy_totals_alias(block.text)
+            and not is_previously_billed_totals_box(block.text)
+        ]
+    )
+    unknown_total_boxes = _distinct_summary_boxes(
+        [block for block in source_blocks if _is_unclassified_totals_summary(block)]
+    )
+    blocks, skipped_total_boxes, skipped_material_boxes = field_evidence_blocks(source_blocks)
     rows, order, _totals = _aggregate_code_rows(
         blocks,
         catalog,
@@ -299,12 +322,24 @@ def derive_code_totals(
         contributions=contributions,
     )
 
+    diagnostic_issues = _summary_box_issues(
+        legacy_boxes,
+        unknown_total_boxes,
+        blocks,
+        catalog,
+        _totals,
+    )
+    if issues is not None:
+        for issue in diagnostic_issues:
+            if issue not in issues:
+                issues.append(issue)
+
     if notes is not None:
         if skipped_total_boxes:
             notes.append(
-                f"Ignored {skipped_total_boxes} existing 'MKR Job/Page/New Totals' summary box(es) on the "
-                "drawing (re-run detected, or a manual 'New Totals' box); totals were recomputed from the "
-                "field callouts only."
+                f"Ignored {skipped_total_boxes} existing 'MKR Job/Page/New Totals', legacy, or unclassified "
+                "total-like summary box(es) as calculation evidence (re-run detected, or a manual 'New Totals' "
+                "box); totals were recomputed from field callouts only."
             )
         if skipped_material_boxes:
             notes.append(
@@ -331,7 +366,145 @@ def derive_code_totals(
                 warnings.append(message)
             else:
                 notes.append(message)
+        for issue in diagnostic_issues:
+            if issue.severity == "notice" and issue.message not in notes:
+                notes.append(issue.message)
+    if warnings is not None:
+        for issue in diagnostic_issues:
+            if issue.severity in {"blocker", "action"} and issue.message not in warnings:
+                warnings.append(issue.message)
     return rows
+
+
+def _is_unclassified_totals_summary(block: TextBlock) -> bool:
+    return _is_unclassified_totals_text(block.text)
+
+
+def _is_unclassified_totals_text(text: str) -> bool:
+    if starts_with_totals_title(text) or starts_with_materials_title(text):
+        return False
+    lines = [_clean_text(line) for line in text.splitlines() if _clean_text(line)]
+    return bool(
+        len(lines) >= 2
+        and _TOTAL_WORD_PATTERN.search(lines[0])
+        and any(_DIRECT_CODE_ROW_PATTERN.search(line) for line in lines[1:])
+    )
+
+
+def _distinct_summary_boxes(blocks: list[TextBlock]) -> list[TextBlock]:
+    """Collapse a FreeText annotation and its extracted page appearance into one box.
+
+    Keep every annotation block. A matching page-text block is only a rendered copy
+    when an annotation of the same summary kind exists on that page. Page-only blocks
+    remain so flattened PDFs are still diagnosed and excluded.
+    """
+
+    def identity(block: TextBlock) -> tuple[int, str]:
+        kind = totals_title_kind(block.text)
+        if kind:
+            return block.page, f"totals:{kind.value}"
+        if starts_with_materials_title(block.text):
+            return block.page, "materials"
+        heading = next((line.strip() for line in block.text.splitlines() if line.strip()), "")
+        return block.page, re.sub(r"\s+", " ", heading).strip().lower()
+
+    annotation_keys = {identity(block) for block in blocks if block.source == "annotation"}
+    return [
+        block
+        for block in blocks
+        if block.source == "annotation" or identity(block) not in annotation_keys
+    ]
+
+
+def _summary_box_issues(
+    legacy_boxes: list[TextBlock],
+    unknown_total_boxes: list[TextBlock],
+    field_blocks: list[TextBlock],
+    catalog: dict[CodeKey, str],
+    field_totals: dict[CodeKey, float],
+) -> list[SummaryIssue]:
+    issues: list[SummaryIssue] = []
+    if not legacy_boxes and not unknown_total_boxes:
+        return issues
+    if legacy_boxes:
+        issues.append(
+            SummaryIssue(
+                severity="notice",
+                code="legacy_totals_ignored",
+                message=(
+                    f"Ignored {len(legacy_boxes)} legacy Job/Page tally box(es) as calculation evidence "
+                    "to prevent double-counting."
+                ),
+            )
+        )
+
+    field_by_page: dict[int, dict[CodeKey, float]] = {}
+    if legacy_boxes:
+        blocks_by_page: dict[int, list[TextBlock]] = defaultdict(list)
+        for block in field_blocks:
+            blocks_by_page[block.page].append(block)
+        for page, page_blocks in blocks_by_page.items():
+            _rows, _order, page_totals = _aggregate_code_rows(page_blocks, catalog, None, [])
+            field_by_page[page] = page_totals
+
+    conflicts: list[str] = []
+    for block in legacy_boxes:
+        _rows, _order, claims = _aggregate_code_rows(
+            [block],
+            {},
+            None,
+            [],
+            apply_catalog=False,
+        )
+        applicable = (
+            field_totals
+            if totals_title_kind(block.text) == TotalsTitleKind.JOB
+            else field_by_page.get(block.page, {})
+        )
+        for key, claimed in claims.items():
+            field_value = applicable.get(key)
+            if field_value is not None and abs(field_value - claimed) < 1e-9:
+                continue
+            display = _display_code(f"{key[0]}-{key[1]}", key)
+            field_text = _format_number(field_value) if field_value is not None else "none"
+            heading = next(
+                (line.strip() for line in block.text.splitlines() if line.strip()),
+                "Legacy totals",
+            )
+            conflicts.append(
+                f"page {block.page} {heading[:80]!r}: "
+                f"{display} claims {_format_number(claimed)}, field evidence {field_text}"
+            )
+
+    if conflicts:
+        preview = "; ".join(conflicts[:4])
+        if len(conflicts) > 4:
+            preview += f"; plus {len(conflicts) - 4} more"
+        issues.append(
+            SummaryIssue(
+                severity="blocker",
+                code="summary_conflict",
+                message=f"Legacy tally totals conflict with independent field evidence: {preview}.",
+            )
+        )
+
+    for block in unknown_total_boxes:
+        heading = next(
+            (line.strip() for line in block.text.splitlines() if line.strip()),
+            "Unknown totals",
+        )
+        issues.append(
+            SummaryIssue(
+                severity="blocker",
+                code="unclassified_totals_summary",
+                message=(
+                    f"Page {block.page} contains an unclassified total-like box titled {heading[:80]!r}; "
+                    "it was excluded from calculations and preserved for review."
+                ),
+                subject=heading[:80],
+            )
+        )
+    return issues
 
 
 def derive_code_totals_by_page(
@@ -402,16 +575,19 @@ def field_evidence_blocks(blocks: list[TextBlock]) -> tuple[list[TextBlock], int
     of source. A contiguous box (title + codes already in one block) is left untouched, so
     the already-correct path does not change.
     """
-    skipped_total_boxes = 0
-    skipped_material_boxes = 0
+    total_box_blocks: list[TextBlock] = []
+    material_box_blocks: list[TextBlock] = []
     anchors: list[int] = []
     for i, block in enumerate(blocks):
-        if starts_with_totals_title(block.text):
-            skipped_total_boxes += 1
+        if starts_with_totals_title(block.text) or _is_unclassified_totals_summary(block):
+            total_box_blocks.append(block)
             anchors.append(i)
         elif starts_with_materials_title(block.text):
-            skipped_material_boxes += 1
+            material_box_blocks.append(block)
             anchors.append(i)
+
+    skipped_total_boxes = len(_distinct_summary_boxes(total_box_blocks))
+    skipped_material_boxes = len(_distinct_summary_boxes(material_box_blocks))
 
     excluded: set[int] = set(anchors)
     regions: list[tuple[int, float, float, float, float]] = []
@@ -534,6 +710,7 @@ def diagnose_extraction(
     excluded_context_lines: list[str] | None = None,
     parser_notes: list[str] | None = None,
     parser_warnings: list[str] | None = None,
+    parser_issues: list[SummaryIssue] | None = None,
     resolved_callout_lines: set[str] | None = None,
     total_pages: int | None = None,
 ) -> ExtractionDiagnostics:
@@ -550,7 +727,7 @@ def diagnose_extraction(
     unresolved_callout_count = len(unresolved_callouts)
     warnings: list[str] = []
     informational_notes: list[str] = []
-    issues: list[SummaryIssue] = []
+    issues: list[SummaryIssue] = list(parser_issues or [])
 
     def add_issue(severity: str, code: str, message: str, subject: str | None = None) -> None:
         issues.append(SummaryIssue(severity=severity, code=code, message=message, subject=subject))
@@ -593,7 +770,8 @@ def diagnose_extraction(
         add_issue("blocker", "pages_beyond_parse_cap", message)
     for warning in parser_warnings or []:
         warnings.append(warning)
-        add_issue("action", "parser_warning", warning)
+        if not any(issue.message == warning for issue in issues):
+            add_issue("action", "parser_warning", warning)
     for note in parser_notes or []:
         informational_notes.append(note)
     if excluded_context_lines:
@@ -633,6 +811,7 @@ def diagnose_extraction(
         or bool(review_callouts)
         or pages_beyond_cap
         or bool(parser_warnings)
+        or any(issue.severity in {"blocker", "action"} for issue in issues)
     )
     if review_required:
         message = "Manual review is required; the app did not add unsupported totals."
