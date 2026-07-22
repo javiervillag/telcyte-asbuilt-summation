@@ -9,18 +9,61 @@ box replacement (Nick Evans, June-23 sync: NR-996825 page-totals boxes double-co
 from __future__ import annotations
 
 import re
+from enum import Enum
+
+
+_CANONICAL_JOB_TOTAL_RE = re.compile(r"^mkr\s+job\s+totals\b", re.I)
+_LEGACY_JOB_TOTAL_RE = re.compile(r"^mkr\s+job\s+totals?\b", re.I)
+_CANONICAL_PAGE_TOTAL_RE = re.compile(r"^mkr\s+page\s+totals\b", re.I)
+_LEGACY_NUMBERED_PAGE_TOTAL_RE = re.compile(
+    r"^(?:pg|page)\s+\d+\s+totals?\b",
+    re.I,
+)
+_CANONICAL_NEW_TOTAL_RE = re.compile(r"^mkr\s+new\s+totals\b", re.I)
+
+
+class TotalsTitleKind(str, Enum):
+    JOB = "job"
+    PAGE = "page"
+    NEW = "new"
 
 
 def normalized_title(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip()).lower()
 
 
+def normalized_heading(text: str) -> str:
+    """Normalize enough leading lines to recognize split PDF box titles."""
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    return normalized_title(" ".join(lines[:2]))
+
+
+def totals_title_kind(text: str) -> TotalsTitleKind | None:
+    heading = normalized_heading(text)
+    if _CANONICAL_JOB_TOTAL_RE.match(heading) or _LEGACY_JOB_TOTAL_RE.match(heading):
+        return TotalsTitleKind.JOB
+    if _CANONICAL_PAGE_TOTAL_RE.match(heading) or _LEGACY_NUMBERED_PAGE_TOTAL_RE.match(heading):
+        return TotalsTitleKind.PAGE
+    if _CANONICAL_NEW_TOTAL_RE.match(heading):
+        return TotalsTitleKind.NEW
+    return None
+
+
+def is_legacy_totals_alias(text: str) -> bool:
+    heading = normalized_heading(text)
+    legacy_job = bool(_LEGACY_JOB_TOTAL_RE.match(heading)) and not bool(
+        _CANONICAL_JOB_TOTAL_RE.match(heading)
+    )
+    legacy_page = bool(_LEGACY_NUMBERED_PAGE_TOTAL_RE.match(heading))
+    return legacy_job or legacy_page
+
+
 def starts_with_job_totals_title(text: str) -> bool:
-    return normalized_title(text).startswith("mkr job totals")
+    return totals_title_kind(text) == TotalsTitleKind.JOB
 
 
 def starts_with_page_totals_title(text: str) -> bool:
-    return normalized_title(text).startswith("mkr page totals")
+    return totals_title_kind(text) == TotalsTitleKind.PAGE
 
 
 def starts_with_new_totals_title(text: str) -> bool:
@@ -30,7 +73,7 @@ def starts_with_new_totals_title(text: str) -> bool:
     boxes it is a SUMMARY, never field evidence, so it must be excluded from counting -
     but it is the customer's own annotation, so the annotator must NOT replace it. That
     split is why only the combined predicate below includes it (Nick, NR-996825 PRJ10)."""
-    return normalized_title(text).startswith("mkr new totals")
+    return totals_title_kind(text) == TotalsTitleKind.NEW
 
 
 def is_tool_new_totals_box(text: str) -> bool:
@@ -47,11 +90,7 @@ def starts_with_totals_title(text: str) -> bool:
     from field-evidence counting so their lines are never summed as callouts. The
     annotator's replace paths use the specific job/page predicates only, so a "New
     Totals" box is excluded from counting yet preserved untouched on the page."""
-    return (
-        starts_with_job_totals_title(text)
-        or starts_with_page_totals_title(text)
-        or starts_with_new_totals_title(text)
-    )
+    return totals_title_kind(text) is not None
 
 
 def starts_with_materials_title(text: str) -> bool:
